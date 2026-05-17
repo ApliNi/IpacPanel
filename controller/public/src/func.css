@@ -1,0 +1,292 @@
+/* 功能状态样式: 由运行状态、权限、交互流程或内容状态驱动。 */
+
+/* 根层显示状态 */
+#authRoot,
+#dialogRoot,
+#bootErrorRoot {
+	position: fixed;
+	inset: 0;
+	opacity: 0;
+	transform: translateY(6px);
+	transition: opacity 0.2s, transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+#authRoot.visible,
+#dialogRoot.visible,
+#bootErrorRoot.visible {
+	opacity: 1;
+	transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	#authRoot,
+	.auth-card,
+	.auth-card-shell.shake,
+	#bootErrorRoot,
+	.boot-error-card {
+		transition: none !important;
+		animation: none !important;
+	}
+	#dialogRoot,
+	.dialog-card {
+		transition: none !important;
+		animation: none !important;
+	}
+}
+
+.auth-submit:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+/* 页面与导航状态 */
+.section {
+    position: absolute;
+    top: 0;
+    left: 0;
+	right: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(7px) scale(0.985);
+    transition: opacity 0.24s, transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), visibility 0.24s;
+    display: flex;
+    flex-direction: column;
+	overflow-y: scroll;
+}
+
+.section.active {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0) scale(1);
+}
+
+.instance-group:open {
+	margin-bottom: 14px;
+}
+
+.instance-group[open] > .instance-group-summary::before {
+	content: '[↓]';
+}
+
+/* 服务与文件状态 */
+.file-panel-card.file-panel-dragover {
+	background: rgba(0, 210, 255, 0.08);
+}
+
+.instance-access-link.is-copied {
+	color: var(--green);
+}
+
+.status-online { color: var(--green); }
+.status-restart { color: var(--blue); }
+.status-offline { color: var(--text-faint-color); }
+
+.file-search-input.active {
+	border-color: var(--primary-color) !important;
+}
+
+.file-list.loading {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+.file-icon.selected,
+.file-row.selected .file-icon {
+	background: var(--blue) !important;
+	color: #000;
+	clip-path: polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px);
+}
+
+/* 通用显示与禁用状态 */
+/* 当分隔符前面没有可见按钮时, 隐藏分隔符 */
+.controls:not(:has(> .btn:not(.hidden) ~ .controls-divider)) > .controls-divider {
+	display: none;
+}
+
+.modal-actions:not(:has(> .btn:not(.hidden) ~ .controls-divider)) > .controls-divider {
+	display: none;
+}
+
+.controls.disabled {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+.hidden {
+	display: none !important;
+}
+
+#instanceModalPageAdvanced:has(#instanceModalTerminal option[value="1"]:checked) .instance-stop-command-field,
+#instanceModalPageAdvanced:has(#instanceModalTerminal option[value="1"]:checked) .instance-encoding-row {
+	display: none;
+}
+
+.btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+	pointer-events: none;
+}
+
+/* 弹窗与分页状态 */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 13vh 12px;
+    background: rgb(0 0 0 / 50%);
+    z-index: 200;
+    opacity: 0;
+    transition: opacity 0.2s;
+	overflow-y: scroll;
+}
+
+.modal-overlay.visible {
+    opacity: 1;
+}
+
+.modal-overlay.closing .modal-card {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+}
+
+.file-batch-action-page {
+	display: none;
+	flex-direction: column;
+	gap: 14px;
+}
+
+.file-batch-action-page.active {
+	display: flex;
+}
+
+.text-editable[data-placeholder].is-empty::before {
+	content: attr(data-placeholder);
+	position: absolute;
+	left: 12px;
+	right: 12px;
+	top: 7px;
+	color: var(--text-dim-color);
+	pointer-events: none;
+	white-space: pre-wrap;
+	word-break: break-word;
+	opacity: 0.7;
+}
+
+.modal-actions.disabled {
+	opacity: 0.5;
+	pointer-events: none;
+}
+
+#fileEditorStatus.error,
+#userManageMeStatus.error,
+#userManageEditStatus.error,
+#instanceGroupStatus.error,
+#instanceModalStatus.error,
+#panelSettingsStatus.error,
+#panelSettingsMetricsStatus.error,
+#panelSettingsWebStatus.error,
+#panelSettingsPowStatus.error,
+#panelSettingsDebugStatus.error,
+#instanceGroupDeleteStatus.error,
+#controllerUpdateActionStatus.error {
+	color: var(--red);
+}
+
+.file-create-page,
+.user-manage-page,
+.panel-settings-page,
+.file-action-page,
+.instance-group-page,
+.instance-modal-page {
+    display: none;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.file-create-page.active,
+.user-manage-page.active,
+.panel-settings-page.active,
+.file-action-page.active,
+.instance-group-page.active,
+.instance-modal-page.active {
+    display: flex;
+}
+
+/* 上传流程状态 */
+.file-upload-dropzone.dragover {
+    border-color: var(--blue);
+    background: rgba(0, 210, 255, 0.08);
+}
+
+.file-upload-dropzone.locked {
+    opacity: 0.55;
+    pointer-events: none;
+}
+
+.file-upload-overwrite.locked {
+    opacity: 0.55;
+    pointer-events: none;
+}
+
+.file-upload-summary-row:empty {
+    min-height: 0;
+}
+
+.progress-fill-zero {
+	width: 0%;
+}
+
+/* 用户管理状态 */
+/* 根据权限等级隐藏相关组件 */
+.user-manage-page-edit:has(#userManageEditPerm option:checked[value="7"]) .field-group:has(#userManageEditGroups),
+.user-manage-page-edit:has(#userManageEditPerm option:checked[value="7"]) .field-group:has(#userManageEditInstances),
+.user-manage-page-edit:has(#userManageEditPerm option:checked[value="0"]) .field-group:has(#userManageEditGroups),
+.user-manage-page-edit:has(#userManageEditPerm option:checked[value="0"]) .field-group:has(#userManageEditInstances) {
+	display: none;
+}
+
+.user-manage-page.show-pass-confirm.user-manage-page-me .user-manage-pass-row > .field-group:first-child {
+	width: calc(50% - 6px);
+}
+
+.user-manage-page.show-pass-confirm.user-manage-page-me .user-manage-pass-confirm {
+	width: calc(50% - 6px);
+	margin-left: 12px;
+}
+
+.user-manage-page.show-pass-confirm .user-manage-pass-confirm {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+/* 实例配置状态 */
+.instance-tasks-list:empty {
+	display: none;
+}
+
+.instance-task-row .instance-task-command.hidden {
+	display: none;
+}
+
+.instance-task-row .instance-task-restart-options.hidden {
+	display: none;
+}
+
+.instance-group-row .placeholder:has(+ .hidden) {
+	display: none;
+}
+
+/* 终端滚动行为 */
+.terminal-wrapper:hover,
+.terminal-wrapper:focus-within {
+	overscroll-behavior: contain;
+}
+
+.terminal-wrapper .xterm-viewport {
+	overscroll-behavior: contain;
+	overflow-y: scroll;
+}

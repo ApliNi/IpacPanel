@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rotated Square 字体预览</title>
+  <style>
+    @font-face {
+      font-family: "Rotated Square";
+      src: url("./rotated_square.woff2") format("woff2");
+      font-weight: 400;
+      font-style: normal;
+      font-display: block;
+    }
+
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f7fb;
+      --panel: #ffffff;
+      --text: #202124;
+      --muted: #666d7a;
+      --border: #d9deea;
+      --accent: #4c6fff;
+      --preview-bg: #fffdf7;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #15171c;
+        --panel: #20232b;
+        --text: #eef1f7;
+        --muted: #aab2c0;
+        --border: #3a4150;
+        --accent: #8ea2ff;
+        --preview-bg: #181b22;
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+
+    main {
+      width: min(960px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 40px 0;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(28px, 5vw, 44px);
+      letter-spacing: -0.03em;
+    }
+
+    .description {
+      margin: 0 0 28px;
+      color: var(--muted);
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: 0 18px 45px rgb(0 0 0 / 8%);
+      padding: 24px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 10px;
+      font-weight: 650;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 120px;
+      resize: vertical;
+      padding: 14px 16px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: transparent;
+      color: var(--text);
+      font: inherit;
+    }
+
+    textarea:focus,
+    input:focus {
+      border-color: var(--accent);
+      outline: 3px solid color-mix(in srgb, var(--accent), transparent 75%);
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin: 20px 0;
+    }
+
+    .control {
+      display: grid;
+      gap: 8px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .value {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .preview {
+      min-height: 180px;
+      margin-top: 18px;
+      padding: 24px;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+      background: var(--preview-bg);
+      border: 1px dashed var(--border);
+      border-radius: 16px;
+      font-family: "Rotated Square", system-ui, sans-serif;
+      font-size: var(--preview-size, 72px);
+      line-height: var(--preview-line-height, 1.15);
+      letter-spacing: var(--preview-letter-spacing, 0em);
+      font-feature-settings: "calt" 1;
+    }
+
+    .hint {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Rotated Square 字体预览</h1>
+    <p class="description">输入或粘贴文本后，下方区域会使用 <code>rotated_square.woff2</code> 实时预览。当前字体映射了项目符号字符 <code>•</code>。</p>
+
+    <section class="panel" aria-label="字体预览控制面板">
+      <label for="previewText">预览文本</label>
+      <textarea id="previewText" spellcheck="false">••••••••••
+• • • • •
+普通文字会回退到系统字体</textarea>
+
+      <div class="controls">
+        <div class="control">
+          <label for="fontSize">字号 <span class="value" id="fontSizeValue">72px</span></label>
+          <input id="fontSize" type="range" min="16" max="180" value="72">
+        </div>
+        <div class="control">
+          <label for="letterSpacing">字距 <span class="value" id="letterSpacingValue">0em</span></label>
+          <input id="letterSpacing" type="range" min="-0.2" max="1" value="0" step="0.05">
+        </div>
+        <div class="control">
+          <label for="lineHeight">行高 <span class="value" id="lineHeightValue">1.15</span></label>
+          <input id="lineHeight" type="range" min="0.8" max="2.4" value="1.15" step="0.05">
+        </div>
+      </div>
+
+      <div id="preview" class="preview" aria-live="polite"></div>
+      <p class="hint">如果没有看到方块效果，请确认本 HTML 与 <code>rotated_square.woff2</code> 位于同一目录，并用现代浏览器打开。</p>
+    </section>
+  </main>
+
+  <script>
+    const previewText = document.querySelector("#previewText");
+    const preview = document.querySelector("#preview");
+    const fontSize = document.querySelector("#fontSize");
+    const letterSpacing = document.querySelector("#letterSpacing");
+    const lineHeight = document.querySelector("#lineHeight");
+
+    const fontSizeValue = document.querySelector("#fontSizeValue");
+    const letterSpacingValue = document.querySelector("#letterSpacingValue");
+    const lineHeightValue = document.querySelector("#lineHeightValue");
+
+    function updatePreview() {
+      preview.textContent = previewText.value;
+      preview.style.setProperty("--preview-size", `${fontSize.value}px`);
+      preview.style.setProperty("--preview-letter-spacing", `${letterSpacing.value}em`);
+      preview.style.setProperty("--preview-line-height", lineHeight.value);
+
+      fontSizeValue.textContent = `${fontSize.value}px`;
+      letterSpacingValue.textContent = `${Number(letterSpacing.value).toFixed(2)}em`;
+      lineHeightValue.textContent = Number(lineHeight.value).toFixed(2);
+    }
+
+    previewText.addEventListener("input", updatePreview);
+    fontSize.addEventListener("input", updatePreview);
+    letterSpacing.addEventListener("input", updatePreview);
+    lineHeight.addEventListener("input", updatePreview);
+    updatePreview();
+  </script>
+</body>
+</html>

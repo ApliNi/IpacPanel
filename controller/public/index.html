@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<meta name="theme-color" content="#202124">
+    <title>IpacPanel</title>
+	<base href="/v0.0.1/">
+	<link rel="preload" href="/lib/JetBrainsMono-Regular.woff2" as="font" type="font/woff2">
+	<link rel="stylesheet" href="/lib/JetBrainsMapleMono-Medium/result.css" />
+	<link rel="stylesheet" href="/lib/xterm.css" />
+	<link rel="stylesheet" href="/lib/uPlot.min.css" />
+	<link rel="stylesheet" href="/lib/monaco-editor/editor/editor.main.css" />
+	<link rel="stylesheet" href="./src/ui.css" />
+	<link rel="stylesheet" href="./src/func.css" />
+	<style type="text/css">
+		@font-face {
+			font-family: 'JetBrains Mono';
+			src: url('/lib/JetBrainsMono-Regular.woff2') format('woff2');
+			font-display: swap;
+		}
+		@font-face {
+			font-family: 'Rotated Square';
+			src: url('/lib/rotated_square.woff2') format('woff2');
+			font-display: swap;
+		}
+	</style>
+	<link rel="icon" href="/favicon.ico">
+	<link rel="manifest" href="./manifest.json">
+</head>
+<body>
+    <header id="mainHeader" style="display:none;"></header>
+    <div id="mainContainer" style="display:none;"></div>
+	<div id="mainModalOverlay"></div>
+
+	<script src="/lib/xterm.js"></script>
+	<script src="/lib/xterm-addon-fit.js"></script>
+	<script src="/lib/uPlot.iife.min.js"></script>
+	<script src="/lib/monaco-editor/loader.js"></script>
+	<script type="module" src="./src/ui.js"></script>
+</body>
+</html>

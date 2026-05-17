@@ -1,0 +1,23 @@
+*.log
+*.yml
+test/
+_test/
+
+# Go build outputs
+build/
+*.exe
+*.zip
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Editor files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
