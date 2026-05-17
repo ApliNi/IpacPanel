@@ -1603,19 +1603,39 @@ const resumeRefreshAfterChartCursor = (event) => {
 	if (event && isPointInsideAnyChartPlot(event.clientX, event.clientY)) {
 		return;
 	}
+	resumeRefreshAndHideCrosshairs();
+};
+
+const resumeRefreshAndHideCrosshairs = (renderPending = true) => {
 	pageState.pauseRefreshForCursor = false;
 	hideLinkedCrosshairs();
-	if (pageState.pendingRender) {
+	if (renderPending && pageState.pendingRender) {
 		renderDashboardSamples(true);
 	}
 };
 
-const resumeRefreshAndHideCrosshairs = () => {
-	pageState.pauseRefreshForCursor = false;
-	hideLinkedCrosshairs();
-	if (pageState.pendingRender) {
-		renderDashboardSamples(true);
+const resumeRefreshAfterBrowserPointerExit = (event) => {
+	if (!pageState.pauseRefreshForCursor) {
+		return;
 	}
+	if (event && event.relatedTarget) {
+		return;
+	}
+	resumeRefreshAndHideCrosshairs();
+};
+
+const resumeRefreshAfterBrowserInactive = () => {
+	if (!pageState.pauseRefreshForCursor) {
+		return;
+	}
+	resumeRefreshAndHideCrosshairs();
+};
+
+const resumeRefreshAfterVisibilityHidden = () => {
+	if (document.visibilityState !== 'hidden') {
+		return;
+	}
+	resumeRefreshAfterBrowserInactive();
 };
 
 const moveLinkedCrosshairs = (sourceChartEl, event) => {
@@ -1755,6 +1775,9 @@ const bindEvents = () => {
 		chartEl.addEventListener('pointerleave', resumeRefreshAfterChartCursor);
 	});
 	document.addEventListener('click', hideLinkedCrosshairsFromNonPlotClick);
+	document.documentElement.addEventListener('mouseleave', resumeRefreshAfterBrowserPointerExit);
+	window.addEventListener('blur', resumeRefreshAfterBrowserInactive);
+	document.addEventListener('visibilitychange', resumeRefreshAfterVisibilityHidden);
 	pageState.resizeObserver = new ResizeObserver(() => resizeCharts());
 	pageState.resizeObserver.observe(dom.section);
 };
@@ -1775,6 +1798,7 @@ const hidePage = () => {
 	pageState.active = false;
 	dom.section.classList.remove('active');
 	stopDashboardStream();
+	resumeRefreshAndHideCrosshairs(false);
 };
 
 export const bootDashboardPage = () => {
