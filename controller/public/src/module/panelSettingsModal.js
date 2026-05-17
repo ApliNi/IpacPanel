@@ -411,11 +411,27 @@ const settingsFieldInputs = {
 	trustedProxyIps: () => dom.trustedProxyIps,
 };
 
+const settingsFieldConfigPages = {
+	webTitle: 'options',
+	listen: 'options',
+	instanceUpdateStagingDir: 'options',
+	trustedProxyIps: 'options',
+	webPrivateKeyPath: 'web',
+	webPublicKeyPath: 'web',
+};
+
 const rejectSettingsValidation = (result) => {
 	if (result?.ok !== false) {
 		return false;
 	}
+	const page = settingsFieldConfigPages[result.field];
+	if (page) applyConfigPage(page);
 	const input = settingsFieldInputs[result.field]?.();
+	if (page === 'web') {
+		setWebStatus(result.message || 'WEB SETTINGS INVALID', true);
+		input?.focus?.();
+		return false;
+	}
 	return rejectSettingsField(result.message || 'SETTINGS INVALID', input);
 };
 
@@ -667,125 +683,103 @@ const refreshSettings = async () => {
 	return true;
 };
 
-const saveSettings = async () => {
-	if (panelSettingsState.settingsLoading) return false;
+const buildConfigSettingsPayload = () => {
 	const webTitle = normalizeWebTitle(truncateInputValue(dom.webTitle, InputValidation.settings.limits.webTitle));
 	const listen = normalizeListen(truncateInputValue(dom.listen, InputValidation.settings.limits.listen));
 	const instanceUpdateStagingDir = truncateInputValue(dom.instanceUpdateStagingDir, InputValidation.settings.limits.instanceUpdateStagingDir);
 	const trustedProxyIpsText = normalizeTrustedProxyIpsInput();
 	const validationResult = InputValidation.settings.validateGeneralTextFields({ webTitle, listen, instanceUpdateStagingDir, trustedProxyIpsText });
 	if (!validationResult.ok) {
-		rejectSettingsValidation(validationResult);
-		return false;
+		return { ok: false, validationResult };
+	}
+	const webPrivateKeyPath = truncateInputValue(dom.webPrivateKeyPath, InputValidation.settings.limits.webPrivateKeyPath);
+	const webPublicKeyPath = truncateInputValue(dom.webPublicKeyPath, InputValidation.settings.limits.webPublicKeyPath);
+	const webValidationResult = InputValidation.settings.validateWebTextFields({ webPrivateKeyPath, webPublicKeyPath });
+	if (!webValidationResult.ok) {
+		return { ok: false, validationResult: webValidationResult };
 	}
 	const historySize = readClampedInteger(dom.historySize, 27, MIN_HISTORY_SIZE, MAX_HISTORY_SIZE);
 	const autoStartInterval = readClampedInteger(dom.autoStartInterval, 200, 0, MAX_INTERVAL_MS);
 	const autoRestartInterval = readClampedInteger(dom.autoRestartInterval, 1000, 0, MAX_INTERVAL_MS);
 	const trustedProxyIps = normalizeStringList(trustedProxyIpsText);
-	const payload = {
-		web_title: webTitle,
-		listen,
-		history_size: historySize,
-		auto_start_interval: autoStartInterval,
-		auto_restart_interval: autoRestartInterval,
-		instance_update_staging_dir: instanceUpdateStagingDir,
-		trusted_proxy_ips: trustedProxyIps,
-	};
-	const result = await updateSettings(payload);
-	if (!result.ok) {
-		setSettingsStatus(result.error || 'SAVE SETTINGS FAILED', true);
-		return false;
-	}
-	renderSettings(result.data || payload);
-	setSettingsStatus('SAVED');
-	closeModal();
-	return true;
-};
-
-const saveWebSettings = async () => {
-	if (panelSettingsState.settingsLoading) return false;
-	const webPrivateKeyPath = truncateInputValue(dom.webPrivateKeyPath, InputValidation.settings.limits.webPrivateKeyPath);
-	const webPublicKeyPath = truncateInputValue(dom.webPublicKeyPath, InputValidation.settings.limits.webPublicKeyPath);
-	const validationResult = InputValidation.settings.validateWebTextFields({ webPrivateKeyPath, webPublicKeyPath });
-	if (!validationResult.ok) {
-		const input = settingsFieldInputs[validationResult.field]?.();
-		setWebStatus(validationResult.message || 'WEB SETTINGS INVALID', true);
-		input?.focus?.();
-		return false;
-	}
-	const payload = {
-		web: {
-			enable_https: !!dom.webEnableHttps?.checked,
-			force_https: !!dom.webForceHttps?.checked,
-			private_key_path: webPrivateKeyPath,
-			public_key_path: webPublicKeyPath,
-		},
-	};
-	const result = await updateSettings(payload);
-	if (!result.ok) {
-		setWebStatus(result.error || 'SAVE WEB FAILED', true);
-		return false;
-	}
-	renderSettings(result.data || { web_title: settingsState.webTitle, web: payload.web });
-	setWebStatus('SAVED');
-	closeModal();
-	return true;
-};
-
-const saveMetricsSettings = async () => {
-	if (panelSettingsState.settingsLoading) return false;
-	const storageMode = normalizeMetricsStorageMode(dom.metricsStorageMode?.value);
+	const storageMode = normalizeMetricsStorageMode(dom.metricsStorageMode.value);
 	const memoryMaxMin = readClampedInteger(dom.metricsMemoryMaxMin, 30, 1, MAX_METRICS_MEMORY_MIN);
 	const sqliteMaxDay = readClampedInteger(dom.metricsSqliteMaxDay, 7, 0, MAX_METRICS_SQLITE_DAY);
 	const sqliteCompactAfterDay = readClampedInteger(dom.metricsSqliteCompactAfterDay, 2, 0, MAX_METRICS_SQLITE_DAY);
-	const payload = {
-		metrics: {
-			enabled: !!dom.metricsEnabled?.checked,
-			public_dashboard: !!dom.metricsPublicDashboard.checked,
-			storage_mode: storageMode,
-			memory_max_min: memoryMaxMin,
-			sqlite_max_day: sqliteMaxDay,
-			sqlite_compact_after_day: sqliteCompactAfterDay,
+	const taskCount = readClampedInteger(dom.powTaskCount, 24, 1, MAX_POW_TASK_COUNT);
+	const difficulty = readClampedInteger(dom.powDifficulty, 3, 1, MAX_POW_DIFFICULTY);
+	const timestampMaxSkew = readClampedInteger(dom.powTimestampMaxSkew, 90, 1, MAX_POW_TIMESTAMP_SKEW);
+	return {
+		ok: true,
+		payload: {
+			web_title: webTitle,
+			listen,
+			history_size: historySize,
+			auto_start_interval: autoStartInterval,
+			auto_restart_interval: autoRestartInterval,
+			instance_update_staging_dir: instanceUpdateStagingDir,
+			trusted_proxy_ips: trustedProxyIps,
+			web: {
+				enable_https: dom.webEnableHttps.checked,
+				force_https: dom.webForceHttps.checked,
+				private_key_path: webPrivateKeyPath,
+				public_key_path: webPublicKeyPath,
+			},
+			metrics: {
+				enabled: dom.metricsEnabled.checked,
+				public_dashboard: !!dom.metricsPublicDashboard.checked,
+				storage_mode: storageMode,
+				memory_max_min: memoryMaxMin,
+				sqlite_max_day: sqliteMaxDay,
+				sqlite_compact_after_day: sqliteCompactAfterDay,
+			},
+			pow: {
+				enabled: dom.powEnabled.checked,
+				task_count: taskCount,
+				difficulty,
+				timestamp_max_skew: timestampMaxSkew,
+			},
 		},
 	};
-	const result = await updateSettings(payload);
-	if (!result.ok) {
-		setMetricsStatus(result.error || 'SAVE METRICS FAILED', true);
+};
+
+const saveConfigSettings = async (setStatus, fallbackError) => {
+	if (panelSettingsState.settingsLoading) return false;
+	const payloadResult = buildConfigSettingsPayload();
+	if (!payloadResult.ok) {
+		rejectSettingsValidation(payloadResult.validationResult);
 		return false;
 	}
-	renderSettings(result.data || { web_title: settingsState.webTitle, metrics: payload.metrics });
-	setMetricsStatus('SAVED');
+	const result = await updateSettings(payloadResult.payload);
+	if (!result.ok) {
+		setStatus(result.error || fallbackError, true);
+		return false;
+	}
+	renderSettings(result.data || payloadResult.payload);
+	setStatus('SAVED');
 	closeModal();
 	return true;
 };
 
+const saveSettings = async () => {
+	return await saveConfigSettings(setSettingsStatus, 'SAVE SETTINGS FAILED');
+};
+
+const saveWebSettings = async () => {
+	return await saveConfigSettings(setWebStatus, 'SAVE WEB FAILED');
+};
+
+const saveMetricsSettings = async () => {
+	return await saveConfigSettings(setMetricsStatus, 'SAVE METRICS FAILED');
+};
+
 const savePowSettings = async () => {
-	if (panelSettingsState.settingsLoading) return false;
-	const taskCount = readClampedInteger(dom.powTaskCount, 24, 1, MAX_POW_TASK_COUNT);
-	const difficulty = readClampedInteger(dom.powDifficulty, 3, 1, MAX_POW_DIFFICULTY);
-	const timestampMaxSkew = readClampedInteger(dom.powTimestampMaxSkew, 90, 1, MAX_POW_TIMESTAMP_SKEW);
-	const payload = {
-		pow: {
-			enabled: !!dom.powEnabled?.checked,
-			task_count: taskCount,
-			difficulty,
-			timestamp_max_skew: timestampMaxSkew,
-		},
-	};
-	const result = await updateSettings(payload);
-	if (!result.ok) {
-		setPowStatus(result.error || 'SAVE POW FAILED', true);
-		return false;
-	}
-	renderSettings(result.data || { web_title: settingsState.webTitle, pow: payload.pow });
-	setPowStatus('SAVED');
-	closeModal();
-	return true;
+	return await saveConfigSettings(setPowStatus, 'SAVE POW FAILED');
 };
 
 const saveDebugSettings = async () => {
 	if (panelSettingsState.settingsLoading) return false;
-	const debug = !!dom.debugEnabled?.checked;
+	const debug = dom.debugEnabled.checked;
 	const result = await updateSettings({ debug });
 	if (!result.ok) {
 		setDebugStatus(result.error || 'SAVE DEBUG FAILED', true);
