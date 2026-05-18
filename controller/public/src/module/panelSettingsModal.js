@@ -1,11 +1,14 @@
 import { applyWebTitle, mainModalOverlay } from '../ui.js';
-import { applyControllerUpdate, completeControllerUpdateUpload, fetchControllerUpdateStatus, initControllerUpdateUpload, uploadControllerUpdateChunk } from '../api/controllerUpdate.js';
+import { abortControllerUpdateUpload, applyControllerUpdate, completeControllerUpdateUpload, fetchControllerUpdateStatus, initControllerUpdateUpload, uploadControllerUpdateChunk } from '../api/controllerUpdate.js';
 import { clearTimer, formatFileSize, getUploadErrorText, withActionsDisabled } from '../utils/utils.js';
 import { fetchSettings, restartController, updateSettings } from '../api/settings.js';
 import { InputValidation } from '../utils/inputValidation.js';
 import { showAlert, showConfirm } from './dialog.js';
 
-const CHUNK_SIZE = 8 * 1024 * 1024;
+const UPDATE_UPLOAD_CHUNK_SIZE = 10 * 1024 * 1024;
+const UPDATE_UPLOAD_CONCURRENCY = 4;
+const UPDATE_UPLOAD_RETRY_COUNT = 3;
+const UPDATE_UPLOAD_RETRY_DELAY_MS = 500;
 
 mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 	<div id="panelSettingsModal" class="modal-overlay">
@@ -307,6 +310,7 @@ const panelSettingsState = {
 	selectedFile: null,
 	updateFileName: '',
 	updateFileSize: 0,
+	updateUploadAbortController: null,
 	currentMainPage: 'config',
 	currentConfigPage: 'options',
 	settingsLoading: false,
@@ -942,6 +946,64 @@ const updateProgress = (file, loaded, status = 'UPLOADING') => {
 	setUploadError('');
 };
 
+const waitUpdateUploadRetryDelay = () => new Promise(resolve => setTimeout(resolve, UPDATE_UPLOAD_RETRY_DELAY_MS));
+
+const uploadControllerUpdateChunkWithRetry = async (uploadId, index, chunk, onProgress, options = {}) => {
+	let lastError = null;
+	for (let attempt = 1; attempt <= UPDATE_UPLOAD_RETRY_COUNT; attempt += 1) {
+		try {
+			await uploadControllerUpdateChunk(uploadId, index, chunk, onProgress, options);
+			return;
+		} catch (error) {
+			lastError = error;
+			if (error && error.name === 'AbortError') {
+				throw error;
+			}
+			if (attempt >= UPDATE_UPLOAD_RETRY_COUNT) {
+				break;
+			}
+			await waitUpdateUploadRetryDelay();
+		}
+	}
+	throw lastError || new Error(`Chunk ${index} upload failed`);
+};
+
+const uploadControllerUpdateChunks = async (file, uploadId, chunkSize, chunkCount, signal) => {
+	const chunkProgress = new Array(chunkCount).fill(0);
+	let uploaded = 0;
+	let nextIndex = 0;
+	const worker = async () => {
+		while (nextIndex < chunkCount) {
+			if (signal && signal.aborted) {
+				const err = new Error('aborted');
+				err.name = 'AbortError';
+				throw err;
+			}
+			const index = nextIndex;
+			nextIndex += 1;
+			const start = index * chunkSize;
+			const end = Math.min(file.size, start + chunkSize);
+			const chunk = file.slice(start, end);
+			await uploadControllerUpdateChunkWithRetry(uploadId, index, chunk, (loaded) => {
+				const safeLoaded = Math.max(0, Math.min(chunk.size, loaded || 0));
+				const previousLoaded = chunkProgress[index] || 0;
+				const delta = safeLoaded - previousLoaded;
+				chunkProgress[index] = safeLoaded;
+				uploaded = Math.max(0, uploaded + delta);
+				updateProgress(file, uploaded);
+			}, { signal });
+			const previousLoaded = chunkProgress[index] || 0;
+			if (previousLoaded !== chunk.size) {
+				chunkProgress[index] = chunk.size;
+				uploaded = Math.max(0, uploaded + (chunk.size - previousLoaded));
+			}
+			updateProgress(file, uploaded);
+		}
+	};
+	const workers = Array.from({ length: Math.min(UPDATE_UPLOAD_CONCURRENCY, chunkCount) }, () => worker());
+	await Promise.all(workers);
+};
+
 const uploadFile = async (file) => {
 	const validationError = validateControllerUpdateFile(file);
 	if (validationError) {
@@ -950,9 +1012,13 @@ const uploadFile = async (file) => {
 		return false;
 	}
 	panelSettingsState.updateFileName = String(file.name || '').trim();
-	const chunkCount = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
-	const chunkSize = Math.min(Math.max(file.size, 1), CHUNK_SIZE);
+	const chunkSize = file.size > UPDATE_UPLOAD_CHUNK_SIZE ? UPDATE_UPLOAD_CHUNK_SIZE : Math.max(file.size, 1);
+	const chunkCount = Math.max(1, Math.ceil(file.size / chunkSize));
 	setLocked(true);
+	const abortController = new AbortController();
+	panelSettingsState.updateUploadAbortController = abortController;
+	let uploadId = '';
+	let shouldAbortRemote = true;
 	try {
 		const init = await initControllerUpdateUpload({
 			name: panelSettingsState.updateFileName,
@@ -960,32 +1026,33 @@ const uploadFile = async (file) => {
 			chunk_size: chunkSize,
 			chunk_count: chunkCount,
 		});
-		const uploadId = init ? init.upload_id : '';
+		uploadId = init ? init.upload_id : '';
 		if (!uploadId) throw new Error('UPLOAD INIT FAILED');
-		let uploaded = 0;
-		for (let index = 0; index < chunkCount; index += 1) {
-			const start = index * chunkSize;
-			const end = Math.min(file.size, start + chunkSize);
-			const chunk = file.slice(start, end);
-			let chunkLoaded = 0;
-			await uploadControllerUpdateChunk(uploadId, index, chunk, (loaded) => {
-				chunkLoaded = Math.max(0, Math.min(chunk.size, loaded || 0));
-				updateProgress(file, uploaded + chunkLoaded);
-			});
-			uploaded += chunk.size;
-			updateProgress(file, uploaded);
+		await uploadControllerUpdateChunks(file, uploadId, chunkSize, chunkCount, abortController.signal);
+		if (abortController.signal.aborted) {
+			const err = new Error('aborted');
+			err.name = 'AbortError';
+			throw err;
 		}
 		updateProgress(file, file.size, 'VERIFYING');
 		const completed = await completeControllerUpdateUpload(uploadId);
+		shouldAbortRemote = false;
 		renderStatus({ ...completed, pending: true, name: panelSettingsState.updateFileName, size: file.size }, { clearSelectedFile: true });
 		setActionStatus('VERIFY PASSED');
 		return true;
 	} catch (error) {
+		abortController.abort();
 		console.error('[面板更新] 上传失败:', error);
 		setUploadError(getUploadErrorText(error));
 		setActionStatus('UPLOAD FAILED', true);
 		return false;
 	} finally {
+		if (shouldAbortRemote && uploadId) {
+			await abortControllerUpdateUpload(uploadId).catch(() => null);
+		}
+		if (panelSettingsState.updateUploadAbortController === abortController) {
+			panelSettingsState.updateUploadAbortController = null;
+		}
 		setLocked(false);
 	}
 };

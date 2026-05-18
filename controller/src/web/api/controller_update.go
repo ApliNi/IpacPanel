@@ -48,6 +48,10 @@ type controllerUpdateCompleteRequest struct {
 	UploadID string `json:"upload_id"`
 }
 
+type controllerUpdateAbortRequest struct {
+	UploadID string `json:"upload_id"`
+}
+
 func controllerBinaryName() string {
 	name := "IpacPanel_Controller"
 	if runtime.GOOS == "windows" {
@@ -79,7 +83,7 @@ func validateControllerUpdatePackageName(name string) error {
 }
 
 func parseControllerVersion(binaryPath string) (*controllerUpdateVersionInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binaryPath, "--version")
 	output, err := cmd.Output()
@@ -519,6 +523,35 @@ func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Requ
 		"version":         versionInfo.Version,
 		"daemon_protocol": versionInfo.DaemonProtocol,
 	})
+}
+
+func HandleApiControllerUpdateUploadAbort(w http.ResponseWriter, r *http.Request) {
+	if !web.RequireCSRFFromRequest(w, r) {
+		return
+	}
+	authedUser, ok := web.RequireAdminAuthedUserWithMethod(w, r, "只有管理员可以取消面板更新上传", http.MethodPost)
+	if !ok {
+		return
+	}
+	var req controllerUpdateAbortRequest
+	if !web.DecodeJSONBody(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.UploadID) != controllerUpdateUploadID {
+		web.WriteAPIError(w, http.StatusNotFound, msg.UploadSessionNotFound, nil)
+		return
+	}
+	tempDir, _, err := cancelUploadSession(controllerUpdateUploadID, func(session *fileUploadSession) error {
+		return requireControllerUpdateSession(session, authedUser.User)
+	})
+	if err != nil {
+		web.WriteAPIError(w, http.StatusForbidden, err.Error(), err)
+		return
+	}
+	if tempDir != "" {
+		_ = file.RemoveRegisteredTempDir(tempDir)
+	}
+	web.WriteOK(w, map[string]bool{"ok": true})
 }
 
 func HandleApiControllerUpdateApply(w http.ResponseWriter, r *http.Request) {

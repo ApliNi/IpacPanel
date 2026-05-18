@@ -31,16 +31,47 @@ export const completeControllerUpdateUpload = async (uploadId) => {
 	return await postJson('/api/controller/update/upload/complete', { upload_id: uploadId });
 };
 
+export const abortControllerUpdateUpload = async (uploadId) => {
+	return await postJson('/api/controller/update/upload/abort', { upload_id: uploadId });
+};
+
 export const applyControllerUpdate = async () => {
 	return await postJson('/api/controller/update/apply');
 };
 
-export const uploadControllerUpdateChunk = (uploadId, index, chunk, onProgress) => new Promise((resolve, reject) => {
+export const uploadControllerUpdateChunk = (uploadId, index, chunk, onProgress, options = {}) => new Promise((resolve, reject) => {
 	const xhr = new XMLHttpRequest();
 	const query = new URLSearchParams({
 		upload_id: uploadId,
 		index: String(index),
 	});
+	const signal = options && options.signal ? options.signal : null;
+	let cleaned = false;
+	const cleanup = () => {
+		if (cleaned) {
+			return;
+		}
+		cleaned = true;
+		if (signal) {
+			signal.removeEventListener('abort', onAbort);
+		}
+	};
+	const onAbort = () => {
+		try {
+			xhr.abort();
+		} catch (e) {
+			// ignore
+		}
+	};
+	if (signal) {
+		if (signal.aborted) {
+			const err = new Error('aborted');
+			err.name = 'AbortError';
+			reject(err);
+			return;
+		}
+		signal.addEventListener('abort', onAbort, { once: true });
+	}
 	xhr.open('POST', `/api/controller/update/upload/chunk?${query.toString()}`);
 	const csrfToken = getCSRFToken();
 	if (csrfToken) {
@@ -53,6 +84,7 @@ export const uploadControllerUpdateChunk = (uploadId, index, chunk, onProgress) 
 		}
 	};
 	xhr.onload = () => {
+		cleanup();
 		if (xhr.status >= 200 && xhr.status < 300) {
 			if (xhr.response && Object.prototype.hasOwnProperty.call(xhr.response, 'data')) {
 				resolve(xhr.response.data);
@@ -65,9 +97,11 @@ export const uploadControllerUpdateChunk = (uploadId, index, chunk, onProgress) 
 		reject(new Error(responseMessage || xhr.responseText || `HTTP ${xhr.status}`));
 	};
 	xhr.onerror = () => {
+		cleanup();
 		reject(new Error('Network error'));
 	};
 	xhr.onabort = () => {
+		cleanup();
 		const err = new Error('aborted');
 		err.name = 'AbortError';
 		reject(err);

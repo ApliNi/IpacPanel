@@ -264,6 +264,7 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 	mux.HandleFunc("/api/controller/update/status", api.HandleApiControllerUpdateStatus)
 	mux.HandleFunc("/api/controller/update/upload/init", api.HandleApiControllerUpdateUploadInit)
 	mux.HandleFunc("/api/controller/update/upload/chunk", api.HandleApiControllerUpdateUploadChunk)
+	mux.HandleFunc("/api/controller/update/upload/abort", api.HandleApiControllerUpdateUploadAbort)
 	mux.HandleFunc("/api/controller/update/upload/complete", api.HandleApiControllerUpdateUploadComplete)
 	mux.HandleFunc("/api/controller/update/apply", api.HandleApiControllerUpdateApply)
 
@@ -306,10 +307,9 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 		Addr:              addr,
 		Handler:           handler,
 		Protocols:         protocols,
-		ReadTimeout:       15 * time.Second,
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		ReadHeaderTimeout: 60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		WriteTimeout:      120 * time.Second,
 	}
 	serverErrCh := make(chan error, 1)
 	go func() {
