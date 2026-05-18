@@ -1370,8 +1370,13 @@ const uploadSelectedFiles = async (overwrite) => {
 					continue;
 				}
 				try {
-					if (item.kind === 'empty-directory') {
-						await createDirectory(instanceName, currentPath, item.name);
+				if (item.kind === 'empty-directory') {
+						const dirParts = item.name.split('/').filter(Boolean);
+						let dirAccumPath = currentPath;
+						for (const part of dirParts) {
+							await createDirectory(instanceName, dirAccumPath, part);
+							dirAccumPath = `${dirAccumPath}/${part}`;
+						}
 						hasFinished = true;
 						hasSuccess = true;
 						updateUploadItemProgress(item, 0, 'DONE');

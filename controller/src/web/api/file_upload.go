@@ -198,14 +198,6 @@ func newUploadedChunkBitset(chunkCount int) []uint64 {
 	return make([]uint64, words)
 }
 
-func newUploadItemBitset(itemCount int) []uint64 {
-	if itemCount <= 0 {
-		return nil
-	}
-	words := (itemCount + 63) / 64
-	return make([]uint64, words)
-}
-
 func acquireUploadSession(uploadID string) (*fileUploadSession, bool) {
 	if strings.TrimSpace(uploadID) == "" {
 		return nil, false
