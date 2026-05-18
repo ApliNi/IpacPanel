@@ -309,7 +309,6 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 		Protocols:         protocols,
 		ReadHeaderTimeout: 60 * time.Second,
 		IdleTimeout:       120 * time.Second,
-		WriteTimeout:      120 * time.Second,
 	}
 	serverErrCh := make(chan error, 1)
 	go func() {

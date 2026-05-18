@@ -5,9 +5,9 @@ import { fetchSettings, restartController, updateSettings } from '../api/setting
 import { InputValidation } from '../utils/inputValidation.js';
 import { showAlert, showConfirm } from './dialog.js';
 
-const UPDATE_UPLOAD_CHUNK_SIZE = 10 * 1024 * 1024;
+const UPDATE_UPLOAD_CHUNK_SIZE = 9 * 1024 * 1024;
 const UPDATE_UPLOAD_CONCURRENCY = 4;
-const UPDATE_UPLOAD_RETRY_COUNT = 3;
+const UPDATE_UPLOAD_RETRY_COUNT = 7;
 const UPDATE_UPLOAD_RETRY_DELAY_MS = 500;
 
 mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`

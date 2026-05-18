@@ -302,7 +302,6 @@ func HandleApiControllerUpdateUploadInit(w http.ResponseWriter, r *http.Request)
 		Scope:          uploadScopeControllerUpdate,
 		OwnerUser:      authedUser.User,
 		FileName:       strings.TrimSpace(req.Name),
-		Kind:           fileUploadKindFile,
 		TargetPath:     controllerUpdateBinaryPath(),
 		TempDir:        tempDir,
 		StagePath:      stagePath,
@@ -372,6 +371,7 @@ func HandleApiControllerUpdateUploadChunk(w http.ResponseWriter, r *http.Request
 	alreadyReceived := isUploadChunkReceivedLocked(session, index)
 	uploads.mu.RUnlock()
 	if alreadyReceived {
+		drainUploadRequestBody(r.Body)
 		web.WriteOK(w, map[string]bool{"ok": true})
 		return
 	}

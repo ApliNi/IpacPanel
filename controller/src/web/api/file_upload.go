@@ -68,8 +68,6 @@ const (
 
 type uploadSessionStatus string
 
-type fileUploadKind string
-
 type uploadScope string
 
 const (
@@ -80,44 +78,23 @@ const (
 )
 
 const (
-	fileUploadKindFile      fileUploadKind = "file"
-	fileUploadKindDirectory fileUploadKind = "directory"
-)
-
-const (
 	uploadScopeInstanceFile     uploadScope = "instance_file"
 	uploadScopeControllerUpdate uploadScope = "controller_update"
 )
 
-type fileUploadManifestEntry struct {
-	Path       string `json:"path"`
-	IsDir      bool   `json:"is_dir"`
-	Size       int64  `json:"size"`
-	ChunkStart int    `json:"-"`
-	ChunkCount int    `json:"-"`
-}
-
 type uploadChunkPlan struct {
-	Index        int
-	RelativePath string
-	Offset       int64
-	Size         int64
+	Index  int
+	Offset int64
+	Size   int64
 }
-
-var (
-	errUploadDirectoryFileConflict = errors.New(msg.UploadDirectoryConflictsWithFile)
-	errUploadFileDirectoryConflict = errors.New(msg.UploadFileConflictsWithDirectory)
-)
 
 type fileUploadInitRequest struct {
-	Path       string                    `json:"path"`
-	Name       string                    `json:"name"`
-	Size       int64                     `json:"size"`
-	ChunkSize  int64                     `json:"chunk_size"`
-	ChunkCount int                       `json:"chunk_count"`
-	Overwrite  bool                      `json:"overwrite"`
-	Kind       string                    `json:"kind"`
-	Manifest   []fileUploadManifestEntry `json:"manifest"`
+	Path       string `json:"path"`
+	Name       string `json:"name"`
+	Size       int64  `json:"size"`
+	ChunkSize  int64  `json:"chunk_size"`
+	ChunkCount int    `json:"chunk_count"`
+	Overwrite  bool   `json:"overwrite"`
 }
 
 type fileUploadInitResponse struct {
@@ -139,8 +116,6 @@ type fileUploadSession struct {
 	InstanceName    string
 	DirPath         string
 	FileName        string
-	Kind            fileUploadKind
-	Manifest        []fileUploadManifestEntry
 	TargetPath      string
 	TempDir         string
 	StagePath       string
@@ -223,6 +198,14 @@ func newUploadedChunkBitset(chunkCount int) []uint64 {
 	return make([]uint64, words)
 }
 
+func newUploadItemBitset(itemCount int) []uint64 {
+	if itemCount <= 0 {
+		return nil
+	}
+	words := (itemCount + 63) / 64
+	return make([]uint64, words)
+}
+
 func acquireUploadSession(uploadID string) (*fileUploadSession, bool) {
 	if strings.TrimSpace(uploadID) == "" {
 		return nil, false
@@ -286,21 +269,7 @@ func uploadStagePath(session *fileUploadSession, plan uploadChunkPlan) (string, 
 	if stageRoot == "" {
 		return "", errors.New(msg.UploadTempDirMissing)
 	}
-	if session.Kind != fileUploadKindDirectory {
-		return stageRoot, nil
-	}
-	if err := os.MkdirAll(stageRoot, 0755); err != nil {
-		return "", err
-	}
-	relPath, err := ensureUploadRelativePath(plan.RelativePath)
-	if err != nil {
-		return "", err
-	}
-	path := filepath.Join(stageRoot, filepath.FromSlash(relPath))
-	if err := ensurePathComponentsWithinRoot(stageRoot, path, false); err != nil {
-		return "", err
-	}
-	return path, nil
+	return stageRoot, nil
 }
 
 func writeUploadChunkToStage(session *fileUploadSession, plan uploadChunkPlan, src io.Reader) error {
@@ -340,14 +309,18 @@ func writeUploadChunkToStage(session *fileUploadSession, plan uploadChunkPlan, s
 			return readErr
 		}
 	}
-	if err := out.Sync(); err != nil {
-		return err
-	}
 	if err := out.Close(); err != nil {
 		return err
 	}
 	closed = true
 	return nil
+}
+
+func drainUploadRequestBody(src io.Reader) {
+	if src == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, src)
 }
 
 func syncUploadStageFile(stagePath string, expectedSize int64) error {
@@ -747,206 +720,6 @@ func writeUploadCompleteSuccess(w http.ResponseWriter, sp *process.InstanceProce
 	})
 }
 
-func syncDirectoryTree(root string) error {
-	root = strings.TrimSpace(root)
-	if root == "" {
-		return errors.New(msg.EmptyDest)
-	}
-	return filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.IsDir() {
-			return file.SyncDir(path)
-		}
-		return nil
-	})
-}
-
-func ensureDirectoryUploadStage(rootPath string, session *fileUploadSession) (string, error) {
-	if session == nil {
-		return "", errors.New(msg.UploadSessionRequired)
-	}
-	stageRoot := strings.TrimSpace(session.StagePath)
-	if stageRoot == "" {
-		stageRoot = filepath.Join(session.TempDir, "stage", session.FileName)
-	}
-	if err := os.MkdirAll(stageRoot, 0755); err != nil {
-		return "", err
-	}
-	if err := ensurePathComponentsWithinRoot(rootPath, stageRoot, true); err != nil {
-		return "", err
-	}
-	for _, entry := range session.Manifest {
-		entryPath := filepath.Join(stageRoot, filepath.FromSlash(entry.Path))
-		if err := ensurePathComponentsWithinRoot(stageRoot, entryPath, true); err != nil {
-			return "", err
-		}
-		if entry.IsDir {
-			if err := os.MkdirAll(entryPath, 0755); err != nil {
-				return "", err
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(entryPath), 0755); err != nil {
-			return "", err
-		}
-	}
-	return stageRoot, nil
-}
-
-func syncDirectoryUploadStage(_ string, session *fileUploadSession, stageRoot string) error {
-	for _, entry := range session.Manifest {
-		entryPath := filepath.Join(stageRoot, filepath.FromSlash(entry.Path))
-		if err := ensurePathComponentsWithinRoot(stageRoot, entryPath, true); err != nil {
-			return err
-		}
-		if entry.IsDir {
-			if err := os.MkdirAll(entryPath, 0755); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := syncUploadStageFile(entryPath, entry.Size); err != nil {
-			return err
-		}
-	}
-	return syncDirectoryTree(stageRoot)
-}
-
-func assembleDirectoryUploadStage(rootPath string, session *fileUploadSession, stageRoot string) error {
-	return syncDirectoryUploadStage(rootPath, session, stageRoot)
-}
-
-func directoryUploadTargetPath(session *fileUploadSession, entry fileUploadManifestEntry) (string, error) {
-	if session == nil {
-		return "", errors.New(msg.UploadSessionRequired)
-	}
-	relPath, err := ensureUploadRelativePath(entry.Path)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(session.TargetPath, filepath.FromSlash(relPath)), nil
-}
-
-func ensureDirectoryUploadRoot(rootPath string, session *fileUploadSession) error {
-	if session == nil {
-		return errors.New(msg.UploadSessionRequired)
-	}
-	if err := ensurePathComponentsWithinRoot(rootPath, session.TargetPath, false); err != nil {
-		return err
-	}
-	if info, err := os.Lstat(session.TargetPath); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return errors.New(msg.PathOutsideInstanceRoot)
-		}
-		if !info.IsDir() {
-			return errUploadDirectoryFileConflict
-		}
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := os.MkdirAll(session.TargetPath, 0755); err != nil {
-		return err
-	}
-	return ensurePathComponentsWithinRoot(rootPath, session.TargetPath, true)
-}
-
-func validateDirectoryUploadEntryTarget(rootPath string, session *fileUploadSession, entry fileUploadManifestEntry) error {
-	targetPath, err := directoryUploadTargetPath(session, entry)
-	if err != nil {
-		return err
-	}
-	if err := ensurePathComponentsWithinRoot(rootPath, targetPath, false); err != nil {
-		return err
-	}
-	info, err := os.Lstat(targetPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return errors.New(msg.PathOutsideInstanceRoot)
-	}
-	if entry.IsDir {
-		if !info.IsDir() {
-			return errUploadDirectoryFileConflict
-		}
-		return nil
-	}
-	if info.IsDir() {
-		return errUploadFileDirectoryConflict
-	}
-	if !session.Overwrite {
-		return os.ErrExist
-	}
-	return nil
-}
-
-func validateDirectoryUploadMergeTargets(rootPath string, session *fileUploadSession) error {
-	if err := ensureDirectoryUploadRoot(rootPath, session); err != nil {
-		return err
-	}
-	for _, entry := range session.Manifest {
-		if err := validateDirectoryUploadEntryTarget(rootPath, session, entry); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func commitDirectoryUploadFile(rootPath string, session *fileUploadSession, stageRoot string, entry fileUploadManifestEntry) error {
-	targetPath, err := directoryUploadTargetPath(session, entry)
-	if err != nil {
-		return err
-	}
-	if err := validateDirectoryUploadEntryTarget(rootPath, session, entry); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-		return err
-	}
-	if err := ensurePathComponentsWithinRoot(rootPath, targetPath, false); err != nil {
-		return err
-	}
-	stagePath := filepath.Join(stageRoot, filepath.FromSlash(entry.Path))
-	if err := ensurePathComponentsWithinRoot(stageRoot, stagePath, true); err != nil {
-		return err
-	}
-	return file.CopyFile(stagePath, targetPath, file.Options{Overwrite: session.Overwrite, Mode: 0644, SyncDir: true})
-}
-
-func mergeDirectoryUploadStageIntoTarget(rootPath string, session *fileUploadSession, stageRoot string) error {
-	if err := validateDirectoryUploadMergeTargets(rootPath, session); err != nil {
-		return err
-	}
-	for _, entry := range session.Manifest {
-		targetPath, err := directoryUploadTargetPath(session, entry)
-		if err != nil {
-			return err
-		}
-		if entry.IsDir {
-			if err := validateDirectoryUploadEntryTarget(rootPath, session, entry); err != nil {
-				return err
-			}
-			if err := os.MkdirAll(targetPath, 0755); err != nil {
-				return err
-			}
-			if err := ensurePathComponentsWithinRoot(rootPath, targetPath, true); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := commitDirectoryUploadFile(rootPath, session, stageRoot, entry); err != nil {
-			return err
-		}
-	}
-	return file.SyncDir(session.TargetPath)
-}
-
 func getInstanceFileTargetPath(sp *process.InstanceProcess, dirPath string, fileName string) (string, string, error) {
 	rootPath, relativePath, err := resolveInstanceFilePath(sp, dirPath)
 	if err != nil {
@@ -957,16 +730,29 @@ func getInstanceFileTargetPath(sp *process.InstanceProcess, dirPath string, file
 	if relativePath != "" {
 		targetDir = filepath.Join(rootPath, filepath.FromSlash(relativePath))
 	}
-
-	info, err := os.Stat(targetDir)
-	if err != nil {
+	if err := ensurePathComponentsWithinRoot(rootPath, targetDir, false); err != nil {
 		return "", "", err
 	}
-	if !info.IsDir() {
+	if info, err := os.Lstat(targetDir); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", "", errors.New(msg.PathOutsideInstanceRoot)
+		}
+		if !info.IsDir() {
+			return "", "", errors.New(msg.PathNotDirectory)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", "", err
+	}
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return "", "", err
+	}
+	if err := ensurePathComponentsWithinRoot(rootPath, targetDir, true); err != nil {
+		return "", "", err
+	}
+	if info, err := os.Stat(targetDir); err != nil {
+		return "", "", err
+	} else if !info.IsDir() {
 		return "", "", errors.New(msg.PathNotDirectory)
-	}
-	if err := ensureResolvedPathWithinInstanceRoot(sp, targetDir); err != nil {
-		return "", "", err
 	}
 
 	return relativePath, filepath.Join(targetDir, fileName), nil
@@ -995,117 +781,7 @@ func validateUploadPlan(size int64, chunkSize int64, chunkCount int) (int64, int
 	return chunkSize, int(expectedCount), nil
 }
 
-func normalizeUploadKind(kind string) fileUploadKind {
-	switch fileUploadKind(strings.TrimSpace(strings.ToLower(kind))) {
-	case fileUploadKindDirectory:
-		return fileUploadKindDirectory
-	default:
-		return fileUploadKindFile
-	}
-}
-
-func buildUploadDirectoryManifest(entries []fileUploadManifestEntry, chunkSize int64) ([]fileUploadManifestEntry, int64, int, error) {
-	if chunkSize <= 0 || chunkSize > maxUploadChunkSize {
-		return nil, 0, 0, fmt.Errorf("%w: "+msg.InvalidChunkSizeRangeFmt, errors.New(msg.InvalidChunkSize), maxUploadChunkSize)
-	}
-	seen := make(map[string]struct{}, len(entries))
-	manifest := make([]fileUploadManifestEntry, 0, len(entries))
-	totalSize := int64(0)
-	totalChunks := 0
-	for _, entry := range entries {
-		relPath, err := ensureUploadRelativePath(entry.Path)
-		if err != nil {
-			return nil, 0, 0, err
-		}
-		if _, ok := seen[relPath]; ok {
-			return nil, 0, 0, fmt.Errorf(msg.DuplicateUploadPathFmt, relPath)
-		}
-		seen[relPath] = struct{}{}
-		entry.Path = relPath
-		if entry.IsDir {
-			entry.Size = 0
-			entry.ChunkStart = totalChunks
-			entry.ChunkCount = 0
-			manifest = append(manifest, entry)
-			continue
-		}
-		if entry.Size < 0 {
-			return nil, 0, 0, errors.New(msg.InvalidFileSize)
-		}
-		chunks := 0
-		if entry.Size > 0 {
-			chunks64 := (entry.Size + chunkSize - 1) / chunkSize
-			if chunks64 > int64(maxUploadChunkCount) || chunks64 > int64(^uint(0)>>1) {
-				return nil, 0, 0, fmt.Errorf("%w: "+msg.InvalidChunkCountRangeFmt, errors.New(msg.InvalidChunkCount), maxUploadChunkCount)
-			}
-			chunks = int(chunks64)
-		}
-		entry.ChunkStart = totalChunks
-		entry.ChunkCount = chunks
-		totalChunks += chunks
-		if totalChunks > maxUploadChunkCount {
-			return nil, 0, 0, fmt.Errorf("%w: "+msg.InvalidChunkCountRangeFmt, errors.New(msg.InvalidChunkCount), maxUploadChunkCount)
-		}
-		totalSize += entry.Size
-		if totalSize < 0 {
-			return nil, 0, 0, errors.New(msg.InvalidFileSize)
-		}
-		manifest = append(manifest, entry)
-	}
-	// Preserve the client manifest order so chunk indexes match the browser-side file slicing order.
-	totalChunks = 0
-	for i := range manifest {
-		manifest[i].ChunkStart = totalChunks
-		if manifest[i].IsDir || manifest[i].Size == 0 {
-			manifest[i].ChunkCount = 0
-		} else {
-			manifest[i].ChunkCount = int((manifest[i].Size + chunkSize - 1) / chunkSize)
-		}
-		totalChunks += manifest[i].ChunkCount
-	}
-	return manifest, totalSize, totalChunks, nil
-}
-
 func planUploadChunkWrite(session *fileUploadSession, index int) (uploadChunkPlan, error) {
-	if session == nil {
-		return uploadChunkPlan{}, errors.New(msg.UploadSessionRequired)
-	}
-	if index < 0 || index >= session.ChunkCount {
-		return uploadChunkPlan{}, errors.New(msg.InvalidChunkIndex)
-	}
-	if session.ChunkSize <= 0 {
-		return uploadChunkPlan{}, errors.New(msg.InvalidChunkSize)
-	}
-	if session.Size < 0 {
-		return uploadChunkPlan{}, errors.New(msg.InvalidFileSize)
-	}
-
-	if session.Kind == fileUploadKindDirectory {
-		for _, entry := range session.Manifest {
-			if entry.IsDir || entry.ChunkCount <= 0 {
-				continue
-			}
-			if index < entry.ChunkStart || index >= entry.ChunkStart+entry.ChunkCount {
-				continue
-			}
-			localIndex := index - entry.ChunkStart
-			offset := int64(localIndex) * session.ChunkSize
-			if offset > entry.Size {
-				return uploadChunkPlan{}, errors.New(msg.ChunkOffsetOutsideSize)
-			}
-			expectedSize := session.ChunkSize
-			remaining := entry.Size - offset
-			if remaining < expectedSize {
-				expectedSize = remaining
-			}
-			if expectedSize < 0 {
-				return uploadChunkPlan{}, errors.New(msg.InvalidExpectedChunkSz)
-			}
-			return uploadChunkPlan{Index: index, RelativePath: entry.Path, Offset: offset, Size: expectedSize}, nil
-		}
-		return uploadChunkPlan{}, errors.New(msg.InvalidChunkIndex)
-	}
-
 	return planSingleFileUploadChunkWrite(session, index)
 }
 
@@ -1157,31 +833,11 @@ func HandleApiFileUploadInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kind := normalizeUploadKind(req.Kind)
 	normalizedSize := req.Size
-	normalizedChunkSize := req.ChunkSize
-	normalizedChunkCount := req.ChunkCount
-	manifest := []fileUploadManifestEntry(nil)
-	if kind == fileUploadKindDirectory {
-		if normalizedChunkSize <= 0 || normalizedChunkSize > maxUploadChunkSize {
-			web.WriteAPIError(w, http.StatusBadRequest, msg.UploadParamsInvalid, fmt.Errorf("%w: "+msg.InvalidChunkSizeRangeFmt, errors.New(msg.InvalidChunkSize), maxUploadChunkSize))
-			return
-		}
-		manifest, normalizedSize, normalizedChunkCount, err = buildUploadDirectoryManifest(req.Manifest, normalizedChunkSize)
-		if err != nil {
-			web.WriteAPIError(w, http.StatusBadRequest, msg.UploadDirectoryManifestInvalid, err)
-			return
-		}
-		if req.Size != normalizedSize || req.ChunkCount != normalizedChunkCount {
-			web.WriteAPIError(w, http.StatusBadRequest, msg.UploadParamsInvalid, errors.New(msg.ChunkCountMismatch))
-			return
-		}
-	} else {
-		normalizedChunkSize, normalizedChunkCount, err = validateUploadPlan(req.Size, req.ChunkSize, req.ChunkCount)
-		if err != nil {
-			web.WriteAPIError(w, http.StatusBadRequest, msg.UploadParamsInvalid, err)
-			return
-		}
+	normalizedChunkSize, normalizedChunkCount, err := validateUploadPlan(req.Size, req.ChunkSize, req.ChunkCount)
+	if err != nil {
+		web.WriteAPIError(w, http.StatusBadRequest, msg.UploadParamsInvalid, err)
+		return
 	}
 
 	relativePath, targetPath, err := getInstanceFileTargetPath(sp, req.Path, fileName)
@@ -1193,17 +849,12 @@ func HandleApiFileUploadInit(w http.ResponseWriter, r *http.Request) {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
-
 	if info, err := os.Stat(targetPath); err == nil {
-		if kind == fileUploadKindFile && info.IsDir() {
+		if info.IsDir() {
 			web.WriteAPIError(w, http.StatusBadRequest, msg.UploadTargetIsDirectory, nil)
 			return
 		}
-		if kind == fileUploadKindDirectory && !info.IsDir() {
-			web.WriteAPIError(w, http.StatusConflict, msg.UploadDirectoryConflictsWithFile, nil)
-			return
-		}
-		if kind == fileUploadKindFile && !req.Overwrite {
+		if !req.Overwrite {
 			web.WriteAPIError(w, http.StatusConflict, msg.UploadTargetFileAlreadyExists, nil)
 			return
 		}
@@ -1248,9 +899,6 @@ func HandleApiFileUploadInit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stagePath := filepath.Join(tempDir, "upload.stage")
-	if kind == fileUploadKindDirectory {
-		stagePath = filepath.Join(tempDir, "stage", fileName)
-	}
 
 	setUploadSession(&fileUploadSession{
 		UploadID:     uploadID,
@@ -1259,8 +907,6 @@ func HandleApiFileUploadInit(w http.ResponseWriter, r *http.Request) {
 		InstanceName: name,
 		DirPath:      relativePath,
 		FileName:     fileName,
-		Kind:         kind,
-		Manifest:     manifest,
 		TargetPath:   targetPath,
 		TempDir:      tempDir,
 		StagePath:    stagePath,
@@ -1360,6 +1006,7 @@ func HandleApiFileUploadChunk(w http.ResponseWriter, r *http.Request) {
 	alreadyReceived := isUploadChunkReceivedLocked(session, index)
 	uploads.mu.RUnlock()
 	if alreadyReceived {
+		drainUploadRequestBody(r.Body)
 		web.WriteOK(w, map[string]bool{"ok": true})
 		return
 	}
@@ -1392,7 +1039,7 @@ func HandleApiFileUploadChunk(w http.ResponseWriter, r *http.Request) {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.ReadUploadChunkFailed, err)
 		return
 	}
-	// Mark the upload active only after chunk persisted.
+	// Mark the upload active only after chunk data is written to staging.
 	markUploadChunkReceived(session, index)
 
 	web.WriteOK(w, map[string]bool{"ok": true})
@@ -1518,96 +1165,16 @@ func HandleApiFileUploadComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if session.Kind != fileUploadKindDirectory {
-		if err := syncUploadStageFile(session.StagePath, session.Size); err != nil {
-			completionStatus = uploadSessionActive
-			web.WriteAPIError(w, http.StatusInternalServerError, msg.SaveUploadFileFailed, err)
-			return
-		}
+	if err := syncUploadStageFile(session.StagePath, session.Size); err != nil {
+		completionStatus = uploadSessionActive
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.SaveUploadFileFailed, err)
+		return
 	}
 	if isUploadSessionCanceled(session) {
 		writeUploadCanceled(w)
 		return
 	}
 	if isUploadRequestCanceled(r) {
-		return
-	}
-
-	if session.Kind == fileUploadKindDirectory {
-		rootPath, err := getInstanceRootPath(sp)
-		if err != nil {
-			completionStatus = uploadSessionActive
-			web.WriteAPIError(w, http.StatusInternalServerError, msg.FilePathInvalid, err)
-			return
-		}
-		if err := ensurePathComponentsWithinRoot(rootPath, session.TargetPath, false); err != nil {
-			completionStatus = uploadSessionActive
-			web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
-			return
-		}
-		stageRoot, err := ensureDirectoryUploadStage(rootPath, session)
-		if err != nil {
-			completionStatus = uploadSessionActive
-			web.WriteAPIError(w, http.StatusInternalServerError, msg.CreateUploadTempDirFailed, err)
-			return
-		}
-		if err := assembleDirectoryUploadStage(rootPath, session, stageRoot); err != nil {
-			completionStatus = uploadSessionActive
-			web.WriteAPIError(w, http.StatusInternalServerError, msg.SaveUploadDirectoryFailed, err)
-			return
-		}
-		if isUploadSessionCanceled(session) {
-			writeUploadCanceled(w)
-			return
-		}
-		if isUploadRequestCanceled(r) {
-			return
-		}
-		var commitErr error
-		uploads.mu.Lock()
-		current, currentOK := uploads.sessions[session.UploadID]
-		currentActive := currentOK && current == session && !session.CancelRequested && session.Status != uploadSessionCanceled
-		if currentActive {
-			commitErr = mergeDirectoryUploadStageIntoTarget(rootPath, session, stageRoot)
-			if commitErr == nil {
-				session.LastChunkAt = time.Now()
-				session.Status = uploadSessionCommitted
-				delete(uploads.sessions, session.UploadID)
-			}
-		}
-		uploads.mu.Unlock()
-		if !currentActive {
-			completionStatus = uploadSessionCanceled
-			writeUploadCanceled(w)
-			return
-		}
-		if commitErr != nil {
-			if errors.Is(commitErr, os.ErrExist) {
-				completionStatus = uploadSessionActive
-				web.WriteAPIError(w, http.StatusConflict, msg.UploadTargetFileAlreadyExists, nil)
-				return
-			}
-			if errors.Is(commitErr, errUploadDirectoryFileConflict) || errors.Is(commitErr, errUploadFileDirectoryConflict) {
-				completionStatus = uploadSessionActive
-				web.WriteAPIError(w, http.StatusConflict, commitErr.Error(), nil)
-				return
-			}
-			if commitErr.Error() == msg.PathOutsideInstanceRoot {
-				completionStatus = uploadSessionActive
-				web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, commitErr)
-				return
-			}
-			completionStatus = uploadSessionActive
-			log.Printf(msg.MergeUploadDirectoryFailedLogFmt, session.UploadID, session.TargetPath, commitErr)
-			web.WriteAPIError(w, http.StatusInternalServerError, msg.SaveUploadDirectoryFailed, commitErr)
-			return
-		}
-		signalUploadCompletion(session)
-		if session.TempDir != "" {
-			_ = file.RemoveRegisteredTempDir(session.TempDir)
-		}
-		completionStatus = uploadSessionCommitted
-		writeUploadCompleteSuccess(w, sp, session)
 		return
 	}
 
@@ -1630,22 +1197,19 @@ func HandleApiFileUploadComplete(w http.ResponseWriter, r *http.Request) {
 
 	// Chunk data is already persisted in the staging file. Commit the staging file
 	// with an atomic replace/rename so interrupted uploads never expose partial target files.
-	if err := ensureResolvedPathWithinInstanceRoot(sp, filepath.Dir(session.TargetPath)); err != nil {
+	rootPath, err := getInstanceRootPath(sp)
+	if err != nil {
+		completionStatus = uploadSessionActive
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.FilePathInvalid, err)
+		return
+	}
+	if err := ensurePathComponentsWithinRoot(rootPath, filepath.Dir(session.TargetPath), true); err != nil {
 		completionStatus = uploadSessionActive
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
 	if isUploadSessionCanceled(session) {
 		writeUploadCanceled(w)
-		return
-	}
-	if isUploadRequestCanceled(r) {
-		return
-	}
-	rootPath, err := getInstanceRootPath(sp)
-	if err != nil {
-		completionStatus = uploadSessionActive
-		web.WriteAPIError(w, http.StatusInternalServerError, msg.FilePathInvalid, err)
 		return
 	}
 	if isUploadRequestCanceled(r) {

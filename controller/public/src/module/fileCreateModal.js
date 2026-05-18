@@ -163,9 +163,9 @@ const modalState = {
     fileUploadActiveContexts: new Map(),
     fileUploadAbortControllers: new Map(),
     fileUploadRunToken: 0,
-    fileUploadChunkSize: 10 * 1024 * 1024,
+    fileUploadChunkSize: 9 * 1024 * 1024,
     fileUploadConcurrency: 4,
-    fileUploadChunkRetryCount: 3,
+    fileUploadChunkRetryCount: 7,
     fileUploadChunkRetryDelay: 500,
     onApplyFileList: null,
     onRequestReload: null,
@@ -769,35 +769,34 @@ const createDirectoryUploadItem = (name, pickedFiles, pickedDirs, index) => {
 	const files = Array.from(pickedFiles || [])
 		.map((entry) => ({
 			file: entry.file,
-			path: getUploadPathWithoutRoot(entry.relativePath || entry.file?.name || ''),
+			path: normalizeUploadRelativePath(entry.relativePath || entry.file?.name || ''),
 		}))
 		.filter((entry) => entry.file && entry.path)
 		.sort((a, b) => compareUploadPath(a.path, b.path));
-	const dirSet = new Set(Array.from(pickedDirs || [])
-		.map((path) => getUploadPathWithoutRoot(path))
-		.filter(Boolean));
-	files.forEach((entry) => {
-		const parts = getUploadPathParts(entry.path);
-		for (let i = 1; i < parts.length; i += 1) {
-			dirSet.add(parts.slice(0, i).join('/'));
-		}
+	const items = files.map((entry, fileIndex) => createPlainUploadItem(entry.file, `${index}-${fileIndex}`));
+	items.forEach((item, fileIndex) => {
+		const relativePath = files[fileIndex]?.path || item.name;
+		const parts = getUploadPathParts(relativePath);
+		item.path = parts.slice(0, -1).join('/');
+		item.name = parts[parts.length - 1] || item.name;
 	});
-	const manifest = [
-		...Array.from(dirSet).sort().map((path) => ({ path, is_dir: true, size: 0 })),
-		...files.map((entry) => ({ path: entry.path, is_dir: false, size: entry.file.size })),
-	];
-	return {
-		id: `${Date.now()}-${index}-${name}`,
-		kind: 'directory',
-		name,
-		files,
-		manifest,
-		size: files.reduce((sum, entry) => sum + (entry.file?.size || 0), 0),
-		loaded: 0,
-		progress: 0,
-		status: 'WAITING',
-		errorMessage: '',
-	};
+	const emptyDirs = Array.from(pickedDirs || [])
+		.map((path) => normalizeUploadRelativePath(path))
+		.filter(Boolean)
+		.filter((path) => !files.some((entry) => entry.path === path || entry.path.startsWith(`${path}/`)));
+	emptyDirs.forEach((path, dirIndex) => {
+		items.push({
+			id: `${Date.now()}-${index}-dir-${dirIndex}-${path}`,
+			kind: 'empty-directory',
+			name: path,
+			size: 0,
+			loaded: 0,
+			progress: 0,
+			status: 'WAITING',
+			errorMessage: '',
+		});
+	});
+	return items;
 };
 
 const buildUploadItemsFromPickedEntries = (entries, dirs = []) => {
@@ -848,7 +847,7 @@ const buildUploadItemsFromPickedEntries = (entries, dirs = []) => {
 			groups.set(key, { type: 'directory', name: rootName, files: [], dirs: [] });
 		}
 	});
-	return Array.from(groups.values()).map((group, index) => {
+	return Array.from(groups.values()).flatMap((group, index) => {
 		if (group.type === 'file') {
 			return createPlainUploadItem(group.file, index);
 		}
@@ -1033,22 +1032,17 @@ const uploadFileChunkWithRetry = async (instanceName, uploadId, index, chunk, on
 
 const initFileUploadContext = async (instanceName, currentPath, item, overwrite, options = {}) => {
 	const runToken = Number(options.runToken) || modalState.fileUploadRunToken;
-	const isDirectory = item.kind === 'directory';
-	const file = isDirectory ? null : item.file;
-	const uploadSize = isDirectory ? (item.size || 0) : file.size;
+	const file = item.file;
+	const uploadSize = file.size;
 	const chunkSize = uploadSize > modalState.fileUploadChunkSize ? modalState.fileUploadChunkSize : Math.max(uploadSize, 1);
-	const chunkCount = isDirectory
-		? (item.files || []).reduce((sum, entry) => sum + Math.max(0, Math.ceil((entry.file?.size || 0) / chunkSize)), 0)
-		: Math.max(1, Math.ceil(file.size / modalState.fileUploadChunkSize));
+	const chunkCount = Math.max(1, Math.ceil(file.size / chunkSize));
 	const initResult = await initFileUpload(instanceName, {
-		path: currentPath,
+		path: [currentPath, item.path].filter(Boolean).join('/'),
 		name: item.name,
 		size: uploadSize,
 		chunk_size: chunkSize,
 		chunk_count: chunkCount,
 		overwrite,
-		kind: isDirectory ? 'directory' : 'file',
-		manifest: isDirectory ? item.manifest : undefined,
 	});
 	if (!initResult?.upload_id) {
 		throw new Error('UPLOAD INIT FAILED');
@@ -1058,8 +1052,6 @@ const initFileUploadContext = async (instanceName, currentPath, item, overwrite,
 	const ctx = {
 		item,
 		file,
-		files: isDirectory ? (item.files || []) : [{ file, path: file.name }],
-		isDirectory,
 		instanceName,
 		runToken,
 		uploadId: initResult.upload_id,
@@ -1100,20 +1092,8 @@ const initFileUploadContext = async (instanceName, currentPath, item, overwrite,
 		if (ctx.failed || ctx.removed) {
 			return;
 		}
-		let chunkFile = ctx.file;
-		let localIndex = index;
-		if (ctx.isDirectory) {
-			let cursor = 0;
-			for (const entry of ctx.files) {
-				const count = Math.max(0, Math.ceil((entry.file?.size || 0) / ctx.chunkSize));
-				if (index < cursor + count) {
-					chunkFile = entry.file;
-					localIndex = index - cursor;
-					break;
-				}
-				cursor += count;
-			}
-		}
+		const chunkFile = ctx.file;
+		const localIndex = index;
 		if (!chunkFile) {
 			throw new Error(`Chunk ${index} source missing`);
 		}
@@ -1390,6 +1370,13 @@ const uploadSelectedFiles = async (overwrite) => {
 					continue;
 				}
 				try {
+					if (item.kind === 'empty-directory') {
+						await createDirectory(instanceName, currentPath, item.name);
+						hasFinished = true;
+						hasSuccess = true;
+						updateUploadItemProgress(item, 0, 'DONE');
+						continue;
+					}
 					const ctx = await initFileUploadContext(instanceName, currentPath, item, overwrite, { runToken });
 					if (!ctx || ctx.failed || ctx.removed || isUploadItemCanceled(item, runToken)) {
 						if (ctx && !ctx.completed) {

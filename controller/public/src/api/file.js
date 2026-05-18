@@ -33,9 +33,9 @@ const postFileActionSilent = async (url, payload) => {
 };
 
 const TEXT_UPLOAD_THRESHOLD_BYTES = 9 * 1024 * 1024;
-const TEXT_UPLOAD_CHUNK_SIZE_BYTES = 4 * 1024 * 1024;
+const TEXT_UPLOAD_CHUNK_SIZE_BYTES = 9 * 1024 * 1024;
 const TEXT_UPLOAD_CONCURRENCY = 4;
-const TEXT_UPLOAD_RETRY_COUNT = 3;
+const TEXT_UPLOAD_RETRY_COUNT = 7;
 const TEXT_UPLOAD_RETRY_DELAY_MS = 500;
 
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -91,7 +91,6 @@ const uploadTextBlobAsFile = async (instanceName, dirPath, fileName, blob, overw
 			chunk_size: chunkSize,
 			chunk_count: chunkCount,
 			overwrite: !!overwrite,
-			kind: 'file',
 		});
 		const uploadId = initResult && typeof initResult === 'object' ? initResult.upload_id : '';
 		if (!uploadId) {
