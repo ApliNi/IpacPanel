@@ -14,7 +14,9 @@
 
 这里是 IpacEL 服务器使用的终端程序管理面板, 用于实现特殊需求和解决现有面板软件的不足.
 
-> 交流和技术支持: `QQ: 185-979-632`
+> 暂不推荐将此面板用于生产环境.
+
+> 用户文档: [./doc/user_docs](https://github.com/ApliNi/IpacPanel/tree/main/doc/user_docs)
 
 
 ## 设计目标
@@ -269,7 +271,5 @@ go run ./build.go
 
 通常您可以直接通过 Issues 报告错误, 但如果发现严重漏洞, 请通过邮件与我联系: `aplini@ipacel.cc`.
 
-
----
-
+> 交流和技术支持: `QQ: 185-979-632`
 
