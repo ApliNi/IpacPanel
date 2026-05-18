@@ -1503,8 +1503,7 @@ textarea {
 
 .file-create-recent-item:hover code,
 .file-create-recent-item:focus-visible code {
-	background: rgba(255, 204, 0, 0.18);
-	outline: 1px solid rgba(255, 204, 0, 0.35);
+	filter: brightness(115%);
 }
 
 .file-upload-list {
@@ -2077,10 +2076,10 @@ table > thead > tr > th {
 :not(pre) > code {
 	background: rgba(255, 204, 0, 0.1);
 	color: #ffcc00;
-	padding: 0 6px;
+	padding: 3px 6px;
 	border-radius: 2px;
 	font-size: 0.95em;
-	line-height: 1.5;
+	line-height: 1;
 	user-select: all;
 }
 
