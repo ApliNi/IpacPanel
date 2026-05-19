@@ -7,10 +7,16 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"github.com/creack/pty"
 	"github.com/kballard/go-shellquote"
+)
+
+const (
+	defaultPTYCols uint16 = 80
+	defaultPTYRows uint16 = 24
 )
 
 type Proxy struct {
@@ -26,10 +32,13 @@ type Proxy struct {
 	killCalled   bool
 }
 
-func Start(path string, command string, usePTY bool, inputEncoding string, outputEncoding string) (*Proxy, error) {
+func Start(path string, command string, usePTY bool, inputEncoding string, outputEncoding string, cols uint16, rows uint16) (*Proxy, error) {
 	cmd, err := buildUnixCommand(path, command)
 	if err != nil {
 		return nil, err
+	}
+	if usePTY {
+		ensureDefaultTerminalEnv(&cmd.Env)
 	}
 	if _, ok := NormalizeTerminalEncoding(inputEncoding); !ok {
 		return nil, errors.New("terminal encoding is invalid")
@@ -41,7 +50,8 @@ func Start(path string, command string, usePTY bool, inputEncoding string, outpu
 	outputEncoding, _ = NormalizeTerminalEncoding(outputEncoding)
 	var proxy *Proxy
 	if usePTY {
-		proxy, err = startUnixPTY(cmd)
+		cols, rows = normalizePTYSize(cols, rows)
+		proxy, err = startUnixPTY(cmd, cols, rows)
 	} else {
 		proxy, err = startUnixPipe(cmd)
 	}
@@ -51,6 +61,40 @@ func Start(path string, command string, usePTY bool, inputEncoding string, outpu
 	proxy.outputReader = newEncodingAwareReader(proxy.readCloser, outputEncoding)
 	proxy.inputWriter = newEncodingAwareWriter(proxy.writeCloser, inputEncoding)
 	return proxy, nil
+}
+
+func ensureDefaultTerminalEnv(env *[]string) {
+	values := *env
+	if values == nil {
+		values = os.Environ()
+	}
+	values = appendEnvIfMissing(values, "TERM", "xterm-256color", false)
+	values = appendEnvIfMissing(values, "LANG", "C.UTF-8", false)
+	values = appendEnvIfMissing(values, "LC_CTYPE", "C.UTF-8", false)
+	*env = values
+}
+
+func appendEnvIfMissing(env []string, key string, value string, caseInsensitive bool) []string {
+	for _, item := range env {
+		name, _, ok := strings.Cut(item, "=")
+		if !ok {
+			continue
+		}
+		if name == key || (caseInsensitive && strings.EqualFold(name, key)) {
+			return env
+		}
+	}
+	return append(env, key+"="+value)
+}
+
+func normalizePTYSize(cols uint16, rows uint16) (uint16, uint16) {
+	if cols == 0 {
+		cols = defaultPTYCols
+	}
+	if rows == 0 {
+		rows = defaultPTYRows
+	}
+	return cols, rows
 }
 
 func buildUnixCommand(path string, command string) (*exec.Cmd, error) {
@@ -77,8 +121,8 @@ func BuildCommand(path string, command string) (*exec.Cmd, error) {
 	return buildUnixCommand(path, command)
 }
 
-func startUnixPTY(cmd *exec.Cmd) (*Proxy, error) {
-	f, err := pty.Start(cmd)
+func startUnixPTY(cmd *exec.Cmd, cols uint16, rows uint16) (*Proxy, error) {
+	f, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: cols, Rows: rows})
 	if err != nil {
 		return nil, err
 	}
@@ -164,11 +208,12 @@ func (p *Proxy) UpdateEncoding(inputEncoding string, outputEncoding string) erro
 	return nil
 }
 
-func (p *Proxy) Resize(cols, rows uint16) {
+func (p *Proxy) Resize(cols, rows uint16) error {
 	if p.ptyFile == nil {
-		return
+		return nil
 	}
-	_ = pty.Setsize(p.ptyFile, &pty.Winsize{Cols: cols, Rows: rows})
+	cols, rows = normalizePTYSize(cols, rows)
+	return pty.Setsize(p.ptyFile, &pty.Winsize{Cols: cols, Rows: rows})
 }
 
 func (p *Proxy) PID() int {

@@ -486,7 +486,11 @@ func (s *IPCServer) handleResizeTerminal(req *IPCRequest) *IPCResponse {
 		resp := NewIPCResponse("instance_error", req.Instance, nil, "instance not found")
 		return &resp
 	}
-	ins.ResizeTerminal(req.Cols, req.Rows)
+	if err := ins.ResizeTerminal(req.Cols, req.Rows); err != nil {
+		log.Printf("resize instance %s terminal failed: %v", req.Instance, err)
+		resp := NewIPCResponse("instance_error", req.Instance, nil, err.Error())
+		return &resp
+	}
 	resp := NewIPCResponse("ok", req.Instance, nil, "")
 	return &resp
 }

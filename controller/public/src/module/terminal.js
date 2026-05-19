@@ -98,6 +98,8 @@ const cardState = {
 	isBound: false,
 	ctrlCConfirming: false,
 	resizeHandler: null,
+	resizeObserver: null,
+	resizeObserverFrame: null,
 };
 
 const TERMINAL_RESIZE_PROTECTION_DURATION_MS = 1000;
@@ -377,12 +379,41 @@ const resetResizeSyncState = () => {
 	cardState.lastResizeRows = null;
 };
 
-const sendResize = () => {
+const disconnectTerminalResizeObserver = () => {
+	if (cardState.resizeObserverFrame) {
+		cancelAnimationFrame(cardState.resizeObserverFrame);
+		cardState.resizeObserverFrame = null;
+	}
+	if (!cardState.resizeObserver) {
+		return;
+	}
+	cardState.resizeObserver.disconnect();
+	cardState.resizeObserver = null;
+};
+
+const observeTerminalResize = () => {
+	disconnectTerminalResizeObserver();
+	if (typeof ResizeObserver !== 'function' || !dom.terminalWrapper) {
+		return;
+	}
+	cardState.resizeObserver = new ResizeObserver(() => {
+		if (cardState.resizeObserverFrame) {
+			return;
+		}
+		cardState.resizeObserverFrame = requestAnimationFrame(() => {
+			cardState.resizeObserverFrame = null;
+			syncTerminalSizeAfterFit();
+		});
+	});
+	cardState.resizeObserver.observe(dom.terminalWrapper);
+};
+
+const sendResize = (force = false) => {
     if (!cardState.term || !hasActiveTerminal()) return;
 
     const cols = cardState.term.cols;
     const rows = cardState.term.rows;
-    if (cols === cardState.lastResizeCols && rows === cardState.lastResizeRows) {
+    if (!force && cols === cardState.lastResizeCols && rows === cardState.lastResizeRows) {
         return;
     }
 
@@ -407,10 +438,12 @@ const closeTerminalSocket = () => {
 const disposeTerminalRuntime = () => {
 	cardState.resizeTimer = clearTimer(cardState.resizeTimer);
 	clearResizeProtection();
+	resetResizeSyncState();
 	if (cardState.resizeHandler) {
 		window.removeEventListener('resize', cardState.resizeHandler);
 		cardState.resizeHandler = null;
 	}
+	disconnectTerminalResizeObserver();
 	if (cardState.term) {
 		cardState.term.reset();
 		cardState.term.dispose();
@@ -443,10 +476,11 @@ const initTerminal = (historySize) => {
 
 	console.log('[控制台页] 正在初始化 xterm.js 实例...');
 	const { TerminalCtor, FitAddonCtor } = getTerminalRuntime();
+	const plainPipeMode = isPlainPipeMode();
 
 	cardState.term = new TerminalCtor({
-		// Linux 程序通常只输出 LF, 需要让 xterm 将 LF 转为 CRLF 才能回到行首.
-		convertEol: true,
+		// 普通 TERMINAL 管道只输出 LF, 需要让 xterm 转为 CRLF; PTY_TERMINAL 由伪终端处理换行.
+		convertEol: plainPipeMode,
 		cursorBlink: true,
 		fontFamily: `"JetBrains Mono", "JetBrains Maple Mono Medium"`,
 		fontSize: 12,
@@ -488,7 +522,8 @@ const initTerminal = (historySize) => {
 	cardState.resizeHandler = () => {
 		syncTerminalSizeAfterFit();
 	};
-	    window.addEventListener('resize', cardState.resizeHandler);
+	window.addEventListener('resize', cardState.resizeHandler);
+	observeTerminalResize();
 
 	cardState.term.attachCustomKeyEventHandler((arg) => {
 		if (arg.ctrlKey && arg.code === 'KeyC' && arg.type === 'keydown') {
@@ -557,7 +592,7 @@ const connectWebSocket = (svc, options = {}) => {
 			cardState.wsDisconnectCount = 0;
 			cardState.wsReconnectAttempt = 0;
 			updateStatusDisplay(getCurrentSvc() || svc);
-			sendResize();
+			sendResize(true);
 		},
 		onMessage: (event) => {
 			if (state.currentInstanceName !== instanceName) {

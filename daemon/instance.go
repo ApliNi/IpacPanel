@@ -63,6 +63,8 @@ type DaemonInstance struct {
 	Terminal       int
 	InputEnc       string
 	OutputEnc      string
+	Cols           uint16
+	Rows           uint16
 	State          instanceState
 	Runtime        InstanceRuntimeState
 	Proxy          *terminal.Proxy
@@ -184,6 +186,8 @@ func (m *InstanceManager) prepareInstanceForStartLocked(req *IPCRequest) *Daemon
 	ins.Terminal = NormalizeTerminalMode(req.Terminal)
 	ins.InputEnc = req.InputEnc
 	ins.OutputEnc = req.OutputEnc
+	ins.Cols = req.Cols
+	ins.Rows = req.Rows
 	if ins.Runtime.InstanceName == "" {
 		ins.Runtime.InstanceName = req.Instance
 	}
@@ -254,7 +258,7 @@ func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse) error {
 			pid = cmd.Process.Pid
 		}
 	} else {
-		proxy, err = terminal.Start(resolvedPath, ins.Command, IsPTYTerminal(ins.Terminal), ins.InputEnc, ins.OutputEnc)
+		proxy, err = terminal.Start(resolvedPath, ins.Command, IsPTYTerminal(ins.Terminal), ins.InputEnc, ins.OutputEnc, ins.Cols, ins.Rows)
 		if err != nil {
 			return fmt.Errorf("start instance: %w", err)
 		}
@@ -430,12 +434,16 @@ func (ins *DaemonInstance) WriteStdin(data []byte) error {
 	return err
 }
 
-func (ins *DaemonInstance) ResizeTerminal(cols, rows uint16) {
+func (ins *DaemonInstance) ResizeTerminal(cols, rows uint16) error {
 	ins.Mu.Lock()
 	defer ins.Mu.Unlock()
-	if ins.Proxy != nil && !IsNoTerminal(ins.Terminal) {
-		ins.Proxy.Resize(cols, rows)
+	if ins.Proxy == nil || IsNoTerminal(ins.Terminal) {
+		return nil
 	}
+	if err := ins.Proxy.Resize(cols, rows); err != nil {
+		return fmt.Errorf("resize terminal: %w", err)
+	}
+	return nil
 }
 
 func (ins *DaemonInstance) readOutput(proxy *terminal.Proxy, proxySeq uint64, runtimeID string, done chan struct{}) {

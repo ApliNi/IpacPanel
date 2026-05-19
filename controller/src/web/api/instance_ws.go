@@ -138,7 +138,9 @@ func HandleApiInstanceWs(w http.ResponseWriter, r *http.Request) {
 
 		switch controlType {
 		case "resize":
-			sp.ResizeTerminal(termMsg.Cols, termMsg.Rows)
+			if err := sp.ResizeTerminal(termMsg.Cols, termMsg.Rows); err != nil {
+				log.Printf("route_kind=ws action=resize error=%q detail=%q", "resize terminal failed", err.Error())
+			}
 			continue
 		case "input":
 			decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(termMsg.Data))

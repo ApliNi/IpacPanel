@@ -595,6 +595,9 @@ func (sp *InstanceProcess) AddClientWithHistoryLocked(client *WSClient) []byte {
 		return nil
 	}
 	historyCopy, cursor := sp.History.Snapshot()
+	if cfg.IsPTYTerminal(sp.activeTerminalLocked()) {
+		historyCopy = nil
+	}
 	client.Instance = sp
 	client.TerminalCursor = cursor
 	client.TerminalReady.Store(false)
@@ -607,6 +610,9 @@ func (sp *InstanceProcess) AddClientTerminalInitialLocked(client *WSClient, rese
 		return TerminalInitialMessage{Reset: append([]byte(nil), reset...)}
 	}
 	historyCopy, cursor := sp.History.Snapshot()
+	if cfg.IsPTYTerminal(sp.activeTerminalLocked()) {
+		historyCopy = nil
+	}
 	client.Instance = sp
 	client.TerminalCursor = cursor
 	client.TerminalReady.Store(false)
@@ -808,7 +814,7 @@ func (sp *InstanceProcess) prepareStart(reserved *startReservation) (*preparedSt
 	if !canStart {
 		return nil, errors.New(msg.InstanceUpdateCanceled)
 	}
-	state, err := startDaemonInstance(reserved.ins.Name, reserved.ins.Command, reserved.ins.CleanupCommand, resolvedPath, reserved.ins.Terminal, reserved.ins.InputEncoding, reserved.ins.OutputEncoding)
+	state, err := startDaemonInstance(reserved.ins.Name, reserved.ins.Command, reserved.ins.CleanupCommand, resolvedPath, reserved.ins.Terminal, reserved.ins.InputEncoding, reserved.ins.OutputEncoding, reserved.cols, reserved.rows)
 	if err != nil {
 		return nil, err
 	}
@@ -837,9 +843,6 @@ func (sp *InstanceProcess) commitPreparedStartLocked(reserved *startReservation,
 	}
 	sp.ActiveTerminalMode = cfg.NormalizeTerminalMode(reserved.ins.Terminal)
 	proxySeq := sp.setProcessStartedLocked(prepared.startTime, restartCount)
-	if !cfg.IsNoTerminal(sp.ActiveTerminalMode) && reserved.cols > 0 && reserved.rows > 0 {
-		_ = resizeDaemonInstanceTerminal(reserved.ins.Name, reserved.cols, reserved.rows)
-	}
 	if cfg.IsPTYTerminal(reserved.ins.Terminal) {
 		sp.TerminalStartupProtecting = true
 		sp.TerminalStartupPendingEscape = nil
@@ -1356,18 +1359,24 @@ func (sp *InstanceProcess) SendInput(data []byte) error {
 	return writeDaemonInstanceStdin(instanceName, data)
 }
 
-func (sp *InstanceProcess) ResizeTerminal(cols uint16, rows uint16) {
+func (sp *InstanceProcess) ResizeTerminal(cols uint16, rows uint16) error {
 	if sp == nil {
-		return
+		return nil
+	}
+	if cols == 0 || rows == 0 {
+		return fmt.Errorf("invalid terminal size: cols=%d rows=%d", cols, rows)
 	}
 	sp.Mu.Lock()
 	sp.Cols = cols
 	sp.Rows = rows
 	if !sp.Running || cfg.IsNoTerminal(sp.activeTerminalLocked()) {
 		sp.Mu.Unlock()
-		return
+		return nil
 	}
 	instanceName := sp.InstanceSnapshotLocked().Name
 	sp.Mu.Unlock()
-	_ = resizeDaemonInstanceTerminal(instanceName, cols, rows)
+	if err := resizeDaemonInstanceTerminal(instanceName, cols, rows); err != nil {
+		return fmt.Errorf("resize instance terminal: %w", err)
+	}
+	return nil
 }

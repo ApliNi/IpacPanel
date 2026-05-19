@@ -498,8 +498,8 @@ func RenameDaemonInstance(oldName string, newName string) error {
 	return err
 }
 
-func startDaemonInstance(insName string, command string, cleanupCommand string, path string, terminal int, inputEnc string, outputEnc string) (*DaemonRuntimeState, error) {
-	resp, err := daemonRequest(daemonIPCRequest{Type: "start_instance", Instance: insName, Command: command, CleanupCommand: cleanupCommand, Path: path, Terminal: terminal, InputEnc: inputEnc, OutputEnc: outputEnc})
+func startDaemonInstance(insName string, command string, cleanupCommand string, path string, terminal int, inputEnc string, outputEnc string, cols uint16, rows uint16) (*DaemonRuntimeState, error) {
+	resp, err := daemonRequest(daemonIPCRequest{Type: "start_instance", Instance: insName, Command: command, CleanupCommand: cleanupCommand, Path: path, Terminal: terminal, InputEnc: inputEnc, OutputEnc: outputEnc, Cols: cols, Rows: rows})
 	if err != nil {
 		return nil, err
 	}

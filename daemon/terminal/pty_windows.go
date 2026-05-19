@@ -50,6 +50,11 @@ type Proxy struct {
 const windowsPTYWaitFallbackTimeout = 5 * time.Second
 const windowsPTYReadClosedWaitTimeout = 2 * time.Second
 
+const (
+	defaultPTYCols uint16 = 80
+	defaultPTYRows uint16 = 24
+)
+
 type windowsPTYWaitResult struct {
 	err error
 }
@@ -203,7 +208,7 @@ func windowsCommandLine(args []string) string {
 	return strings.Join(parts, " ")
 }
 
-func Start(path string, command string, usePTY bool, inputEncoding string, outputEncoding string) (*Proxy, error) {
+func Start(path string, command string, usePTY bool, inputEncoding string, outputEncoding string, cols uint16, rows uint16) (*Proxy, error) {
 	if _, ok := NormalizeTerminalEncoding(inputEncoding); !ok {
 		return nil, errors.New("terminal encoding is invalid")
 	}
@@ -215,7 +220,7 @@ func Start(path string, command string, usePTY bool, inputEncoding string, outpu
 	var proxy *Proxy
 	var err error
 	if usePTY {
-		proxy, err = startWindowsPTY(path, command)
+		proxy, err = startWindowsPTY(path, command, cols, rows)
 	} else {
 		proxy, err = startWindowsPipe(path, command)
 	}
@@ -236,13 +241,16 @@ func Start(path string, command string, usePTY bool, inputEncoding string, outpu
 	return proxy, nil
 }
 
-func startWindowsPTY(path string, command string) (*Proxy, error) {
+func startWindowsPTY(path string, command string, cols uint16, rows uint16) (*Proxy, error) {
 	cmd, err := buildWindowsCommand(path, command)
 	if err != nil {
 		return nil, err
 	}
 
-	options := make([]conpty.ConPtyOption, 0, 1)
+	cols, rows = normalizePTYSize(cols, rows)
+	options := make([]conpty.ConPtyOption, 0, 3)
+	options = append(options, conpty.ConPtyDimensions(int(cols), int(rows)))
+	options = append(options, conpty.ConPtyEnv(defaultTerminalEnv(os.Environ(), true)))
 	if path = normalizeWindowsPath(path); path != "" {
 		options = append(options, conpty.ConPtyWorkDir(path))
 	}
@@ -253,6 +261,37 @@ func startWindowsPTY(path string, command string) (*Proxy, error) {
 	}
 
 	return newWindowsProxy(&Proxy{pty: cpty}), nil
+}
+
+func defaultTerminalEnv(env []string, caseInsensitive bool) []string {
+	values := append([]string(nil), env...)
+	values = appendEnvIfMissing(values, "TERM", "xterm-256color", caseInsensitive)
+	values = appendEnvIfMissing(values, "LANG", "C.UTF-8", caseInsensitive)
+	values = appendEnvIfMissing(values, "LC_CTYPE", "C.UTF-8", caseInsensitive)
+	return values
+}
+
+func appendEnvIfMissing(env []string, key string, value string, caseInsensitive bool) []string {
+	for _, item := range env {
+		name, _, ok := strings.Cut(item, "=")
+		if !ok {
+			continue
+		}
+		if name == key || (caseInsensitive && strings.EqualFold(name, key)) {
+			return env
+		}
+	}
+	return append(env, key+"="+value)
+}
+
+func normalizePTYSize(cols uint16, rows uint16) (uint16, uint16) {
+	if cols == 0 {
+		cols = defaultPTYCols
+	}
+	if rows == 0 {
+		rows = defaultPTYRows
+	}
+	return cols, rows
 }
 
 func startWindowsPipe(path string, command string) (*Proxy, error) {
@@ -349,10 +388,12 @@ func (p *Proxy) Write(b []byte) (int, error) {
 	return p.writeCloser.Write(b)
 }
 
-func (p *Proxy) Resize(cols, rows uint16) {
+func (p *Proxy) Resize(cols, rows uint16) error {
 	if p.pty != nil {
-		p.pty.Resize(int(cols), int(rows))
+		cols, rows = normalizePTYSize(cols, rows)
+		return p.pty.Resize(int(cols), int(rows))
 	}
+	return nil
 }
 
 func (p *Proxy) PID() int {
