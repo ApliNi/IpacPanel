@@ -433,6 +433,26 @@ func (client *WSClient) EnqueueTerminalControl(data []byte) bool {
 	}
 }
 
+func (client *WSClient) EnqueueTerminalLive(data []byte) bool {
+	if client == nil {
+		return false
+	}
+	client.startWriter()
+	if client.Send == nil {
+		return false
+	}
+	payload := append([]byte(nil), data...)
+	select {
+	case <-client.Done:
+		return false
+	case client.Send <- wsOutMessage{Type: websocket.BinaryMessage, Data: payload, SkipTerminalFlush: true}:
+		return true
+	default:
+		_ = client.Close()
+		return false
+	}
+}
+
 func (client *WSClient) EnqueueTerminal() bool {
 	if client == nil {
 		return false
@@ -517,7 +537,7 @@ func (sp *InstanceProcess) writeTerminalLiveClientsLocked(data []byte) {
 			continue
 		}
 		client.TerminalCursor = endSeq
-		if !client.Enqueue(websocket.BinaryMessage, data) {
+		if !client.EnqueueTerminalLive(data) {
 			delete(sp.Clients, client)
 		}
 	}
