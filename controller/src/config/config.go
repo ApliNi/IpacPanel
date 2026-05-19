@@ -72,7 +72,7 @@ const (
 	minPowTaskCount       = 1
 	maxPowTaskCount       = 128
 	minPowDifficulty      = 1
-	maxPowDifficulty      = 10
+	maxPowDifficulty      = 5
 	minPowTimestampSkew   = 1
 	maxPowTimestampSkew   = 3600
 	minStartPriority      = -99999999

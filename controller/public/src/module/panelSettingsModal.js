@@ -157,7 +157,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 					</div>
 					<div class="field-group">
 						<span>DIFFICULTY</span>
-						<input id="panelSettingsPowDifficulty" type="number" min="1" max="10" step="1" autocomplete="off" placeholder=" 3">
+						<input id="panelSettingsPowDifficulty" type="number" min="1" max="5" step="1" autocomplete="off" placeholder=" 3">
 					</div>
 					<div class="field-group">
 						<span>TIMESTAMP MAX SKEW</span>
@@ -353,7 +353,7 @@ const MAX_INTERVAL_MS = 86400000;
 const MAX_METRICS_MEMORY_MIN = 10080;
 const MAX_METRICS_SQLITE_DAY = 36500;
 const MAX_POW_TASK_COUNT = 128;
-const MAX_POW_DIFFICULTY = 10;
+const MAX_POW_DIFFICULTY = 5;
 const MAX_POW_TIMESTAMP_SKEW = 3600;
 
 const normalizeWebTitle = (value) => {
