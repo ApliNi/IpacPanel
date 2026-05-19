@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,8 +31,8 @@ func (s *eventStore) events() ([]event, error) {
 		}
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
-			var ev event
-			if err := json.Unmarshal(scanner.Bytes(), &ev); err == nil {
+			ev, err := parseEventFrame(scanner.Bytes())
+			if err == nil {
 				events = append(events, ev)
 			}
 		}
@@ -39,6 +40,29 @@ func (s *eventStore) events() ([]event, error) {
 	}
 	sort.Slice(events, func(i, j int) bool { return events[i].Time.Before(events[j].Time) })
 	return events, nil
+}
+
+func parseEventFrame(line []byte) (event, error) {
+	if len(line) == 0 || line[0] != ':' {
+		return event{}, errors.New("事件行缺少帧前缀")
+	}
+	separator := bytes.IndexByte(line[1:], ':')
+	if separator < 0 {
+		return event{}, errors.New("事件行缺少帧分隔符")
+	}
+	separator++
+	if separator == 1 {
+		return event{}, errors.New("事件行事件名为空")
+	}
+	if len(line) <= separator+1 || line[separator+1] != ' ' {
+		return event{}, errors.New("事件行帧分隔符格式错误")
+	}
+	var ev event
+	if err := json.Unmarshal(line[separator+2:], &ev); err != nil {
+		return event{}, err
+	}
+	ev.Event = string(line[1:separator])
+	return ev, nil
 }
 
 func (s *eventStore) waitFor(filter eventFilter, timeout time.Duration) (event, error) {

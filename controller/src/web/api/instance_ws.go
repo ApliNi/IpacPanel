@@ -26,10 +26,43 @@ const (
 )
 
 type instanceWSRequest struct {
-	Type string `json:"type"`
 	Cols uint16 `json:"cols"`
 	Rows uint16 `json:"rows"`
 	Data string `json:"data"`
+}
+
+func parseInstanceWSControlFrame(msg []byte) (string, instanceWSRequest, error) {
+	frame := string(msg)
+	if !strings.HasPrefix(frame, ":") {
+		return "", instanceWSRequest{}, fmt.Errorf("missing control frame prefix")
+	}
+
+	remaining := frame[1:]
+	separator := strings.Index(remaining, ":")
+	if separator <= 0 {
+		return "", instanceWSRequest{}, fmt.Errorf("invalid control frame header")
+	}
+
+	messageType := remaining[:separator]
+	if strings.TrimSpace(messageType) != messageType || strings.ContainsAny(messageType, " \t\r\n:") {
+		return "", instanceWSRequest{}, fmt.Errorf("invalid control frame type %q", messageType)
+	}
+
+	payload := remaining[separator+1:]
+	if !strings.HasPrefix(payload, " ") {
+		return "", instanceWSRequest{}, fmt.Errorf("missing control frame payload separator")
+	}
+	payload = strings.TrimSpace(payload[1:])
+	if payload == "" {
+		return "", instanceWSRequest{}, fmt.Errorf("empty control frame payload")
+	}
+
+	var request instanceWSRequest
+	if err := json.Unmarshal([]byte(payload), &request); err != nil {
+		return "", instanceWSRequest{}, fmt.Errorf("invalid control frame json: %w", err)
+	}
+
+	return messageType, request, nil
 }
 
 func HandleApiInstanceWs(w http.ResponseWriter, r *http.Request) {
@@ -97,12 +130,13 @@ func HandleApiInstanceWs(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		var termMsg instanceWSRequest
-		if err := json.Unmarshal(msg, &termMsg); err != nil {
+		controlType, termMsg, err := parseInstanceWSControlFrame(msg)
+		if err != nil {
+			log.Printf("route_kind=ws action=read_control_frame error=%q detail=%q", "invalid websocket control frame", err.Error())
 			continue
 		}
 
-		switch termMsg.Type {
+		switch controlType {
 		case "resize":
 			sp.ResizeTerminal(termMsg.Cols, termMsg.Rows)
 			continue
@@ -113,6 +147,8 @@ func HandleApiInstanceWs(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			_ = sp.SendInput(decoded)
+		default:
+			log.Printf("route_kind=ws action=read_control_frame error=%q detail=%q", "unknown websocket control frame", controlType)
 		}
 	}
 }

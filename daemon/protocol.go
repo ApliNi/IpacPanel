@@ -45,7 +45,7 @@ type IPCRequest struct {
 }
 
 type IPCResponse struct {
-	Type           string                 `json:"type,omitempty"`
+	Type           string                 `json:"-"`
 	ID             uint64                 `json:"id,omitempty"`
 	Msg            string                 `json:"msg,omitempty"`
 	Placeholder    string                 `json:"placeholder,omitempty"`
@@ -273,8 +273,8 @@ func (c *IPCConn) Flush() error {
 }
 
 type InstanceRuntimeState struct {
-	Name         string    `json:"name"`
-	RuntimeName  string    `json:"runtime_name,omitempty"`
+	InstanceName string    `json:"instance_name"`
+	RuntimeAlias string    `json:"runtime_alias,omitempty"`
 	Lifecycle    string    `json:"lifecycle"`
 	RuntimeCode  int       `json:"runtime_code"`
 	PID          int       `json:"pid,omitempty"`

@@ -10,7 +10,7 @@ const getTerminalRuntime = () => {
 	const TerminalCtor = win.Terminal;
 	if (!TerminalCtor) throw new Error('xterm runtime is unavailable');
 	const FitAddon = win.FitAddon;
-	if (!FitAddon?.FitAddon) throw new Error('xterm fit addon constructor is unavailable');
+	if (!FitAddon || !FitAddon.FitAddon) throw new Error('xterm fit addon constructor is unavailable');
 	return { TerminalCtor, FitAddonCtor: FitAddon.FitAddon };
 };
 
@@ -82,7 +82,8 @@ const dom = {
 const cardState = {
     reconnectTimer: null,
 	resizeTimer: null,
-	postInitResizeTimer: null,
+	resizeProtectionTimer: null,
+	resizeProtectionEndAt: 0,
 	lastResizeCols: null,
 	lastResizeRows: null,
     term: null,
@@ -98,6 +99,9 @@ const cardState = {
 	ctrlCConfirming: false,
 	resizeHandler: null,
 };
+
+const TERMINAL_RESIZE_PROTECTION_DURATION_MS = 1000;
+const TERMINAL_RESIZE_PROTECTION_INTERVAL_MS = 100;
 
 const getWsReconnectDelay = (attempt) => {
 	const safeAttempt = Math.max(0, Number(attempt) || 0);
@@ -133,6 +137,34 @@ const decodeTerminalPayload = (payload) => {
 	return bytes;
 };
 
+const encodeTerminalControlFrame = (type, payload) => `:${type}: ${JSON.stringify(payload)}`;
+
+const parseTerminalControlFrame = (frame) => {
+	if (typeof frame !== 'string' || !frame.startsWith(':')) {
+		throw new Error('invalid websocket terminal frame prefix');
+	}
+
+	const separator = frame.indexOf(':', 1);
+	if (separator <= 1) {
+		throw new Error('invalid websocket terminal frame header');
+	}
+
+	const type = frame.slice(1, separator);
+	if (type.trim() !== type || /[\s:]/u.test(type)) {
+		throw new Error(`invalid websocket terminal frame type: ${type}`);
+	}
+
+	const payloadText = frame.slice(separator + 1);
+	if (!payloadText.startsWith(' ')) {
+		throw new Error('missing websocket terminal frame payload separator');
+	}
+
+	return {
+		type,
+		payload: JSON.parse(payloadText.slice(1).trim()),
+	};
+};
+
 const writeTerminalBinary = (data) => {
 	if (!cardState.term || !data) {
 		return;
@@ -156,11 +188,11 @@ const writeTerminalBinary = (data) => {
 	}
 };
 
-const sendSocketMessage = (payload) => {
+const sendSocketMessage = (type, payload) => {
 	if (!cardState.socket || cardState.socket.readyState !== WebSocket.OPEN) {
 		return false;
 	}
-	cardState.socket.send(JSON.stringify(payload));
+	cardState.socket.send(encodeTerminalControlFrame(type, payload));
 	return true;
 };
 
@@ -252,26 +284,6 @@ const updateStatusDisplay = (svc) => {
     resetKillConfirm();
 };
 
-const scheduleResize = () => {
-    cardState.resizeTimer = clearTimer(cardState.resizeTimer);
-    cardState.resizeTimer = setTimeout(() => {
-        cardState.resizeTimer = null;
-        sendResize();
-    }, DEFAULT_UI_REFRESH_INTERVAL_MS);
-};
-
-const schedulePostInitResizeCheck = () => {
-	cardState.postInitResizeTimer = clearTimer(cardState.postInitResizeTimer);
-	cardState.postInitResizeTimer = setTimeout(() => {
-		cardState.postInitResizeTimer = null;
-		if (!cardState.term || !cardState.fitAddon) {
-			return;
-		}
-		cardState.fitAddon.fit();
-		sendResize();
-	}, DEFAULT_UI_REFRESH_INTERVAL_MS);
-};
-
 const getActiveTerminalMode = (svc = cardState.currentSvc) => normalizeTerminalMode(svc?.active_terminal ?? svc?.terminal);
 
 const hasActiveTerminal = (svc = cardState.currentSvc) => getActiveTerminalMode(svc) !== terminalMode.NO_TERMINAL;
@@ -306,6 +318,65 @@ const writeLocalInputEcho = (data) => {
 	}
 };
 
+const scheduleResize = (afterResize = null) => {
+    cardState.resizeTimer = clearTimer(cardState.resizeTimer);
+    cardState.resizeTimer = setTimeout(() => {
+        cardState.resizeTimer = null;
+        sendResize();
+        if (typeof afterResize === 'function') {
+            afterResize();
+        }
+    }, DEFAULT_UI_REFRESH_INTERVAL_MS);
+};
+
+const clearResizeProtection = () => {
+	if (cardState.resizeProtectionTimer) {
+		clearInterval(cardState.resizeProtectionTimer);
+	}
+	cardState.resizeProtectionTimer = null;
+	cardState.resizeProtectionEndAt = 0;
+};
+
+const fitActiveTerminal = () => {
+	if (!cardState.term || !cardState.fitAddon || !hasActiveTerminal()) {
+		return false;
+	}
+	cardState.fitAddon.fit();
+	return true;
+};
+
+const runResizeProtectionCheck = () => {
+	if (!fitActiveTerminal()) {
+		clearResizeProtection();
+		return;
+	}
+	sendResize();
+	if (Date.now() >= cardState.resizeProtectionEndAt) {
+		clearResizeProtection();
+	}
+};
+
+const startResizeProtectionChecks = () => {
+	cardState.resizeProtectionEndAt = Date.now() + TERMINAL_RESIZE_PROTECTION_DURATION_MS;
+	if (cardState.resizeProtectionTimer) {
+		return;
+	}
+	cardState.resizeProtectionTimer = setInterval(runResizeProtectionCheck, TERMINAL_RESIZE_PROTECTION_INTERVAL_MS);
+};
+
+const syncTerminalSizeAfterFit = () => {
+	if (!fitActiveTerminal()) {
+		return;
+	}
+	scheduleResize();
+	startResizeProtectionChecks();
+};
+
+const resetResizeSyncState = () => {
+	cardState.lastResizeCols = null;
+	cardState.lastResizeRows = null;
+};
+
 const sendResize = () => {
     if (!cardState.term || !hasActiveTerminal()) return;
 
@@ -318,12 +389,13 @@ const sendResize = () => {
 	if (cardState.socket && cardState.socket.readyState === WebSocket.OPEN) {
 		cardState.lastResizeCols = cols;
 		cardState.lastResizeRows = rows;
-		sendSocketMessage({ type: 'resize', cols, rows });
+		sendSocketMessage('resize', { cols, rows });
 	}
 };
 
 const closeTerminalSocket = () => {
 	cardState.reconnectTimer = clearTimer(cardState.reconnectTimer);
+	resetResizeSyncState();
 	if (!cardState.socket) return;
 	cardState.socket.onopen = null;
 	cardState.socket.onmessage = null;
@@ -334,7 +406,7 @@ const closeTerminalSocket = () => {
 
 const disposeTerminalRuntime = () => {
 	cardState.resizeTimer = clearTimer(cardState.resizeTimer);
-	cardState.postInitResizeTimer = clearTimer(cardState.postInitResizeTimer);
+	clearResizeProtection();
 	if (cardState.resizeHandler) {
 		window.removeEventListener('resize', cardState.resizeHandler);
 		cardState.resizeHandler = null;
@@ -357,8 +429,7 @@ const applyTerminalModeView = (svc, historySize) => {
 		return;
 	}
 	initTerminal(historySize ?? state.historySize);
-	cardState.fitAddon?.fit?.();
-	schedulePostInitResizeCheck();
+	syncTerminalSizeAfterFit();
 	if (!cardState.socket) {
 		connectWebSocket(svc);
 	}
@@ -379,32 +450,26 @@ const initTerminal = (historySize) => {
 		cursorBlink: true,
 		fontFamily: `"JetBrains Mono", "JetBrains Maple Mono Medium"`,
 		fontSize: 12,
-        letterSpacing: 0,
-        lineHeight: 1,
-        scrollback: Math.max(1000, Math.floor(historySize * 1024 / 100)),
-        theme: {
-            // "cursorColor": "#9EC1D6",
-            // "selectionBackground": "#9ec1d638",
-            "background": "#0a0a0a",
-            // "foreground": "#C7D0D9",
-            // "black": "#0a0a0a",
-            // "blue": "#3D9BFF",
-            // "cyan": "#5FA8A4",
-            // "green": "#89E034",
-            // "purple": "#8B7AA8",
-            // "red": "#C47A6C",
-            // "white": "#B7C1CB",
-            // "yellow": "#C2A86A",
-            // "brightBlack": "#5C6670",
-            // "brightBlue": "#78B9FF",
-            // "brightCyan": "#7CC8C3",
-            // "brightGreen": "#89f71c",
-            // "brightPurple": "#A896C7",
-            // "brightRed": "#D99689",
-            // "brightWhite": "#E2E8EE",
-            // "brightYellow": "#D8C082",
-        },
-        copyOnSelect: true,
+		letterSpacing: 0,
+		lineHeight: 1,
+		scrollback: Math.max(1000, Math.floor(historySize * 1024 / 100)),
+		theme: {
+			"background": "#0a0a0a",
+			"foreground": "#C7D0D9",
+			"cursorColor": "#9EC1D6",
+			"selectionBackground": "#9ec1d638",
+			// "black": "#0a0a0a",
+			// "blue": "#3D9BFF",
+			// "cyan": "#5FA8A4",
+			// "green": "#89E034",
+			// "brightPurple": "#A896C7",
+			// "brightRed": "#D99689",
+			// "brightWhite": "#E2E8EE",
+			// "brightYellow": "#D8C082",
+		},
+		copyOnSelect: true,
+		allowProposedApi: true,
+		rightClickSelectsWord: true,
 	});
 
 	cardState.fitAddon = new FitAddonCtor();
@@ -416,19 +481,13 @@ const initTerminal = (historySize) => {
     cardState.term.onData(data => {
 		if (cardState.socket && cardState.socket.readyState === WebSocket.OPEN) {
 			writeLocalInputEcho(data);
-			sendSocketMessage({
-				type: 'input',
-				data: encodeInputPayload(data),
-			});
+			sendSocketMessage('input', { data: encodeInputPayload(data) });
 		}
     });
 
 	cardState.resizeHandler = () => {
-	        if (cardState.fitAddon) {
-	            cardState.fitAddon.fit();
-	            scheduleResize();
-	        }
-	    };
+		syncTerminalSizeAfterFit();
+	};
 	    window.addEventListener('resize', cardState.resizeHandler);
 
 	cardState.term.attachCustomKeyEventHandler((arg) => {
@@ -451,10 +510,7 @@ const initTerminal = (historySize) => {
 				tone: 'danger',
 			}).then((ok) => {
 				if (ok) {
-					sendSocketMessage({
-						type: 'input',
-						data: encodeInputPayload('\x03'),
-					});
+					sendSocketMessage('input', { data: encodeInputPayload('\x03') });
 				}
 			}).finally(() => {
 				cardState.ctrlCConfirming = false;
@@ -484,6 +540,7 @@ const connectWebSocket = (svc, options = {}) => {
 		cardState.socket.onclose = null;
 		cardState.socket.close();
 	}
+	resetResizeSyncState();
 	cardState.reconnectTimer = clearTimer(cardState.reconnectTimer);
 	if (resetCounters) {
 		cardState.wsDisconnectCount = 0;
@@ -503,23 +560,22 @@ const connectWebSocket = (svc, options = {}) => {
 			sendResize();
 		},
 		onMessage: (event) => {
-            if (state.currentInstanceName !== instanceName) {
-                return;
-            }
+			if (state.currentInstanceName !== instanceName) {
+				return;
+			}
 			if (typeof event.data !== 'string') {
 				writeTerminalBinary(event.data);
 				return;
 			}
-            if (typeof event.data === 'string') {
-                try {
-					const msg = JSON.parse(event.data);
-					if (msg.type === 'terminal' && cardState.term) {
-						cardState.term.write(decodeTerminalPayload(msg.data));
-						return;
-                    }
-                } catch (e) {
-                    console.error('[WebSocket] 解析消息失败:', e);
-                }
+			try {
+				const frame = parseTerminalControlFrame(event.data);
+				if (frame.type === 'terminal' && cardState.term) {
+					cardState.term.write(decodeTerminalPayload(frame.payload.data));
+					return;
+				}
+				console.error('[WebSocket] 未知终端消息类型:', frame.type);
+			} catch (e) {
+				console.error('[WebSocket] 解析消息失败:', e);
 			}
 		},
 		onClose: () => {
@@ -576,34 +632,34 @@ const bindCardEvents = () => {
 
 	if (dom.ctrlStart) {
         dom.ctrlStart.onclick = async () => {
-            const name = state.currentInstanceName;
-            if (!name) return;
+			const name = state.currentInstanceName;
+			if (!name) return;
 			const result = await controlInstance(name, 'start');
 	            if (result.ok) {
 				patchCurrentSvc({ restarting: false });
 	                updateStatusDisplay(getCurrentSvc());
-            }
+	            }
         };
     }
 
 	if (dom.ctrlStop) {
         dom.ctrlStop.onclick = async () => {
-            const name = state.currentInstanceName;
-            if (!name) return;
+			const name = state.currentInstanceName;
+			if (!name) return;
 			const result = await controlInstance(name, 'stop');
 	            if (result.ok) {
 				patchCurrentSvc({ restarting: false });
 	                updateStatusDisplay(getCurrentSvc());
-            }
+	            }
         };
     }
 
     if (dom.ctrlRestart) {
         dom.ctrlRestart.onclick = async () => {
-            const name = state.currentInstanceName;
-            if (name) {
+			const name = state.currentInstanceName;
+			if (name) {
 				void controlInstance(name, 'restart');
-            }
+			}
         };
     }
 

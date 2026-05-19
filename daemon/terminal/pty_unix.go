@@ -20,7 +20,10 @@ type Proxy struct {
 	ptyFile      *os.File
 	inputWriter  *encodingAwareWriter
 	outputReader *encodingAwareReader
-	once         sync.Once
+	closeMu      sync.Mutex
+	closeCalled  bool
+	killMu       sync.Mutex
+	killCalled   bool
 }
 
 func Start(path string, command string, usePTY bool, inputEncoding string, outputEncoding string) (*Proxy, error) {
@@ -176,26 +179,46 @@ func (p *Proxy) PID() int {
 }
 
 func (p *Proxy) Close() error {
-	var err error
-	p.once.Do(func() {
-		if p.cmd != nil && p.cmd.Process != nil {
-			_ = p.cmd.Process.Signal(os.Interrupt)
-		}
-		if p.ptyFile != nil {
-			err = p.ptyFile.Close()
-			return
-		}
-		if p.writeCloser != nil {
-			_ = p.writeCloser.Close()
-		}
-		if p.readCloser != nil {
-			err = p.readCloser.Close()
-		}
-	})
-	return err
+	if p == nil {
+		return nil
+	}
+	p.closeMu.Lock()
+	if p.closeCalled {
+		p.closeMu.Unlock()
+		return nil
+	}
+	p.closeCalled = true
+	p.closeMu.Unlock()
+
+	var errs []error
+	if p.cmd != nil && p.cmd.Process != nil {
+		errs = append(errs, p.cmd.Process.Signal(os.Interrupt))
+	}
+	if p.ptyFile != nil {
+		errs = append(errs, p.ptyFile.Close())
+		return errors.Join(errs...)
+	}
+	if p.writeCloser != nil {
+		errs = append(errs, p.writeCloser.Close())
+	}
+	if p.readCloser != nil {
+		errs = append(errs, p.readCloser.Close())
+	}
+	return errors.Join(errs...)
 }
 
 func (p *Proxy) Kill() error {
+	if p == nil {
+		return nil
+	}
+	p.killMu.Lock()
+	if p.killCalled {
+		p.killMu.Unlock()
+		return nil
+	}
+	p.killCalled = true
+	p.killMu.Unlock()
+
 	if p.cmd != nil && p.cmd.Process != nil {
 		return p.cmd.Process.Kill()
 	}
@@ -208,3 +231,5 @@ func (p *Proxy) Wait() error {
 	}
 	return p.cmd.Wait()
 }
+
+func (p *Proxy) NotifyReadClosed() {}

@@ -20,7 +20,7 @@ type event struct {
 	Source    string            `json:"source"`
 	HelperID  string            `json:"helper_id,omitempty"`
 	PID       int               `json:"pid,omitempty"`
-	Event     string            `json:"event"`
+	Event     string            `json:"-"`
 	Data      map[string]string `json:"data,omitempty"`
 }
 

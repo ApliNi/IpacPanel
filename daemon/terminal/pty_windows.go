@@ -5,6 +5,7 @@ package terminal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/UserExistsError/conpty"
 	"github.com/kballard/go-shellquote"
@@ -32,7 +34,24 @@ type Proxy struct {
 	cmd          *exec.Cmd
 	inputWriter  *encodingAwareWriter
 	outputReader *encodingAwareReader
-	once         sync.Once
+	ptyMu        sync.Mutex
+	closeMu      sync.Mutex
+	closeCalled  bool
+	killMu       sync.Mutex
+	killCalled   bool
+	waitMu       sync.Mutex
+	waitCancel   context.CancelFunc
+	waitWake     chan struct{}
+	wakeOnce     sync.Once
+	readClosed   chan struct{}
+	readOnce     sync.Once
+}
+
+const windowsPTYWaitFallbackTimeout = 5 * time.Second
+const windowsPTYReadClosedWaitTimeout = 2 * time.Second
+
+type windowsPTYWaitResult struct {
+	err error
 }
 
 func normalizeWindowsPath(path string) string {
@@ -233,7 +252,7 @@ func startWindowsPTY(path string, command string) (*Proxy, error) {
 		return nil, err
 	}
 
-	return &Proxy{pty: cpty}, nil
+	return newWindowsProxy(&Proxy{pty: cpty}), nil
 }
 
 func startWindowsPipe(path string, command string) (*Proxy, error) {
@@ -241,6 +260,7 @@ func startWindowsPipe(path string, command string) (*Proxy, error) {
 	if err != nil {
 		return nil, err
 	}
+	PreventConsoleInheritance(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -271,14 +291,20 @@ func startWindowsPipe(path string, command string) (*Proxy, error) {
 		wg.Wait()
 		_ = writer.Close()
 	}()
-	return &Proxy{
+	return newWindowsProxy(&Proxy{
 		readCloser:  reader,
 		writeCloser: stdin,
 		stdout:      stdout,
 		stderr:      stderr,
 		pipeWriter:  writer,
 		cmd:         cmd,
-	}, nil
+	}), nil
+}
+
+func newWindowsProxy(p *Proxy) *Proxy {
+	p.waitWake = make(chan struct{})
+	p.readClosed = make(chan struct{})
+	return p
 }
 
 func copyPipeOutput(wg *sync.WaitGroup, dst *io.PipeWriter, src io.ReadCloser) {
@@ -343,68 +369,197 @@ func (p *Proxy) PID() int {
 }
 
 func (p *Proxy) Close() error {
-	var err error
-	p.once.Do(func() {
-		if p.pty != nil {
-			err = p.pty.Close()
-			return
-		}
-		if p.writeCloser != nil {
-			_ = p.writeCloser.Close()
-		}
-		if p.stdout != nil {
-			_ = p.stdout.Close()
-		}
-		if p.stderr != nil {
-			_ = p.stderr.Close()
-		}
-		if p.pipeWriter != nil {
-			_ = p.pipeWriter.Close()
-		}
-		if p.readCloser != nil {
-			err = p.readCloser.Close()
-		}
-		if p.cmd != nil && p.cmd.Process != nil {
-			killErr := p.cmd.Process.Kill()
-			if err == nil && killErr != nil && !strings.Contains(killErr.Error(), "process already finished") {
-				err = killErr
-			}
-		}
-	})
-	return err
+	if p == nil {
+		return nil
+	}
+	p.closeMu.Lock()
+	if p.closeCalled {
+		p.closeMu.Unlock()
+		return nil
+	}
+	p.closeCalled = true
+	p.closeMu.Unlock()
+
+	defer p.notifyWait()
+	if p.pty != nil {
+		p.ptyMu.Lock()
+		defer p.ptyMu.Unlock()
+		return p.pty.Close()
+	}
+	return p.closePipe(true)
 }
 
 func (p *Proxy) Kill() error {
+	if p == nil {
+		return nil
+	}
+	p.killMu.Lock()
+	if p.killCalled {
+		p.killMu.Unlock()
+		return nil
+	}
+	p.killCalled = true
+	p.killMu.Unlock()
+
+	defer p.notifyWait()
 	if p.pty != nil {
-		var err error
-		p.once.Do(func() {
-			pid := p.pty.Pid()
-			if pid > 0 {
-				var proc *os.Process
-				proc, err = os.FindProcess(pid)
-				if err == nil {
-					err = proc.Kill()
-				}
-			}
-			if closeErr := p.pty.Close(); err == nil {
-				err = closeErr
-			}
-		})
-		return err
+		return p.killPTY()
 	}
 	if p.cmd != nil && p.cmd.Process != nil {
-		return p.cmd.Process.Kill()
+		killErr := p.cmd.Process.Kill()
+		if isWindowsProcessAlreadyDoneError(killErr) {
+			killErr = nil
+		}
+		return errors.Join(killErr, p.closePipe(false))
 	}
 	return p.Close()
 }
 
+func (p *Proxy) closePipe(killProcess bool) error {
+	var errs []error
+	if p.writeCloser != nil {
+		errs = appendWindowsCloseError(errs, p.writeCloser.Close())
+	}
+	if p.stdout != nil {
+		errs = appendWindowsCloseError(errs, p.stdout.Close())
+	}
+	if p.stderr != nil {
+		errs = appendWindowsCloseError(errs, p.stderr.Close())
+	}
+	if p.pipeWriter != nil {
+		errs = appendWindowsCloseError(errs, p.pipeWriter.Close())
+	}
+	if p.readCloser != nil {
+		errs = appendWindowsCloseError(errs, p.readCloser.Close())
+	}
+	if killProcess && p.cmd != nil && p.cmd.Process != nil {
+		err := p.cmd.Process.Kill()
+		if err != nil && !isWindowsProcessAlreadyDoneError(err) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (p *Proxy) killPTY() error {
+	p.ptyMu.Lock()
+	defer p.ptyMu.Unlock()
+
+	var errs []error
+	pid := p.pty.Pid()
+	if pid > 0 {
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			errs = append(errs, err)
+		} else if err := proc.Kill(); err != nil && !isWindowsProcessAlreadyDoneError(err) {
+			errs = append(errs, err)
+		}
+	}
+	if err := p.pty.Close(); err != nil && !isWindowsCloseAlreadyDoneError(err) {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+func appendWindowsCloseError(errs []error, err error) []error {
+	if err == nil || isWindowsCloseAlreadyDoneError(err) {
+		return errs
+	}
+	return append(errs, err)
+}
+
+func isWindowsCloseAlreadyDoneError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "file already closed") ||
+		strings.Contains(msg, "handle is invalid") ||
+		strings.Contains(msg, "use of closed") ||
+		strings.Contains(msg, "pipe has been ended") ||
+		strings.Contains(msg, "read/write on closed pipe")
+}
+
+func isWindowsProcessAlreadyDoneError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "process already finished") ||
+		strings.Contains(msg, "process has already exited") ||
+		strings.Contains(msg, "invalid argument")
+}
+
+func (p *Proxy) notifyWait() {
+	if p.waitWake != nil {
+		p.wakeOnce.Do(func() { close(p.waitWake) })
+	}
+	p.waitMu.Lock()
+	cancel := p.waitCancel
+	p.waitMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (p *Proxy) NotifyReadClosed() {
+	if p == nil || p.readClosed == nil {
+		return
+	}
+	p.readOnce.Do(func() { close(p.readClosed) })
+}
+
 func (p *Proxy) Wait() error {
 	if p.pty != nil {
-		_, err := p.pty.Wait(context.Background())
-		return err
+		ctx, cancel := context.WithCancel(context.Background())
+		p.waitMu.Lock()
+		p.waitCancel = cancel
+		p.waitMu.Unlock()
+		defer func() {
+			cancel()
+			p.waitMu.Lock()
+			p.waitCancel = nil
+			p.waitMu.Unlock()
+		}()
+
+		done := make(chan windowsPTYWaitResult, 1)
+		go func() {
+			_, err := p.pty.Wait(ctx)
+			done <- windowsPTYWaitResult{err: err}
+		}()
+
+		return p.waitWindowsPTYResult(ctx, cancel, done)
 	}
 	if p.cmd != nil {
 		return p.cmd.Wait()
 	}
 	return nil
+}
+
+func (p *Proxy) waitWindowsPTYResult(ctx context.Context, cancel context.CancelFunc, done <-chan windowsPTYWaitResult) error {
+	select {
+	case result := <-done:
+		return result.err
+	case <-p.waitWake:
+		cancel()
+		return waitWindowsPTYDone(done, windowsPTYWaitFallbackTimeout, "windows pty wait timeout after lifecycle signal")
+	case <-p.readClosed:
+		return waitWindowsPTYDone(done, windowsPTYReadClosedWaitTimeout, "windows pty wait timeout after output closed")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func waitWindowsPTYDone(done <-chan windowsPTYWaitResult, timeout time.Duration, message string) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case result := <-done:
+		return result.err
+	case <-timer.C:
+		return fmt.Errorf("%s after %s: %w", message, timeout, context.DeadlineExceeded)
+	}
 }

@@ -367,7 +367,7 @@ func (s *IPCServer) handleStartInstance(req *IPCRequest) *IPCResponse {
 		if state == instanceRunning {
 			s.Instances.Mu.Unlock()
 			runtime := existing.RuntimeSnapshot()
-			resp := IPCResponse{Type: "instance_started", Instance: req.Instance, State: &runtime}
+			resp := IPCResponse{Type: "instance_started", State: &runtime}
 			return &resp
 		}
 		if state == instanceStopping {
@@ -390,7 +390,7 @@ func (s *IPCServer) handleStartInstance(req *IPCRequest) *IPCResponse {
 		return &resp
 	}
 	state := ins.RuntimeSnapshot()
-	resp := IPCResponse{Type: "instance_started", Instance: req.Instance, State: &state}
+	resp := IPCResponse{Type: "instance_started", State: &state}
 	return &resp
 }
 

@@ -40,8 +40,8 @@ const (
 )
 
 type DaemonRuntimeState struct {
-	Name         string    `json:"name"`
-	RuntimeName  string    `json:"runtime_name,omitempty"`
+	InstanceName string    `json:"instance_name"`
+	RuntimeAlias string    `json:"runtime_alias,omitempty"`
 	Lifecycle    string    `json:"lifecycle"`
 	RuntimeCode  int       `json:"runtime_code"`
 	PID          int       `json:"pid,omitempty"`
@@ -80,7 +80,7 @@ type daemonIPCRequest struct {
 }
 
 type daemonIPCResponse struct {
-	Type           string               `json:"type,omitempty"`
+	Type           string               `json:"-"`
 	ID             uint64               `json:"id,omitempty"`
 	Msg            string               `json:"msg,omitempty"`
 	Placeholder    string               `json:"placeholder,omitempty"`
@@ -185,8 +185,12 @@ func decodeDaemonIPCFrame(line []byte, resp *daemonIPCResponse) error {
 	if sep <= 0 {
 		return fmt.Errorf("invalid daemon IPC frame header")
 	}
-	resp.Type = string(line[:sep])
-	return json.Unmarshal(line[sep+len(daemonIPCFrameSeparator):], resp)
+	frameType := string(line[:sep])
+	if err := json.Unmarshal(line[sep+len(daemonIPCFrameSeparator):], resp); err != nil {
+		return err
+	}
+	resp.Type = frameType
+	return nil
 }
 
 func encodeDaemonIPCFrame(frameType string, payload interface{}) ([]byte, error) {
@@ -345,7 +349,7 @@ func (c *daemonIPCClient) readLoop() {
 		}
 		switch resp.Type {
 		case "instance_exited":
-			HandleDaemonInstanceExited(resp.Instance, resp.State)
+			HandleDaemonInstanceExited(resp.State)
 		case daemonIPCFrameTypeCleanupMessage:
 			HandleDaemonCleanupMessage(resp.Instance, resp.Placeholder, resp.Args)
 		default:
@@ -662,12 +666,23 @@ func normalizeDaemonMessageArgs(args []string) []string {
 	return normalized
 }
 
-func HandleDaemonInstanceExited(instanceName string, state *DaemonRuntimeState) {
-	sp, ok := GetByRuntimeAlias(instanceName)
+func HandleDaemonInstanceExited(state *DaemonRuntimeState) {
+	runtimeAlias := daemonRuntimeRouteAlias(state)
+	sp, ok := GetByRuntimeAlias(runtimeAlias)
 	if !ok || sp == nil {
 		return
 	}
 	if sp.handleDaemonProcessExit(state) {
 		go sp.scheduleAutoRestart()
 	}
+}
+
+func daemonRuntimeRouteAlias(state *DaemonRuntimeState) string {
+	if state == nil {
+		return ""
+	}
+	if state.RuntimeAlias != "" {
+		return state.RuntimeAlias
+	}
+	return state.InstanceName
 }

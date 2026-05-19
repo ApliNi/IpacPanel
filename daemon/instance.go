@@ -24,6 +24,7 @@ const (
 const daemonOutputReadBufferSize = 64 * 1024
 
 const daemonRuntimeEventSendTimeout = 5 * time.Second
+const daemonOutputDoneWaitTimeout = 2 * time.Second
 
 var daemonOutputBufferPool = sync.Pool{
 	New: func() any {
@@ -160,8 +161,11 @@ func (m *InstanceManager) RenameInstance(oldName string, newName string) error {
 	}
 	delete(m.instances, oldName)
 	ins.Mu.Lock()
+	if ins.State != instanceStopped && ins.Runtime.RuntimeAlias == "" && ins.Runtime.InstanceName == oldName {
+		ins.Runtime.RuntimeAlias = oldName
+	}
 	ins.Name = newName
-	ins.Runtime.Name = newName
+	ins.Runtime.InstanceName = newName
 	ins.Mu.Unlock()
 	m.instances[newName] = ins
 	return nil
@@ -180,8 +184,8 @@ func (m *InstanceManager) prepareInstanceForStartLocked(req *IPCRequest) *Daemon
 	ins.Terminal = NormalizeTerminalMode(req.Terminal)
 	ins.InputEnc = req.InputEnc
 	ins.OutputEnc = req.OutputEnc
-	if ins.Runtime.Name == "" {
-		ins.Runtime.Name = req.Instance
+	if ins.Runtime.InstanceName == "" {
+		ins.Runtime.InstanceName = req.Instance
 	}
 	ins.Mu.Unlock()
 	return ins
@@ -197,11 +201,11 @@ func (ins *DaemonInstance) RuntimeSnapshot() InstanceRuntimeState {
 	ins.Mu.Lock()
 	defer ins.Mu.Unlock()
 	rt := ins.Runtime
-	if rt.Name == "" {
-		rt.Name = ins.Name
+	if rt.InstanceName == "" {
+		rt.InstanceName = ins.Name
 	}
-	if rt.RuntimeName == "" {
-		rt.RuntimeName = ins.runtimeID
+	if rt.RuntimeAlias == "" && ins.runtimeID != "" && ins.runtimeID != rt.InstanceName {
+		rt.RuntimeAlias = ins.runtimeID
 	}
 	rt.Lifecycle = instanceLifecycle(ins.State)
 	return rt
@@ -275,8 +279,8 @@ func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse) error {
 		restartCount++
 	}
 	ins.Runtime = InstanceRuntimeState{
-		Name:         ins.Name,
-		RuntimeName:  runtimeID,
+		InstanceName: ins.Name,
+		RuntimeAlias: "",
 		Lifecycle:    InstanceLifecycleRunning,
 		RuntimeCode:  RuntimeCodeRunning,
 		PID:          pid,
@@ -302,6 +306,7 @@ func startNoTerminalProcess(path string, command string) (*exec.Cmd, *os.File, e
 	if err != nil {
 		return nil, nil, err
 	}
+	terminal.PreventConsoleInheritance(cmd)
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open dev null: %w", err)
@@ -370,10 +375,14 @@ func (ins *DaemonInstance) Stop(force bool, runtimeCode int) {
 		return
 	}
 	if force {
-		proxy.Kill()
+		if err := proxy.Kill(); err != nil {
+			log.Printf("instance %s proxy kill error: %v", name, err)
+		}
 		return
 	}
-	proxy.Close()
+	if err := proxy.Close(); err != nil {
+		log.Printf("instance %s proxy close error: %v", name, err)
+	}
 }
 
 func (ins *DaemonInstance) MarkStopping(runtimeCode int) {
@@ -398,8 +407,8 @@ func (ins *DaemonInstance) markRuntimeCodeLocked(runtimeCode int) {
 	if runtimeCode == RuntimeCodeUnknown {
 		return
 	}
-	if ins.Runtime.Name == "" {
-		ins.Runtime.Name = ins.Name
+	if ins.Runtime.InstanceName == "" {
+		ins.Runtime.InstanceName = ins.Name
 	}
 	ins.Runtime.RuntimeCode = runtimeCode
 }
@@ -430,6 +439,7 @@ func (ins *DaemonInstance) ResizeTerminal(cols, rows uint16) {
 }
 
 func (ins *DaemonInstance) readOutput(proxy *terminal.Proxy, proxySeq uint64, runtimeID string, done chan struct{}) {
+	defer proxy.NotifyReadClosed()
 	if done != nil {
 		defer close(done)
 	}
@@ -476,12 +486,16 @@ func (ins *DaemonInstance) readOutput(proxy *terminal.Proxy, proxySeq uint64, ru
 }
 
 func (ins *DaemonInstance) waitProxyExit(proxy *terminal.Proxy, proxySeq uint64) {
-	_ = proxy.Wait()
+	if err := proxy.Wait(); err != nil {
+		log.Printf("instance proxy wait error: %v", err)
+	}
 	ins.finishProcessExit(proxy, nil, proxySeq)
 }
 
 func (ins *DaemonInstance) waitCommandExit(cmd *exec.Cmd, proxySeq uint64) {
-	_ = cmd.Wait()
+	if err := cmd.Wait(); err != nil {
+		log.Printf("instance command wait error: %v", err)
+	}
 	ins.finishProcessExit(nil, cmd, proxySeq)
 }
 
@@ -505,10 +519,10 @@ func (ins *DaemonInstance) finishProcessExit(proxy *terminal.Proxy, cmd *exec.Cm
 	outputCh := ins.OutputCh
 	runtimeID := ins.runtimeID
 	if runtimeID == "" {
-		runtimeID = ins.Runtime.RuntimeName
+		runtimeID = ins.Runtime.RuntimeAlias
 	}
 	if runtimeID == "" {
-		runtimeID = ins.Runtime.Name
+		runtimeID = ins.Runtime.InstanceName
 	}
 	cleanupCommand := strings.TrimSpace(ins.CleanupCommand)
 	cleanupPath := ins.Path
@@ -518,7 +532,7 @@ func (ins *DaemonInstance) finishProcessExit(proxy *terminal.Proxy, cmd *exec.Cm
 		ins.Runtime.Lifecycle = InstanceLifecycleCleaning
 		runtime := ins.Runtime
 		ins.Mu.Unlock()
-		waitDaemonOutputDone(outputDone)
+		waitDaemonOutputDone(runtimeID, outputDone)
 		if devNull != nil {
 			_ = devNull.Close()
 		}
@@ -530,19 +544,25 @@ func (ins *DaemonInstance) finishProcessExit(proxy *terminal.Proxy, cmd *exec.Cm
 	ins.Runtime.Lifecycle = InstanceLifecycleStopped
 	runtime := ins.Runtime
 	ins.Mu.Unlock()
-	waitDaemonOutputDone(outputDone)
+	waitDaemonOutputDone(runtimeID, outputDone)
 	if devNull != nil {
 		_ = devNull.Close()
 	}
 
-	ins.sendRuntimeEvent(outputCh, IPCResponse{Type: "instance_exited", Instance: runtimeID, State: &runtime})
+	ins.sendRuntimeEvent(outputCh, IPCResponse{Type: "instance_exited", State: &runtime})
 }
 
-func waitDaemonOutputDone(done <-chan struct{}) {
+func waitDaemonOutputDone(runtimeID string, done <-chan struct{}) {
 	if done == nil {
 		return
 	}
-	<-done
+	timer := time.NewTimer(daemonOutputDoneWaitTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		log.Printf("instance %s output reader did not finish after %s; continuing exit event", runtimeID, daemonOutputDoneWaitTimeout)
+	}
 }
 
 func (ins *DaemonInstance) runCleanupCommand(path string, command string, outputCh chan<- IPCResponse, runtimeID string) {
@@ -551,6 +571,7 @@ func (ins *DaemonInstance) runCleanupCommand(path string, command string, output
 		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageBuildFailed, err.Error())
 		return
 	}
+	terminal.PreventConsoleInheritance(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStdoutFailed, err.Error())
@@ -651,14 +672,14 @@ func (ins *DaemonInstance) finishCleanupExit(proxySeq uint64, runtime InstanceRu
 	outputCh := ins.OutputCh
 	runtimeID := ins.runtimeID
 	if runtimeID == "" {
-		runtimeID = runtime.RuntimeName
+		runtimeID = runtime.RuntimeAlias
 	}
 	if runtimeID == "" {
-		runtimeID = runtime.Name
+		runtimeID = runtime.InstanceName
 	}
 	ins.Mu.Unlock()
 
-	ins.sendRuntimeEvent(outputCh, IPCResponse{Type: "instance_exited", Instance: runtimeID, State: &runtime})
+	ins.sendRuntimeEvent(outputCh, IPCResponse{Type: "instance_exited", State: &runtime})
 }
 
 func (ins *DaemonInstance) sendRuntimeEvent(outputCh chan<- IPCResponse, resp IPCResponse) {
@@ -671,9 +692,28 @@ func (ins *DaemonInstance) sendRuntimeEvent(outputCh chan<- IPCResponse, resp IP
 	select {
 	case outputCh <- resp:
 	case <-timer.C:
-		resp.Release()
-		log.Printf("instance %s runtime event %s dropped after waiting %s", resp.Instance, resp.Type, daemonRuntimeEventSendTimeout)
+		instanceName := runtimeEventInstanceName(resp)
+		select {
+		case outputCh <- resp:
+			log.Printf("instance %s runtime event %s sent after waiting %s", instanceName, resp.Type, daemonRuntimeEventSendTimeout)
+		default:
+			resp.Release()
+			log.Printf("instance %s runtime event %s could not be queued after waiting %s; daemon state already converged and controller can recover via list_runtime", instanceName, resp.Type, daemonRuntimeEventSendTimeout)
+		}
 	}
+}
+
+func runtimeEventInstanceName(resp IPCResponse) string {
+	if resp.Instance != "" {
+		return resp.Instance
+	}
+	if resp.State == nil {
+		return ""
+	}
+	if resp.State.RuntimeAlias != "" {
+		return resp.State.RuntimeAlias
+	}
+	return resp.State.InstanceName
 }
 
 func (ins *DaemonInstance) Shutdown() {
@@ -692,7 +732,9 @@ func (ins *DaemonInstance) Shutdown() {
 	ins.OutputCh = nil
 	ins.Mu.Unlock()
 	if proxy != nil {
-		proxy.Kill()
+		if err := proxy.Kill(); err != nil {
+			log.Printf("instance shutdown proxy kill error: %v", err)
+		}
 	}
 	if cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Kill()

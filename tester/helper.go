@@ -102,6 +102,9 @@ func newHelperEventWriter(eventDir, helperID string) *helperEventWriter {
 }
 
 func (w *helperEventWriter) write(eventName string, data map[string]string) {
+	if strings.TrimSpace(eventName) != eventName || strings.ContainsAny(eventName, " \t\r\n:") || eventName == "" {
+		return
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	ev := event{Time: time.Now(), ElapsedMS: time.Since(runStartedAt).Milliseconds(), Source: "helper", HelperID: helperIDFromPath(w.path), PID: os.Getpid(), Event: eventName, Data: data}
@@ -109,11 +112,13 @@ func (w *helperEventWriter) write(eventName string, data map[string]string) {
 	if err != nil {
 		return
 	}
+	line := append([]byte(":"+eventName+": "), encoded...)
+	line = append(line, '\n')
 	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return
 	}
-	_, _ = f.Write(append(encoded, '\n'))
+	_, _ = f.Write(line)
 	_ = f.Close()
 }
 

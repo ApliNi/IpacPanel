@@ -72,10 +72,10 @@ func InitializeInstanceRegistry(instances []cfg.Instance) {
 func RestoreDaemonRuntimeStates(states []DaemonRuntimeState) {
 	runtimeByName := make(map[string]DaemonRuntimeState, len(states))
 	for _, state := range states {
-		if state.Name == "" {
+		if state.InstanceName == "" {
 			continue
 		}
-		runtimeByName[state.Name] = state
+		runtimeByName[state.InstanceName] = state
 	}
 
 	cfg.ManagerMu.RLock()
@@ -100,9 +100,9 @@ func RestoreDaemonRuntimeStates(states []DaemonRuntimeState) {
 		sp.StartTime = state.StartTime
 		sp.RestartCount = state.RestartCount
 		sp.ActiveTerminalMode = cfg.NormalizeTerminalMode(state.Terminal)
-		runtimeAlias := state.RuntimeName
+		runtimeAlias := state.RuntimeAlias
 		if runtimeAlias == "" {
-			runtimeAlias = state.Name
+			runtimeAlias = state.InstanceName
 		}
 		RegisterInstanceProcessAliasLocked(runtimeAlias, sp)
 		switch state.Lifecycle {
@@ -120,10 +120,10 @@ func RestoreDaemonRuntimeStates(states []DaemonRuntimeState) {
 
 func RestoreDaemonAutoRestarts(states []DaemonRuntimeState) {
 	for _, state := range states {
-		if state.RuntimeCode != RuntimeCodeUnexpectedExit || state.Name == "" {
+		if state.RuntimeCode != RuntimeCodeUnexpectedExit || state.InstanceName == "" {
 			continue
 		}
-		sp, ok := Get(state.Name)
+		sp, ok := Get(state.InstanceName)
 		if !ok || sp == nil {
 			continue
 		}
