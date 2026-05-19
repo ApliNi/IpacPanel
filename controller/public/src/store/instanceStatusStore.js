@@ -28,7 +28,7 @@ const cloneInstances = (instances) => Array.isArray(instances)
 	? instances.map((item) => ({ ...item }))
 	: [];
 
-const emit = () => {
+const emit = (changedNames = null) => {
 	const snapshot = getSnapshot();
 	if (snapshot.ready) {
 		readyWaiters.forEach((waiter) => waiter.resolve(snapshot));
@@ -36,7 +36,7 @@ const emit = () => {
 	}
 	listeners.forEach((listener) => {
 		try {
-			listener(snapshot);
+			listener(snapshot, changedNames);
 		} catch (error) {
 			console.error('[SSE] 实例状态订阅回调失败:', error);
 		}
@@ -107,12 +107,14 @@ const applyPatch = (payload) => {
 		storeState.version = version;
 		return;
 	}
+	const changedNames = new Set();
 	let requiresFull = false;
 	storeState.instances = storeState.instances.map((item) => {
 		const name = String(item?.name || '').trim();
 		const patch = patchMap.get(name);
 		if (!patch) return item;
 		patchMap.delete(name);
+		changedNames.add(name);
 		return { ...item, ...patch };
 	});
 	if (patchMap.size > 0) {
@@ -124,7 +126,7 @@ const applyPatch = (payload) => {
 		scheduleReconnect(0);
 		return;
 	}
-	emit();
+	emit(changedNames);
 };
 
 const buildEventsURL = () => {

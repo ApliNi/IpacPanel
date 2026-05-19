@@ -692,6 +692,48 @@ const applyInstanceData = (data, onOpenInstance) => {
 	return true;
 };
 
+const applyInstancePatch = (changedNames, allInstances) => {
+	const snapshotMap = new Map();
+	for (const svc of allInstances) {
+		const name = String(svc?.name || '');
+		if (name) snapshotMap.set(name, svc);
+	}
+
+	resolveInitialLoad(state.instances);
+
+	// 原地合并变更数据 (保留数组引用, instanceIndex 缓存有效)
+	for (let i = 0; i < state.instances.length; i++) {
+		const svc = state.instances[i];
+		const name = String(svc?.name || '');
+		if (changedNames.has(name)) {
+			const updated = snapshotMap.get(name);
+			if (updated) Object.assign(svc, updated);
+		}
+	}
+
+	// 只处理变更的卡片, 不触及其他任何 DOM 元素
+	for (const name of changedNames) {
+		const svc = snapshotMap.get(name);
+		if (!svc) continue;
+
+		const card = findInstanceCard(name);
+		if (!card) continue; // 不在 DOM 中 (筛选/搜索已隐藏), 数据已更新无需处理
+
+		// 在 RUN/STOP 筛选模式下, 若运行状态切换导致不再匹配, 仅移除该卡片
+		if (pageState.currentFilter === 'running' && !svc.running) {
+			card.remove();
+			continue;
+		}
+		if (pageState.currentFilter === 'stopped' && svc.running) {
+			card.remove();
+			continue;
+		}
+
+		// 卡片应保留, 只更新其内容
+		setItemHTMLAndSig(card, svc);
+	}
+};
+
 const resolveInitialLoad = (instances) => {
 	if (pageState.initialLoadDone) {
 		return;
@@ -702,9 +744,13 @@ const resolveInitialLoad = (instances) => {
 
 const ensureInstanceStatusSubscription = (onOpenInstance) => {
 	if (pageState.unsubscribeStatusStore) return;
-	pageState.unsubscribeStatusStore = instanceStatusStore.subscribe((snapshot) => {
+	pageState.unsubscribeStatusStore = instanceStatusStore.subscribe((snapshot, changedNames) => {
 		if (!snapshot.ready) return;
-		applyInstanceData(snapshot.instances, onOpenInstance);
+		if (changedNames) {
+			applyInstancePatch(changedNames, snapshot.instances);
+		} else {
+			applyInstanceData(snapshot.instances, onOpenInstance);
+		}
 		if (state.currentInstanceName) {
 			const current = snapshot.instances.find((svc) => String(svc?.name || '') === String(state.currentInstanceName));
 			if (current) onPatchCurrentInstance?.(current);
