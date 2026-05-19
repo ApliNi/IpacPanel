@@ -559,25 +559,42 @@ func HandleDaemonInstanceOutput(instanceName string, data []byte) {
 		sp.Mu.Unlock()
 		return
 	}
-	if cfg.IsPTYTerminal(sp.ActiveTerminalLocked()) && sp.TerminalStartupProtecting {
+	isPTYTerminal := cfg.IsPTYTerminal(sp.ActiveTerminalLocked())
+	if isPTYTerminal && sp.TerminalStartupProtecting {
+		historyData := sp.filterPTYHistoryOutputLocked(data)
+		if len(historyData) > 0 {
+			historyData, _, _, _ = sanitizeTerminalStartupOutput(historyData)
+		}
 		data = sp.sanitizeTerminalStartupOutputLocked(data)
 		if len(data) == 0 {
 			sp.Mu.Unlock()
 			return
 		}
-		sp.appendHistoryLocked(data, limit)
-		sp.writeClientsLocked(websocket.BinaryMessage, data)
+		if len(historyData) > 0 {
+			sp.appendHistoryLocked(historyData, limit)
+		}
+		sp.writeTerminalLiveClientsLocked(data)
 		sp.Mu.Unlock()
 		return
 	}
-	idx := bytes.LastIndex(data, []byte("\x1b[3J"))
+	var historyData []byte
+	if isPTYTerminal {
+		historyData = sp.filterPTYHistoryOutputLocked(data)
+	} else {
+		historyData = data
+	}
+	idx := bytes.LastIndex(historyData, []byte("\x1b[3J"))
 	if idx != -1 {
 		sp.resetTerminalClientsLocked()
-		sp.resetHistoryLocked(data[idx+4:], limit)
-	} else {
-		sp.appendHistoryLocked(data, limit)
+		sp.resetHistoryLocked(historyData[idx+4:], limit)
+	} else if len(historyData) > 0 {
+		sp.appendHistoryLocked(historyData, limit)
 	}
-	sp.writeClientsLocked(websocket.BinaryMessage, data)
+	if isPTYTerminal {
+		sp.writeTerminalLiveClientsLocked(data)
+	} else {
+		sp.writeClientsLocked(websocket.BinaryMessage, data)
+	}
 	sp.Mu.Unlock()
 }
 

@@ -100,6 +100,7 @@ func RestoreDaemonRuntimeStates(states []DaemonRuntimeState) {
 		sp.StartTime = state.StartTime
 		sp.RestartCount = state.RestartCount
 		sp.ActiveTerminalMode = cfg.NormalizeTerminalMode(state.Terminal)
+		sp.resetPTYAlternateScreenStateLocked()
 		runtimeAlias := state.RuntimeAlias
 		if runtimeAlias == "" {
 			runtimeAlias = state.InstanceName
@@ -194,7 +195,11 @@ func SyncInstancePointers() {
 			continue
 		}
 		sp.Mu.Lock()
+		previousTerminal := cfg.NormalizeTerminalMode(sp.Ins.Terminal)
 		sp.Ins = instances[i]
+		if previousTerminal != cfg.NormalizeTerminalMode(sp.Ins.Terminal) {
+			sp.resetPTYAlternateScreenStateLocked()
+		}
 		sp.Mu.Unlock()
 	}
 }

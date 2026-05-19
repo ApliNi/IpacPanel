@@ -62,6 +62,8 @@ type InstanceProcess struct {
 	StartSeq                     uint64
 	TerminalStartupProtecting    bool
 	TerminalStartupPendingEscape []byte
+	PTYAlternateScreenActive     bool
+	PTYAlternateScreenPending    []byte
 }
 
 type restartRequestMode uint8
@@ -505,6 +507,22 @@ func (sp *InstanceProcess) writeClientsLocked(messageType int, data []byte) {
 	}
 }
 
+func (sp *InstanceProcess) writeTerminalLiveClientsLocked(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	endSeq := sp.History.EndSeq()
+	for client := range sp.Clients {
+		if !client.TerminalReady.Load() {
+			continue
+		}
+		client.TerminalCursor = endSeq
+		if !client.Enqueue(websocket.BinaryMessage, data) {
+			delete(sp.Clients, client)
+		}
+	}
+}
+
 func (sp *InstanceProcess) sendClientsLocked(messageType int, data []byte) {
 	for client := range sp.Clients {
 		if !client.Enqueue(messageType, data) {
@@ -595,7 +613,7 @@ func (sp *InstanceProcess) AddClientWithHistoryLocked(client *WSClient) []byte {
 		return nil
 	}
 	historyCopy, cursor := sp.History.Snapshot()
-	if cfg.IsPTYTerminal(sp.activeTerminalLocked()) {
+	if sp.shouldSkipHistoryForTerminalInitialLocked() {
 		historyCopy = nil
 	}
 	client.Instance = sp
@@ -610,7 +628,7 @@ func (sp *InstanceProcess) AddClientTerminalInitialLocked(client *WSClient, rese
 		return TerminalInitialMessage{Reset: append([]byte(nil), reset...)}
 	}
 	historyCopy, cursor := sp.History.Snapshot()
-	if cfg.IsPTYTerminal(sp.activeTerminalLocked()) {
+	if sp.shouldSkipHistoryForTerminalInitialLocked() {
 		historyCopy = nil
 	}
 	client.Instance = sp
@@ -625,6 +643,15 @@ func (sp *InstanceProcess) AttachClientLocked(client *WSClient) {
 	}
 	client.Instance = sp
 	sp.Clients[client] = true
+}
+
+func (sp *InstanceProcess) shouldSkipHistoryForTerminalInitialLocked() bool {
+	return cfg.IsPTYTerminal(sp.activeTerminalLocked()) && sp.PTYAlternateScreenActive
+}
+
+func (sp *InstanceProcess) resetPTYAlternateScreenStateLocked() {
+	sp.PTYAlternateScreenActive = false
+	sp.PTYAlternateScreenPending = nil
 }
 
 func (sp *InstanceProcess) syncStatusFlagsLocked() {
@@ -716,6 +743,7 @@ func (sp *InstanceProcess) setProcessExitedLocked() {
 	sp.cancelStopLocked()
 	sp.cancelStartLocked()
 	sp.ProxySeq = 0
+	sp.resetPTYAlternateScreenStateLocked()
 	sp.enterStoppedStateLocked()
 }
 
@@ -842,6 +870,7 @@ func (sp *InstanceProcess) commitPreparedStartLocked(reserved *startReservation,
 		restartCount++
 	}
 	sp.ActiveTerminalMode = cfg.NormalizeTerminalMode(reserved.ins.Terminal)
+	sp.resetPTYAlternateScreenStateLocked()
 	proxySeq := sp.setProcessStartedLocked(prepared.startTime, restartCount)
 	if cfg.IsPTYTerminal(reserved.ins.Terminal) {
 		sp.TerminalStartupProtecting = true
