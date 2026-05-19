@@ -327,6 +327,12 @@ func executeTask(sp *InstanceProcess, taskName string, action string, command st
 
 	limit := cfg.GetHistoryLimit() * 1024
 	sp.Mu.Lock()
+	if sp.Updating {
+		terminalMsg := buildTerminalMessage("\x1b[33m", fmt.Sprintf(msg.ScheduledTaskSkippedUpdatingFmt, taskName))
+		sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
+		sp.Mu.Unlock()
+		return
+	}
 	terminalMsg := buildTerminalMessage("\x1b[34m", fmt.Sprintf(msg.ScheduledTaskTriggeredFmt, taskName, action))
 	sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
 	sp.Mu.Unlock()

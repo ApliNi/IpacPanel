@@ -357,7 +357,7 @@ export const streamFileBatchAction = async (name, payload) => {
 	return res;
 };
 
-export const streamFileExtractAction = async (name, payload) => {
+export const streamFileExtractAction = async (name, payload, options = {}) => {
 	const res = await authedFetch(`/api/file/extract?name=${encodeURIComponent(name)}`, {
 		method: 'POST',
 		headers: {
@@ -365,6 +365,7 @@ export const streamFileExtractAction = async (name, payload) => {
 			'Accept': 'text/event-stream',
 		},
 		body: JSON.stringify(payload || {}),
+		signal: options && options.signal ? options.signal : undefined,
 	});
 	if (!res.ok) {
 		const err = await res.text().catch(() => '');

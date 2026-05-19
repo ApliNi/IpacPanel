@@ -826,11 +826,10 @@ func saveInstances(instances []Instance) error {
 func LoadConfig() error {
 	data, err := os.ReadFile(ResolveDataPath("config.yml"))
 	if err != nil {
-		if os.IsNotExist(err) {
-			log.Printf("配置文件不存在，使用默认配置")
-		} else {
-			log.Printf("读取 config.yml 失败，使用默认配置：%v", err)
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("读取 config.yml 失败: %w", err)
 		}
+		log.Printf("配置文件不存在, 使用默认配置")
 		CurrentConfig = NewDefaultConfig()
 		authUsers, authErr := loadNormalizedAuth()
 		if authErr != nil {
@@ -839,15 +838,20 @@ func LoadConfig() error {
 		CurrentConfig.Auth = authUsers
 		instances, instancesErr := loadInstances()
 		if instancesErr != nil {
-			log.Printf("读取 instances.yml 失败：%v", instancesErr)
-		} else {
-			CurrentConfig.Instances = instances
+			return fmt.Errorf("读取 instances.yml 失败: %w", instancesErr)
 		}
+		CurrentConfig.Instances = instances
 		NormalizeConfig()
 		if InitializeInstanceRegistryHook != nil {
 			InitializeInstanceRegistryHook(CurrentConfig.Instances)
 		}
-		if err := EnsureAdminUser(); err != nil {
+		ManagerMu.RLock()
+		cfg := CloneConfigLocked()
+		ManagerMu.RUnlock()
+		if err := CreateConfigFileSnapshot(cfg); err != nil {
+			return fmt.Errorf("创建 config.yml 失败: %w", err)
+		}
+		if err := ensureAdminUserAuthOnly(); err != nil {
 			return err
 		}
 		return nil
@@ -867,10 +871,9 @@ func LoadConfig() error {
 
 	instances, err := loadInstances()
 	if err != nil {
-		log.Printf("读取 instances.yml 失败：%v", err)
-	} else {
-		CurrentConfig.Instances = instances
+		return fmt.Errorf("读取 instances.yml 失败: %w", err)
 	}
+	CurrentConfig.Instances = instances
 
 	NormalizeConfig()
 	if InitializeInstanceRegistryHook != nil {
@@ -899,6 +902,62 @@ func SaveConfigSnapshot(cfg Config) error {
 	if err := writeConfigAtomic(ResolveDataPath("config.yml"), data); err != nil {
 		return err
 	}
+	return nil
+}
+
+func CreateConfigFileSnapshot(cfg Config) error {
+	configWriteMu.Lock()
+	defer configWriteMu.Unlock()
+
+	data, err := marshalPersistedConfig(cfg)
+	if err != nil {
+		return err
+	}
+	if err := file.WriteFile(ResolveDataPath("config.yml"), data, file.Options{Overwrite: false, Mode: 0644, SyncDir: true}); err != nil {
+		if os.IsExist(err) || errors.Is(err, os.ErrExist) {
+			// Concurrent creation means the config file already exists.
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func ensureAdminUserAuthOnly() error {
+	ManagerMu.Lock()
+	if len(CurrentConfig.Auth) > 0 {
+		ManagerMu.Unlock()
+		return nil
+	}
+	ManagerMu.Unlock()
+
+	passPlain, err := generateRandomPassword(9)
+	if err != nil {
+		return err
+	}
+	stored, err := HashPassword(passPlain)
+	if err != nil {
+		return err
+	}
+
+	ManagerMu.Lock()
+	if len(CurrentConfig.Auth) > 0 {
+		ManagerMu.Unlock()
+		return nil
+	}
+	CurrentConfig.Auth = []AuthUser{{
+		User: "admin",
+		Pass: stored,
+		Perm: 7,
+	}}
+	users := CloneAuthUsers(CurrentConfig.Auth)
+	ManagerMu.Unlock()
+
+	if err := saveAuth(users); err != nil {
+		return err
+	}
+
+	log.Printf(msg.InitialAdminUserCreatedLog, passPlain)
 	return nil
 }
 

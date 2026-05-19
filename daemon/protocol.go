@@ -20,6 +20,7 @@ const ipcFrameSeparator = ": "
 const ipcFramePrefix byte = ':'
 
 const ipcFrameTypeInstanceOutput = "o"
+const ipcFrameTypeCleanupMessage = "cleanup_message"
 const ipcFrameInstanceOutputPrefix = ":o:"
 
 type IPCRequest struct {
@@ -44,9 +45,11 @@ type IPCRequest struct {
 }
 
 type IPCResponse struct {
-	Type           string                 `json:"-"`
+	Type           string                 `json:"type,omitempty"`
 	ID             uint64                 `json:"id,omitempty"`
 	Msg            string                 `json:"msg,omitempty"`
+	Placeholder    string                 `json:"placeholder,omitempty"`
+	Args           []string               `json:"args,omitempty"`
 	Instance       string                 `json:"instance,omitempty"`
 	BodyLen        int                    `json:"body_len,omitempty"`
 	Body           []byte                 `json:"-"`

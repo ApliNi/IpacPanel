@@ -4,6 +4,7 @@ package terminal
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -54,7 +55,7 @@ func buildWindowsCommand(path string, command string) (*windowsCommand, error) {
 		return nil, err
 	}
 	if len(args) == 0 {
-		return nil, errEmptyCommand
+		return nil, errors.New("command is empty")
 	}
 
 	resolved, err := resolveWindowsExecutable(path, args[0])
@@ -78,7 +79,7 @@ func BuildCommand(path string, command string) (*exec.Cmd, error) {
 		return nil, err
 	}
 	if len(resolved.args) == 0 {
-		return nil, errEmptyCommand
+		return nil, errors.New("command is empty")
 	}
 	cmd := exec.Command(resolved.args[0], resolved.args[1:]...)
 	if path = normalizeWindowsPath(path); path != "" {
@@ -90,7 +91,7 @@ func BuildCommand(path string, command string) (*exec.Cmd, error) {
 func resolveWindowsExecutable(path string, entry string) (string, error) {
 	entry = strings.TrimSpace(entry)
 	if entry == "" {
-		return "", errEmptyCommand
+		return "", errors.New("command is empty")
 	}
 
 	if filepath.Base(entry) != entry {
@@ -185,10 +186,10 @@ func windowsCommandLine(args []string) string {
 
 func Start(path string, command string, usePTY bool, inputEncoding string, outputEncoding string) (*Proxy, error) {
 	if _, ok := NormalizeTerminalEncoding(inputEncoding); !ok {
-		return nil, errInvalidEncoding
+		return nil, errors.New("terminal encoding is invalid")
 	}
 	if _, ok := NormalizeTerminalEncoding(outputEncoding); !ok {
-		return nil, errInvalidEncoding
+		return nil, errors.New("terminal encoding is invalid")
 	}
 	inputEncoding, _ = NormalizeTerminalEncoding(inputEncoding)
 	outputEncoding, _ = NormalizeTerminalEncoding(outputEncoding)
@@ -288,10 +289,10 @@ func copyPipeOutput(wg *sync.WaitGroup, dst *io.PipeWriter, src io.ReadCloser) {
 
 func (p *Proxy) UpdateEncoding(inputEncoding string, outputEncoding string) error {
 	if _, ok := NormalizeTerminalEncoding(inputEncoding); !ok {
-		return errInvalidEncoding
+		return errors.New("terminal encoding is invalid")
 	}
 	if _, ok := NormalizeTerminalEncoding(outputEncoding); !ok {
-		return errInvalidEncoding
+		return errors.New("terminal encoding is invalid")
 	}
 	if p.inputWriter != nil {
 		p.inputWriter.SetEncoding(inputEncoding)

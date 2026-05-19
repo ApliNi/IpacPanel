@@ -26,6 +26,7 @@ func HandleApiInstanceGet(w http.ResponseWriter, r *http.Request) {
 			Name:           status.Name,
 			Group:          status.Group,
 			Running:        status.Running,
+			Updating:       status.Updating,
 			Restarting:     status.Restarting,
 			StartTime:      status.StartTime,
 			RestartCount:   status.RestartCount,

@@ -1211,6 +1211,10 @@ button:active,
     transition: opacity 0.24s, transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+.modal-card-loading .modal-card-loading-content,
+.modal-card-loading-content.modal-card-loading {
+	pointer-events: none;
+}
 
 .modal-header {
     display: flex;

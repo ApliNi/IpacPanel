@@ -71,7 +71,7 @@ const ensureDom = () => {
 	return !!(dom.fileList && dom.fileCurrentPath);
 };
 
-const LAST_DIRS_KEY = 'IpacPanelFileLastDirs';
+const LAST_DIRS_KEY = 'IpacPanel.fileLastDirs';
 const LAST_DIRS_LIMIT = 128;
 
 const safeJsonParse = (text, fallback) => {
@@ -1070,6 +1070,13 @@ const bindEvents = () => {
 		dom.fileSearchInput.oninput = () => {
 			clearFileListError();
 		};
+		dom.fileSearchInput.onkeydown = (event) => {
+			if (event.repeat || event.isComposing || event.keyCode === 229 || event.key !== 'Enter') {
+				return;
+			}
+			event.preventDefault();
+			submitFileSearch();
+		};
 		dom.fileSearchInput.onblur = () => {
 			submitFileSearch();
 		};
@@ -1237,7 +1244,7 @@ const bindEvents = () => {
 				}
 				return;
 			}
-			if (fileType === 'text' || fileType === 'code' || fileType === 'config' || fileType === 'terminal' || fileType === 'file') {
+			if (fileType === 'text' || fileType === 'list' || fileType === 'code' || fileType === 'config' || fileType === 'terminal' || fileType === 'file') {
 				const entrySize = entry && typeof entry.size === 'number' ? entry.size : 0;
 				void openTextFile(fullPath, fileName, entrySize);
 				return;

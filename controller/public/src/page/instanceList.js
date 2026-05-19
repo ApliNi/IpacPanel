@@ -214,7 +214,7 @@ const setItemHTMLAndSig = (item, svc) => {
 	}
 
 	const accessLinkSig = String(svc.access_links || '');
-	const currentSig = `${svc.running}-${svc.restarting}-${svc.start_time}-${svc.restart_count}-${accessLinkSig}`;
+	const currentSig = `${svc.running}-${svc.updating}-${svc.restarting}-${svc.start_time}-${svc.restart_count}-${accessLinkSig}`;
 	if (item.getAttribute('data-sig') === currentSig) {
 		return;
 	}
@@ -225,6 +225,9 @@ const setItemHTMLAndSig = (item, svc) => {
 	let statusClass = svc.running ? 'status-online' : 'status-offline';
 	if (svc.restarting) {
 		statusText = 'RESTART';
+		statusClass = 'status-restart';
+	} else if (svc.updating) {
+		statusText = 'UPDATE';
 		statusClass = 'status-restart';
 	}
 

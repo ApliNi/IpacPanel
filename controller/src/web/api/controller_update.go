@@ -382,7 +382,7 @@ func HandleApiControllerUpdateUploadChunk(w http.ResponseWriter, r *http.Request
 			return
 		}
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			web.WriteAPIError(w, http.StatusBadRequest, msg.UploadChunkSizeMismatch, err)
+			web.WriteAPIError(w, http.StatusBadRequest, msg.UploadChunkIncomplete, err)
 			return
 		}
 		web.WriteAPIError(w, http.StatusBadRequest, msg.ReadUploadChunkFailed, err)
@@ -390,7 +390,7 @@ func HandleApiControllerUpdateUploadChunk(w http.ResponseWriter, r *http.Request
 	}
 	var extra [1]byte
 	if n, err := r.Body.Read(extra[:]); n > 0 {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.UploadChunkSizeMismatch, fmt.Errorf(msg.ReceivedMoreThanFmt, plan.Size))
+		web.WriteAPIError(w, http.StatusBadRequest, msg.UploadChunkDataExceedsExpected, fmt.Errorf(msg.ReceivedMoreThanFmt, plan.Size))
 		return
 	} else if err != nil && !errors.Is(err, io.EOF) {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.ReadUploadChunkFailed, err)

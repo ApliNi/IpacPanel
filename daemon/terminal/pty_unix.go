@@ -3,6 +3,7 @@
 package terminal
 
 import (
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -28,10 +29,10 @@ func Start(path string, command string, usePTY bool, inputEncoding string, outpu
 		return nil, err
 	}
 	if _, ok := NormalizeTerminalEncoding(inputEncoding); !ok {
-		return nil, errInvalidEncoding
+		return nil, errors.New("terminal encoding is invalid")
 	}
 	if _, ok := NormalizeTerminalEncoding(outputEncoding); !ok {
-		return nil, errInvalidEncoding
+		return nil, errors.New("terminal encoding is invalid")
 	}
 	inputEncoding, _ = NormalizeTerminalEncoding(inputEncoding)
 	outputEncoding, _ = NormalizeTerminalEncoding(outputEncoding)
@@ -59,7 +60,7 @@ func buildUnixCommand(path string, command string) (*exec.Cmd, error) {
 			return nil, err
 		}
 		if len(args) == 0 {
-			return nil, errEmptyCommand
+			return nil, errors.New("command is empty")
 		}
 		cmd = exec.Command(args[0], args[1:]...)
 	}
@@ -146,10 +147,10 @@ func (p *Proxy) Write(b []byte) (int, error) {
 
 func (p *Proxy) UpdateEncoding(inputEncoding string, outputEncoding string) error {
 	if _, ok := NormalizeTerminalEncoding(inputEncoding); !ok {
-		return errInvalidEncoding
+		return errors.New("terminal encoding is invalid")
 	}
 	if _, ok := NormalizeTerminalEncoding(outputEncoding); !ok {
-		return errInvalidEncoding
+		return errors.New("terminal encoding is invalid")
 	}
 	if p.inputWriter != nil {
 		p.inputWriter.SetEncoding(inputEncoding)

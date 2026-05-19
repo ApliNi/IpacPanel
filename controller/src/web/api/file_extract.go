@@ -89,9 +89,6 @@ func extractArchiveErrorMessage(err error) string {
 	if errors.Is(err, context.Canceled) {
 		return msg.ExtractCanceled
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return msg.ExtractTimedOut
-	}
 	if errors.Is(err, os.ErrPermission) {
 		return msg.ExtractPermissionDenied
 	}
@@ -101,14 +98,8 @@ func extractArchiveErrorMessage(err error) string {
 	if errors.Is(err, os.ErrExist) {
 		return msg.ExtractTargetAlreadyExists
 	}
-	if errors.Is(err, errExtractTimedOut) {
-		return msg.ExtractTimedOut
-	}
 	if errors.Is(err, errExtractInvalidPath) {
 		return msg.ArchiveContainsInvalidPath
-	}
-	if errors.Is(err, errExtractEntryLimit) || errors.Is(err, errExtractFileLimit) || errors.Is(err, errExtractDirLimit) || errors.Is(err, errExtractFileTooLarge) || errors.Is(err, errExtractTotalTooLarge) {
-		return err.Error()
 	}
 	message := strings.TrimSpace(err.Error())
 	if message == msg.ArchiveContainsInvalidPath || message == msg.ArchiveFormatUnsupported {
@@ -165,80 +156,7 @@ var extractCopyBufferPool = sync.Pool{
 	},
 }
 
-const (
-	maxExtractEntries         = 10000
-	maxExtractFiles           = 8000
-	maxExtractDirs            = 4000
-	maxExtractSingleFileBytes = 512 * 1024 * 1024
-	maxExtractTotalBytes      = 2 * 1024 * 1024 * 1024
-	maxExtractPathDepth       = 32
-	maxExtractPathBytes       = 4096
-	maxExtractDuration        = 2 * time.Minute
-)
-
-var (
-	errExtractInvalidPath   = errors.New(msg.ArchiveContainsInvalidPath)
-	errExtractEntryLimit    = errors.New(msg.ArchiveEntryLimitExceeded)
-	errExtractFileLimit     = errors.New(msg.ArchiveFileLimitExceeded)
-	errExtractDirLimit      = errors.New(msg.ArchiveDirectoryLimitExceeded)
-	errExtractFileTooLarge  = errors.New(msg.ArchiveFileTooLarge)
-	errExtractTotalTooLarge = errors.New(msg.ExtractTotalSizeExceeded)
-	errExtractTimedOut      = errors.New(msg.ExtractTimedOut)
-)
-
-type extractBudget struct {
-	startedAt         time.Time
-	entryCount        int
-	fileCount         int
-	dirCount          int
-	totalWrittenBytes int64
-}
-
-func newExtractBudget() *extractBudget {
-	return &extractBudget{startedAt: time.Now()}
-}
-
-func (b *extractBudget) beforeEntry(isDir bool) error {
-	if b == nil {
-		return nil
-	}
-	if time.Since(b.startedAt) > maxExtractDuration {
-		return errExtractTimedOut
-	}
-	b.entryCount++
-	if b.entryCount > maxExtractEntries {
-		return errExtractEntryLimit
-	}
-	if isDir {
-		b.dirCount++
-		if b.dirCount > maxExtractDirs {
-			return errExtractDirLimit
-		}
-		return nil
-	}
-	b.fileCount++
-	if b.fileCount > maxExtractFiles {
-		return errExtractFileLimit
-	}
-	return nil
-}
-
-func (b *extractBudget) addWritten(n int64, currentFileWritten int64) error {
-	if b == nil || n <= 0 {
-		return nil
-	}
-	if currentFileWritten > maxExtractSingleFileBytes {
-		return errExtractFileTooLarge
-	}
-	b.totalWrittenBytes += n
-	if b.totalWrittenBytes > maxExtractTotalBytes {
-		return errExtractTotalTooLarge
-	}
-	if time.Since(b.startedAt) > maxExtractDuration {
-		return errExtractTimedOut
-	}
-	return nil
-}
+var errExtractInvalidPath = errors.New(msg.ArchiveContainsInvalidPath)
 
 type mkdirCache struct {
 	dirs map[string]struct{}
@@ -340,10 +258,6 @@ func resolveExtractOutputPath(baseDir string, entryName string) (string, error) 
 	if name == "" {
 		return "", nil
 	}
-	if len(name) > maxExtractPathBytes {
-		return "", errExtractInvalidPath
-	}
-	depth := 0
 	for _, part := range strings.Split(name, "/") {
 		part = strings.TrimSpace(part)
 		if part == "" || part == "." {
@@ -352,10 +266,6 @@ func resolveExtractOutputPath(baseDir string, entryName string) (string, error) 
 		if part == ".." {
 			return "", errExtractInvalidPath
 		}
-		depth++
-	}
-	if depth > maxExtractPathDepth {
-		return "", errExtractInvalidPath
 	}
 	dest := filepath.Join(baseDir, filepath.FromSlash(name))
 	cleanBase := filepath.Clean(baseDir)
@@ -366,12 +276,22 @@ func resolveExtractOutputPath(baseDir string, entryName string) (string, error) 
 	return cleanDest, nil
 }
 
-func writeExtractedFile(baseDir string, dst string, mode os.FileMode, src io.Reader, dirCache *mkdirCache, overwrite bool, budget *extractBudget) (int64, error) {
+func writeExtractedFile(ctx context.Context, baseDir string, dst string, mode os.FileMode, src io.Reader, dirCache *mkdirCache, overwrite bool) (int64, error) {
 	if err := ensurePathComponentsWithinRoot(baseDir, dst, false); err != nil {
 		return 0, errExtractInvalidPath
 	}
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	default:
+	}
 	if err := dirCache.ensure(filepath.Dir(dst)); err != nil {
 		return 0, err
+	}
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	default:
 	}
 	temp, tempPath, err := openAtomicTempFileWithinRoot(baseDir, dst, mode)
 	if err != nil {
@@ -390,10 +310,22 @@ func writeExtractedFile(baseDir string, dst string, mode os.FileMode, src io.Rea
 	var copyErr error
 	var totalWritten int64
 	for {
+		select {
+		case <-ctx.Done():
+			copyErr = ctx.Err()
+		default:
+		}
+		if copyErr != nil {
+			break
+		}
 		n, readErr := src.Read(buf)
 		if n > 0 {
-			if err := budget.addWritten(int64(n), totalWritten+int64(n)); err != nil {
-				copyErr = err
+			select {
+			case <-ctx.Done():
+				copyErr = ctx.Err()
+			default:
+			}
+			if copyErr != nil {
 				break
 			}
 			written, writeErr := temp.Write(buf[:n])
@@ -483,8 +415,6 @@ func (r *extractReadCloser) Close() error {
 }
 
 func extractArchiveWithFormat(ctx context.Context, format archives.Format, archivePath string, targetAbs string, extractHere bool, overwrite bool, sse *web.SSEWriter) (*extractResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, maxExtractDuration)
-	defer cancel()
 	archiveReader, err := openArchiveReader(format, archivePath)
 	if err != nil {
 		return nil, err
@@ -499,7 +429,6 @@ func extractArchiveWithFormat(ctx context.Context, format archives.Format, archi
 	baseDir := targetAbs
 	dirCache := newMkdirCache()
 	result := &extractResult{}
-	budget := newExtractBudget()
 	if !extractHere {
 		if err := dirCache.ensure(baseDir); err != nil {
 			return nil, err
@@ -518,9 +447,6 @@ func extractArchiveWithFormat(ctx context.Context, format archives.Format, archi
 			return progress.advance(0)
 		}
 		isDir := info.FileInfo != nil && info.IsDir()
-		if err := budget.beforeEntry(isDir); err != nil {
-			return err
-		}
 		cleanDest, err := resolveExtractOutputPath(baseDir, name)
 		if err != nil {
 			return err
@@ -551,7 +477,7 @@ func extractArchiveWithFormat(ctx context.Context, format archives.Format, archi
 		if info.FileInfo != nil {
 			mode = info.Mode()
 		}
-		writtenBytes, writeErr := writeExtractedFile(baseDir, cleanDest, mode, f, dirCache, overwrite, budget)
+		writtenBytes, writeErr := writeExtractedFile(ctx, baseDir, cleanDest, mode, f, dirCache, overwrite)
 		closeErr := f.Close()
 		if writeErr != nil {
 			if errors.Is(writeErr, os.ErrExist) {
@@ -710,7 +636,7 @@ func HandleApiFileExtract(w http.ResponseWriter, r *http.Request) {
 	keepAliveStop := make(chan struct{})
 	defer close(keepAliveStop)
 	go func() {
-		t := time.NewTicker(10 * time.Second)
+		t := time.NewTicker(sseKeepaliveInterval)
 		defer t.Stop()
 		for {
 			select {

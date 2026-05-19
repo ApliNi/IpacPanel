@@ -63,7 +63,7 @@
 }
 
 .instance-group:open {
-	margin-bottom: 14px;
+	margin-bottom: 24px;
 }
 
 .instance-group[open] > .instance-group-summary::before {

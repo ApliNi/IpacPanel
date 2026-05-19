@@ -14,10 +14,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	Version = "0.1.0"
-)
-
 type versionInfo struct {
 	Role           string `yaml:"role"`
 	Version        string `yaml:"version"`
@@ -34,7 +30,7 @@ func publicFS() (fs.FS, error) {
 func PrintVersion() {
 	info := versionInfo{
 		Role:           "controller",
-		Version:        Version,
+		Version:        version.ControllerVersion,
 		DaemonProtocol: version.DaemonProtocol,
 	}
 	var out bytes.Buffer

@@ -37,6 +37,7 @@ const (
 	dashboardDeviceKindDisk      = int64(2)
 	sqliteBusyTimeoutMS          = 5000
 	sqliteConnectTimeout         = 5 * time.Second
+	sqliteCompactTimeout         = 30 * time.Second
 	dashboardSQLiteDBName        = "dashboard.sqlite3"
 )
 
@@ -149,12 +150,14 @@ type sqliteBucketAggregate struct {
 
 type Collector struct {
 	mu                    sync.Mutex
+	sqliteMu              sync.Mutex
 	enabled               bool
 	retentionMinutes      int
 	storageMode           string
 	sqliteMaxDay          int
 	sqliteCompactAfterDay int
 	sqlitePath            string
+	sqliteGeneration      uint64
 	nextSeq               int64
 	samples               []Sample
 	sqlitePending         []Sample
@@ -199,9 +202,13 @@ func (c *Collector) ApplyConfig(config Config) {
 	c.sqliteMaxDay = sqliteMaxDay
 	c.sqliteCompactAfterDay = sqliteCompactAfterDay
 	c.sqlitePath = sqlitePath
+	pathChanged := previousSQLitePath != sqlitePath || previousStorageMode != storageMode
+	c.sqliteGeneration++
+	sqliteGeneration := c.sqliteGeneration
 	if !config.Enabled || retentionMinutes <= 0 {
 		c.enabled = false
 		c.samples = nil
+		pending := c.takeSQLitePendingLocked()
 		c.interfaces = make(map[string]struct{})
 		c.disks = make(map[string]struct{})
 		stopCh := c.stopCh
@@ -215,21 +222,23 @@ func (c *Collector) ApplyConfig(config Config) {
 		c.mu.Unlock()
 		c.stopRunLoop(stopCh, doneCh)
 		if previousStorageMode == storageModeSQLite {
-			c.flushSQLitePendingToPath(previousSQLitePath)
+			c.writeSQLiteSamplesToStandalonePath(previousSQLitePath, pending)
 		}
 		c.closeSQLite()
 		return
 	}
 	if c.enabled {
-		pathChanged := previousSQLitePath != sqlitePath || previousStorageMode != storageMode
+		var previousPending []Sample
+		if previousStorageMode == storageModeSQLite && pathChanged {
+			previousPending = c.takeSQLitePendingLocked()
+		}
 		c.trimLocked(time.Now())
 		c.mu.Unlock()
 		if previousStorageMode == storageModeSQLite && pathChanged {
-			c.flushSQLitePendingToPath(previousSQLitePath)
+			c.writeSQLiteSamplesToStandalonePath(previousSQLitePath, previousPending)
 		}
 		if storageMode == storageModeSQLite {
-			c.ensureSQLite(sqlitePath)
-			c.cleanupSQLite(sqliteMaxDay, sqliteCompactAfterDay)
+			c.startSQLiteMaintenance(sqlitePath, sqliteMaxDay, sqliteCompactAfterDay, sqliteGeneration)
 		} else {
 			c.closeSQLite()
 		}
@@ -246,8 +255,7 @@ func (c *Collector) ApplyConfig(config Config) {
 	c.lastDiskTime = time.Time{}
 	c.mu.Unlock()
 	if storageMode == storageModeSQLite {
-		c.ensureSQLite(sqlitePath)
-		c.cleanupSQLite(sqliteMaxDay, sqliteCompactAfterDay)
+		c.startSQLiteMaintenance(sqlitePath, sqliteMaxDay, sqliteCompactAfterDay, sqliteGeneration)
 	}
 	go c.run(stopCh, doneCh)
 }
@@ -258,6 +266,8 @@ func (c *Collector) Stop() {
 	doneCh := c.doneCh
 	storageMode := c.storageMode
 	sqlitePath := c.sqlitePath
+	pending := c.takeSQLitePendingLocked()
+	c.sqliteGeneration++
 	c.enabled = false
 	c.stopCh = nil
 	c.doneCh = nil
@@ -271,7 +281,7 @@ func (c *Collector) Stop() {
 	c.mu.Unlock()
 	c.stopRunLoop(stopCh, doneCh)
 	if storageMode == storageModeSQLite {
-		c.flushSQLitePendingToPath(sqlitePath)
+		c.writeSQLiteSamplesToStandalonePath(sqlitePath, pending)
 	}
 	c.closeSQLite()
 }
@@ -287,6 +297,8 @@ func (c *Collector) Snapshot(minutes int, nic string, disk string, maxPoints int
 	enabled := c.enabled
 	retentionMinutes := c.retentionMinutes
 	storageMode := c.storageMode
+	sqlitePath := c.sqlitePath
+	sqliteGeneration := c.sqliteGeneration
 	interfaces := sortedInterfacesLocked(c.interfaces)
 	disks := sortedDisksLocked(c.disks)
 	memory := make([]Sample, 0, len(c.samples))
@@ -298,7 +310,7 @@ func (c *Collector) Snapshot(minutes int, nic string, disk string, maxPoints int
 	}
 	c.mu.Unlock()
 	if enabled && storageMode == storageModeSQLite {
-		storedInterfaces, storedDisks := c.querySQLiteHardware()
+		storedInterfaces, storedDisks := c.querySQLiteHardware(sqlitePath, sqliteGeneration)
 		interfaces = mergeSortedStrings(interfaces, storedInterfaces)
 		disks = mergeSortedStrings(disks, storedDisks)
 	}
@@ -309,7 +321,7 @@ func (c *Collector) Snapshot(minutes int, nic string, disk string, maxPoints int
 		if len(memory) > 0 {
 			queryTo = memory[0].Time.Add(-time.Second)
 		}
-		samples = c.querySQLiteSamples(cutoff, queryTo, maxPoints, nic, disk)
+		samples = c.querySQLiteSamples(sqlitePath, sqliteGeneration, cutoff, queryTo, maxPoints, nic, disk)
 		samples = mergeHistorySamples(samples, memory)
 		samples = downsampleSamples(samples, maxPoints)
 	} else {
@@ -346,11 +358,13 @@ func (c *Collector) Metadata() Metadata {
 	enabled := c.enabled
 	storageMode := c.storageMode
 	retentionMinutes := c.retentionMinutes
+	sqlitePath := c.sqlitePath
+	sqliteGeneration := c.sqliteGeneration
 	interfaces := sortedInterfacesLocked(c.interfaces)
 	disks := sortedDisksLocked(c.disks)
 	c.mu.Unlock()
 	if enabled && storageMode == storageModeSQLite {
-		storedInterfaces, storedDisks := c.querySQLiteHardware()
+		storedInterfaces, storedDisks := c.querySQLiteHardware(sqlitePath, sqliteGeneration)
 		interfaces = mergeSortedStrings(interfaces, storedInterfaces)
 		disks = mergeSortedStrings(disks, storedDisks)
 	}
@@ -463,37 +477,97 @@ func (c *Collector) flushSQLitePending() {
 	}
 	pending := c.takeSQLitePendingLocked()
 	path := c.sqlitePath
+	generation := c.sqliteGeneration
 	c.mu.Unlock()
-	c.writeSQLiteSamplesToPath(path, pending)
+	c.writeSQLiteSamplesToCurrentPath(path, generation, pending)
 }
 
 func (c *Collector) flushSQLitePendingToPath(path string) {
 	c.mu.Lock()
 	pending := c.takeSQLitePendingLocked()
 	c.mu.Unlock()
-	c.writeSQLiteSamplesToPath(path, pending)
+	c.writeSQLiteSamplesToStandalonePath(path, pending)
 }
 
-func (c *Collector) writeSQLiteSamplesToPath(path string, samples []Sample) {
+func (c *Collector) writeSQLiteSamplesToCurrentPath(path string, generation uint64, samples []Sample) {
 	if len(samples) == 0 {
 		return
 	}
-	if err := c.ensureSQLite(path); err != nil {
+	if err := c.ensureSQLite(path, generation); err != nil {
 		log.Printf("dashboard sqlite warning: 初始化数据库失败: %v", err)
 		return
 	}
-	db := c.currentDB()
+	c.sqliteMu.Lock()
+	db := c.currentDBForPath(path, generation)
 	if db == nil {
-		log.Printf("dashboard sqlite warning: 数据库未打开")
+		c.sqliteMu.Unlock()
+		c.writeSQLiteSamplesToStandalonePath(path, samples)
 		return
 	}
+	err := writeSQLiteSamples(db, samples)
+	c.sqliteMu.Unlock()
+	if err != nil {
+		log.Printf("dashboard sqlite warning: 写入仪表板数据失败: %v", err)
+	}
+}
+
+func (c *Collector) writeSQLiteSamplesToStandalonePath(path string, samples []Sample) {
+	if len(samples) == 0 {
+		return
+	}
+	path = normalizeSQLitePath(path)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		log.Printf("dashboard sqlite warning: 创建仪表板数据库目录失败: %v", err)
+		return
+	}
+	db, err := openSQLite(path)
+	if err != nil {
+		log.Printf("dashboard sqlite warning: 初始化数据库失败: %v", err)
+		return
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Printf("dashboard sqlite warning: 关闭数据库失败: %v", err)
+		}
+	}()
 	if err := writeSQLiteSamples(db, samples); err != nil {
 		log.Printf("dashboard sqlite warning: 写入仪表板数据失败: %v", err)
 	}
 }
 
-func (c *Collector) ensureSQLite(path string) error {
+func (c *Collector) startSQLiteMaintenance(path string, maxDay int, compactAfterDay int, generation uint64) {
+	go func() {
+		if err := c.ensureSQLite(path, generation); err != nil {
+			log.Printf("dashboard sqlite warning: 初始化数据库失败: %v", err)
+			return
+		}
+		if !c.sqliteStateMatches(path, generation) {
+			return
+		}
+		c.cleanupSQLiteIfCurrent(path, maxDay, compactAfterDay, generation)
+	}()
+}
+
+func (c *Collector) sqliteStateMatches(path string, generation uint64) bool {
 	path = normalizeSQLitePath(path)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.enabled || c.storageMode != storageModeSQLite || c.sqlitePath != path {
+		return false
+	}
+	return generation == 0 || c.sqliteGeneration == generation
+}
+
+func (c *Collector) ensureSQLite(path string, generation uint64) error {
+	path = normalizeSQLitePath(path)
+	if generation != 0 && !c.sqliteStateMatches(path, generation) {
+		return nil
+	}
+	c.sqliteMu.Lock()
+	defer c.sqliteMu.Unlock()
+	if generation != 0 && !c.sqliteStateMatches(path, generation) {
+		return nil
+	}
 	c.mu.Lock()
 	if c.db != nil && c.dbPath == path {
 		c.mu.Unlock()
@@ -508,6 +582,9 @@ func (c *Collector) ensureSQLite(path string) error {
 			log.Printf("dashboard sqlite warning: 关闭旧数据库失败: %v", err)
 		}
 	}
+	if generation != 0 && !c.sqliteStateMatches(path, generation) {
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return fmt.Errorf("创建仪表板数据库目录失败: %w", err)
 	}
@@ -516,6 +593,13 @@ func (c *Collector) ensureSQLite(path string) error {
 		return err
 	}
 	c.mu.Lock()
+	if generation != 0 && (!c.enabled || c.storageMode != storageModeSQLite || c.sqlitePath != path || c.sqliteGeneration != generation) {
+		c.mu.Unlock()
+		if err := db.Close(); err != nil {
+			log.Printf("dashboard sqlite warning: 关闭过期数据库失败: %v", err)
+		}
+		return nil
+	}
 	c.db = db
 	c.dbPath = path
 	c.mu.Unlock()
@@ -523,6 +607,8 @@ func (c *Collector) ensureSQLite(path string) error {
 }
 
 func (c *Collector) closeSQLite() {
+	c.sqliteMu.Lock()
+	defer c.sqliteMu.Unlock()
 	c.mu.Lock()
 	db := c.db
 	c.db = nil
@@ -535,9 +621,16 @@ func (c *Collector) closeSQLite() {
 	}
 }
 
-func (c *Collector) currentDB() *sql.DB {
+func (c *Collector) currentDBForPath(path string, generation uint64) *sql.DB {
+	path = normalizeSQLitePath(path)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if !c.enabled || c.storageMode != storageModeSQLite || c.sqlitePath != path || c.dbPath != path {
+		return nil
+	}
+	if generation != 0 && c.sqliteGeneration != generation {
+		return nil
+	}
 	return c.db
 }
 
@@ -598,6 +691,7 @@ func initSQLiteSchema(ctx context.Context, db *sql.DB) error {
 	PRIMARY KEY (device_id, ts, seq),
 	FOREIGN KEY (device_id) REFERENCES dashboard_devices(id) ON DELETE CASCADE
 ) WITHOUT ROWID`,
+		`CREATE INDEX IF NOT EXISTS idx_dashboard_device_samples_1s_ts_device ON dashboard_device_samples_1s(ts, device_id)`,
 		`CREATE TABLE IF NOT EXISTS dashboard_samples_1m (
 	bucket_ts INTEGER PRIMARY KEY,
 	sample_count INTEGER NOT NULL,
@@ -988,8 +1082,8 @@ func sqlite1mBucketStart(unix int64) int64 {
 	return unix - unix%sqlite1mBucketSeconds
 }
 
-func (c *Collector) querySQLiteSamples(from time.Time, to time.Time, maxPoints int, nic string, diskName string) []Sample {
-	db := c.currentDB()
+func (c *Collector) querySQLiteSamples(path string, generation uint64, from time.Time, to time.Time, maxPoints int, nic string, diskName string) []Sample {
+	db := c.currentDBForPath(path, generation)
 	if db == nil || to.Before(from) {
 		return nil
 	}
@@ -1146,8 +1240,8 @@ LIMIT ?`, fromUnix, toUnix, from1mBucket, to1mBucket, fromUnix, fromUnix, bucket
 	return samples
 }
 
-func (c *Collector) querySQLiteHardware() ([]string, []string) {
-	db := c.currentDB()
+func (c *Collector) querySQLiteHardware(path string, generation uint64) ([]string, []string) {
+	db := c.currentDBForPath(path, generation)
 	if db == nil {
 		return nil, nil
 	}
@@ -1290,11 +1384,16 @@ ORDER BY bucket_ts ASC`, deviceKind, name, fromUnix, toUnix, deviceKind, name, f
 	}
 }
 
-func (c *Collector) cleanupSQLite(maxDay int, compactAfterDay int) {
+func (c *Collector) cleanupSQLiteIfCurrent(path string, maxDay int, compactAfterDay int, generation uint64) {
+	c.sqliteMu.Lock()
+	defer c.sqliteMu.Unlock()
+	c.cleanupSQLiteDB(c.currentDBForPath(path, generation), maxDay, compactAfterDay)
+}
+
+func (c *Collector) cleanupSQLiteDB(db *sql.DB, maxDay int, compactAfterDay int) {
 	if maxDay <= 0 {
 		return
 	}
-	db := c.currentDB()
 	if db == nil {
 		return
 	}
@@ -1330,7 +1429,7 @@ func compactSQLite1sSamples(db *sql.DB, compactAfterDay int) error {
 		return nil
 	}
 	cutoff := beginningOfLocalDay(time.Now()).AddDate(0, 0, -compactAfterDay).Unix()
-	ctx, cancel := context.WithTimeout(context.Background(), sqliteConnectTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), sqliteCompactTimeout)
 	defer cancel()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1459,13 +1558,15 @@ ON CONFLICT(device_id, bucket_ts) DO UPDATE SET
 func (c *Collector) cleanupCurrentSQLite() {
 	c.mu.Lock()
 	storageMode := c.storageMode
+	path := c.sqlitePath
+	generation := c.sqliteGeneration
 	maxDay := c.sqliteMaxDay
 	compactAfterDay := c.sqliteCompactAfterDay
 	c.mu.Unlock()
 	if storageMode != storageModeSQLite {
 		return
 	}
-	c.cleanupSQLite(maxDay, compactAfterDay)
+	c.cleanupSQLiteIfCurrent(path, maxDay, compactAfterDay, generation)
 }
 
 func dashboardSQLiteDeviceKind(kind string) int64 {

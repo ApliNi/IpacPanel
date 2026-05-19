@@ -30,7 +30,7 @@ console.log('[页面] 控制台页加载中...');
 
 mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 	<div id="instanceModal" class="modal-overlay">
-		<div class="modal-card">
+		<div class="modal-card instance-modal-card">
 			<div class="modal-header">
 				<span id="instanceModalTitle" class="modal-title">CREATE INSTANCE</span>
 				<button id="instanceModalClose" class="modal-close" type="button">×</button>
@@ -42,7 +42,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 					<button id="instanceModalTabTasks" class="filter-btn" type="button" data-page="tasks">TASKS</button>
 					<button id="instanceModalTabDelete" class="filter-btn page-switcher-tab-push-end" type="button" data-page="delete">DELETE</button>
 				</div>
-				<div class="instance-modal-body">
+				<div class="instance-modal-body modal-card-loading-content">
 					<div id="instanceModalPageBasic" class="instance-modal-page active">
 						<div class="field-group">
 							<span>NAME</span>
@@ -257,6 +257,7 @@ const dom = {
 	// file list / file modals are managed by module/fileManager.js
 	// file editor modal is managed by module/textEditor.js
 	instanceModal: document.getElementById('instanceModal'),
+	instanceModalCard: document.querySelector('#instanceModal .instance-modal-card'),
 	instanceTasksHelpModal: document.getElementById('instanceTasksHelpModal'),
 	instanceTasksHelpClose: document.getElementById('instanceTasksHelpClose'),
 	instanceTasksHelpOk: document.getElementById('instanceTasksHelpOk'),
@@ -510,6 +511,7 @@ const setInstanceModalStatus = (text, error = false) => {
 
 const setInstanceModalLoading = (loading) => {
 	pageState.instanceModalLoading = !!loading;
+	if (dom.instanceModalCard) dom.instanceModalCard.classList.toggle('modal-card-loading', !!loading);
 	if (dom.instanceModalSubmit) dom.instanceModalSubmit.disabled = !!loading;
 };
 
@@ -659,6 +661,7 @@ export const openTerminalPage = async (svc, historySize, options = {}) => {
 	}
 	Object.assign(detail, {
 		running: !!svc.running,
+		updating: !!svc.updating,
 		restarting: !!svc.restarting,
 		start_time: svc.start_time || detail.start_time || '',
 		restart_count: Number.isFinite(svc.restart_count) ? svc.restart_count : (detail.restart_count || 0),
@@ -962,6 +965,7 @@ const handleInstanceModalSubmit = async (event) => {
 	}
 	payload.access_links = accessLinksResult.accessLinks;
 
+	let createdInstance = null;
 	if (modalState.mode === 'edit') {
 		const editingName = modalState.editingInstanceName;
 		if (!editingName) {
@@ -970,13 +974,13 @@ const handleInstanceModalSubmit = async (event) => {
 		}
 
 		const updatedResult = await updateInstance(editingName, payload);
-	        if (!updatedResult.ok || !updatedResult.data) {
+		if (!updatedResult.ok || !updatedResult.data) {
 			if (updatedResult.unauthorized) {
 				return;
 			}
 			await showAlert(updatedResult.error || '保存失败', { title: 'ERROR', tone: 'danger' });
-	            return;
-	        }
+			return;
+		}
 		const updated = updatedResult.data;
 		const isEditingCurrentInstance = state.currentInstanceName === editingName;
 		const oldPath = isEditingCurrentInstance ? pageState.currentTerminalSvc?.path : '';
@@ -1011,13 +1015,26 @@ const handleInstanceModalSubmit = async (event) => {
 			await showAlert(createdResult.error || '创建失败', { title: 'ERROR', tone: 'danger' });
 			return;
 		}
+		if (!createdResult.data || typeof createdResult.data.name !== 'string' || !createdResult.data.name.trim()) {
+			await showAlert('创建失败: 接口未返回有效实例数据', { title: 'ERROR', tone: 'danger' });
+			return;
+		}
+		createdInstance = {
+			...createdResult.data,
+			name: createdResult.data.name.trim(),
+		};
 	}
 
 	closeInstanceModal();
-	const instances = await controller.loadInstances();
-	cleanupFileLastDirs((instances || []).map((ins) => String(ins?.name || '')));
-	const targetName = payload.name;
-	const ins = instances.find(instance => instance.name === targetName);
+	const loadedInstances = await controller.loadInstances();
+	if (!Array.isArray(loadedInstances)) {
+		await showAlert('刷新实例列表失败: 返回数据格式异常', { title: 'ERROR', tone: 'danger' });
+		return;
+	}
+	cleanupFileLastDirs(loadedInstances.map((instance) => String(instance.name || '')));
+	const targetName = createdInstance ? createdInstance.name : payload.name;
+	const listInstance = loadedInstances.find(instance => instance.name === targetName);
+	const ins = createdInstance ? { ...(listInstance || {}), ...createdInstance, name: targetName } : listInstance;
 	if (ins) {
 		controller.openInstanceTerminal(ins);
 	}

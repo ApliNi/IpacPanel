@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +25,7 @@ const daemonIPCFramePrefix byte = ':'
 const daemonHelloMsgPrefix = "shanghai_crab"
 
 const daemonIPCFrameTypeInstanceOutput = "o"
+const daemonIPCFrameTypeCleanupMessage = "cleanup_message"
 const daemonIPCFrameInstanceOutputPrefix = ":o:"
 
 const daemonOutputMaxBatchBytes = 512 * 1024
@@ -77,9 +80,11 @@ type daemonIPCRequest struct {
 }
 
 type daemonIPCResponse struct {
-	Type           string               `json:"-"`
+	Type           string               `json:"type,omitempty"`
 	ID             uint64               `json:"id,omitempty"`
 	Msg            string               `json:"msg,omitempty"`
+	Placeholder    string               `json:"placeholder,omitempty"`
+	Args           []string             `json:"args,omitempty"`
 	Instance       string               `json:"instance,omitempty"`
 	BodyLen        int                  `json:"body_len,omitempty"`
 	Body           []byte               `json:"-"`
@@ -341,6 +346,8 @@ func (c *daemonIPCClient) readLoop() {
 		switch resp.Type {
 		case "instance_exited":
 			HandleDaemonInstanceExited(resp.Instance, resp.State)
+		case daemonIPCFrameTypeCleanupMessage:
+			HandleDaemonCleanupMessage(resp.Instance, resp.Placeholder, resp.Args)
 		default:
 			c.deliverResponse(resp)
 		}
@@ -568,6 +575,91 @@ func HandleDaemonInstanceOutput(instanceName string, data []byte) {
 	}
 	sp.writeClientsLocked(websocket.BinaryMessage, data)
 	sp.Mu.Unlock()
+}
+
+func HandleDaemonCleanupMessage(instanceName string, placeholder string, args []string) {
+	sp, ok := GetByRuntimeAlias(instanceName)
+	if !ok || sp == nil || placeholder == "" {
+		return
+	}
+	message, colorCode, ok := renderDaemonCleanupMessage(placeholder, args)
+	if !ok || message == "" {
+		log.Printf("invalid daemon cleanup message: instance=%s placeholder=%q args=%q", instanceName, placeholder, args)
+		return
+	}
+	data := buildTerminalMessage(colorCode, message)
+	limit := cfg.GetHistoryLimit() * 1024
+	sp.Mu.Lock()
+	sp.appendHistoryLocked(data, limit)
+	sp.writeClientsLocked(websocket.BinaryMessage, data)
+	sp.Mu.Unlock()
+}
+
+func renderDaemonCleanupMessage(placeholder string, args []string) (string, string, bool) {
+	normalizedArgs := normalizeDaemonMessageArgs(args)
+	requireArgs := func(count int) bool {
+		if len(normalizedArgs) != count {
+			return false
+		}
+		for _, arg := range normalizedArgs {
+			if arg == "" {
+				return false
+			}
+		}
+		return true
+	}
+	switch placeholder {
+	case "cleanup_command.build_failed":
+		if !requireArgs(1) {
+			return "", "", false
+		}
+		return fmt.Sprintf("清理命令构建失败: %s", normalizedArgs[0]), "\x1b[31m", true
+	case "cleanup_command.stdout_failed":
+		if !requireArgs(1) {
+			return "", "", false
+		}
+		return fmt.Sprintf("清理命令输出读取失败: %s", normalizedArgs[0]), "\x1b[31m", true
+	case "cleanup_command.stderr_failed":
+		if !requireArgs(1) {
+			return "", "", false
+		}
+		return fmt.Sprintf("清理命令错误输出读取失败: %s", normalizedArgs[0]), "\x1b[31m", true
+	case "cleanup_command.start_failed":
+		if !requireArgs(1) {
+			return "", "", false
+		}
+		return fmt.Sprintf("清理命令启动失败: %s", normalizedArgs[0]), "\x1b[31m", true
+	case "cleanup_command.started":
+		if !requireArgs(0) {
+			return "", "", false
+		}
+		return "清理命令开始.", "\x1b[34m", true
+	case "cleanup_command.exited":
+		if !requireArgs(1) {
+			return "", "", false
+		}
+		return fmt.Sprintf("清理命令退出: %s", normalizedArgs[0]), "\x1b[31m", true
+	case "cleanup_command.completed":
+		if !requireArgs(0) {
+			return "", "", false
+		}
+		return "清理命令完成.", "\x1b[34m", true
+	default:
+		return "", "", false
+	}
+}
+
+func normalizeDaemonMessageArgs(args []string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	normalized := make([]string, len(args))
+	for i, arg := range args {
+		arg = strings.ReplaceAll(arg, "\r", " ")
+		arg = strings.ReplaceAll(arg, "\n", " ")
+		normalized[i] = strings.TrimSpace(arg)
+	}
+	return normalized
 }
 
 func HandleDaemonInstanceExited(instanceName string, state *DaemonRuntimeState) {

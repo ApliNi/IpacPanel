@@ -156,6 +156,9 @@ const modalState = {
 	getCurrentDir: null,
 	isArchive: false,
 	extracting: false,
+	extractAbortController: null,
+	extractRunId: 0,
+	extractCanceling: false,
 	extractProgress: {
 		percent: 0,
 		text: '',
@@ -306,13 +309,29 @@ const setExtractProgress = ({ percent, text, detail, error } = {}) => {
 		dom.fileExtractProgress.classList.toggle('hidden', !visible);
 	}
 	if (dom.fileExtractSubmit) {
+		dom.fileExtractSubmit.disabled = modalState.extracting;
 		dom.fileExtractSubmit.textContent = modalState.extracting ? 'RUNNING...' : 'RUN';
+	}
+	if (dom.fileExtractCancel) {
+		dom.fileExtractCancel.disabled = modalState.extractCanceling;
+		dom.fileExtractCancel.textContent = modalState.extractCanceling ? 'CANCELING...' : 'CANCEL';
+	}
+	for (const tab of [dom.fileActionTabInfo, dom.fileActionTabExtract, dom.fileActionTabDelete]) {
+		if (tab) {
+			tab.disabled = modalState.extracting;
+		}
 	}
 	updateExtractTargetMode();
 };
 
 const resetExtractState = () => {
+	modalState.extractRunId += 1;
+	if (modalState.extractAbortController) {
+		modalState.extractAbortController.abort();
+	}
 	modalState.extracting = false;
+	modalState.extractAbortController = null;
+	modalState.extractCanceling = false;
 	modalState.extractProgress = {
 		percent: 0,
 		text: '准备解压...',
@@ -320,6 +339,10 @@ const resetExtractState = () => {
 		error: '',
 	};
 	setExtractProgress();
+};
+
+const isCurrentExtractTask = (abortController, runId) => {
+	return modalState.extractAbortController === abortController && modalState.extractRunId === runId;
 };
 
 const updateExtractTargetMode = () => {
@@ -351,6 +374,38 @@ const extractErrorMessage = (error) => {
 		// 非 JSON 错误消息直接展示原文。
 	}
 	return rawMessage;
+};
+
+const isAbortError = (error) => error && error.name === 'AbortError';
+
+const requestCancelExtract = async () => {
+	if (!modalState.extracting) {
+		close();
+		return;
+	}
+	if (modalState.extractCanceling) {
+		return;
+	}
+	const abortController = modalState.extractAbortController;
+	const extractRunId = modalState.extractRunId;
+	const ok = await showConfirm('正在解压, 是否取消?', {
+		title: 'CANCEL EXTRACT',
+		okText: 'CANCEL',
+		cancelText: 'CONTINUE',
+		tone: 'warning',
+	});
+	if (!ok || !modalState.extracting || modalState.extractCanceling || !isCurrentExtractTask(abortController, extractRunId)) {
+		return;
+	}
+	modalState.extractCanceling = true;
+	setExtractProgress({ text: '正在取消...', detail: '', error: '' });
+	if (abortController) {
+		abortController.abort();
+	}
+};
+
+const requestClose = async () => {
+	await requestCancelExtract();
 };
 
 const decodeSse = async (res, handlers) => {
@@ -448,6 +503,9 @@ const extractArchive = async () => {
 	if (!instanceName || !entry?.path) {
 		return;
 	}
+	if (modalState.extracting) {
+		return;
+	}
 	if (dom.fileExtractModeCustom?.checked) {
 		const dirName = truncateTextInputValue(dom.fileExtractDirName, InputValidation.limits.fileName).trim();
 		if (!dirName) {
@@ -457,6 +515,11 @@ const extractArchive = async () => {
 		}
 	}
 	modalState.extracting = true;
+	modalState.extractCanceling = false;
+	const abortController = new AbortController();
+	const extractRunId = modalState.extractRunId + 1;
+	modalState.extractRunId = extractRunId;
+	modalState.extractAbortController = abortController;
 	setExtractProgress({ percent: 0, text: '正在解压...', detail: '正在连接任务流...', error: '' });
 	const targetPath = InputValidation.truncateText(getExtractTargetPath(), InputValidation.limits.instancePath);
 	try {
@@ -466,9 +529,12 @@ const extractArchive = async () => {
 			target_path: targetPath,
 			extract_here: !dom.fileExtractModeCustom?.checked,
 			overwrite: !!dom.fileExtractOverwrite?.checked,
-		});
+		}, { signal: abortController.signal });
 		await decodeSse(res, {
 			onEvent: (name, payload) => {
+				if (!isCurrentExtractTask(abortController, extractRunId)) {
+					return;
+				}
 				const nextPercent = Number(payload?.percent);
 				if (name === 'progress' || name === 'message') {
 					setExtractProgress({
@@ -500,6 +566,9 @@ const extractArchive = async () => {
 				}
 			},
 		});
+		if (!isCurrentExtractTask(abortController, extractRunId)) {
+			return;
+		}
 		if (modalState.extractProgress.error) {
 			return;
 		}
@@ -507,19 +576,37 @@ const extractArchive = async () => {
 		if (typeof modalState.onRequestReload === 'function') {
 			await modalState.onRequestReload();
 		}
+		if (!isCurrentExtractTask(abortController, extractRunId)) {
+			return;
+		}
 		if (skippedFiles > 0) {
 			return;
 		}
 		close();
 	} catch (e) {
+		if (!isCurrentExtractTask(abortController, extractRunId)) {
+			return;
+		}
+		if (isAbortError(e)) {
+			setExtractProgress({
+				text: '解压已取消',
+				detail: '',
+				error: '',
+			});
+			return;
+		}
 		setExtractProgress({
 			text: '解压失败',
 			detail: '',
 			error: extractErrorMessage(e),
 		});
 	} finally {
-		modalState.extracting = false;
-		setExtractProgress();
+		if (isCurrentExtractTask(abortController, extractRunId)) {
+			modalState.extractAbortController = null;
+			modalState.extracting = false;
+			modalState.extractCanceling = false;
+			setExtractProgress();
+		}
 	}
 };
 
@@ -569,6 +656,12 @@ const deleteFileEntry = async () => {
 
 const close = () => {
     if (!dom.fileActionModal) return;
+	if (modalState.extractAbortController) {
+		modalState.extractAbortController.abort();
+		modalState.extractAbortController = null;
+	}
+	modalState.extracting = false;
+	modalState.extractCanceling = false;
     dom.fileActionModal.classList.remove('visible');
     dom.fileActionModal.classList.add('closing');
     modalState.fileActionModalCloseTimer = setTimeout(() => {
@@ -579,6 +672,9 @@ const close = () => {
 		modalState.initialPage = 'info';
 		modalState.isArchive = false;
 		modalState.deleting = false;
+		modalState.extracting = false;
+		modalState.extractAbortController = null;
+		modalState.extractCanceling = false;
     }, 280);
 };
 
@@ -716,19 +812,27 @@ const bindEvents = () => {
     modalState.isBound = true;
 
     if (dom.fileActionClose) {
-        dom.fileActionClose.onclick = () => close();
+        dom.fileActionClose.onclick = () => requestClose();
     }
     if (dom.fileActionCancel) {
-        dom.fileActionCancel.onclick = () => close();
+        dom.fileActionCancel.onclick = () => requestClose();
     }
 	if (dom.fileActionDownload) {
 		dom.fileActionDownload.onclick = () => openFileDownloadPage();
 	}
 	if (dom.fileActionTabInfo) {
-		dom.fileActionTabInfo.onclick = () => applyFileActionPage('info');
+		dom.fileActionTabInfo.onclick = () => {
+			if (modalState.extracting) {
+				return;
+			}
+			applyFileActionPage('info');
+		};
 	}
 	if (dom.fileActionTabExtract) {
 		dom.fileActionTabExtract.onclick = () => {
+			if (modalState.extracting) {
+				return;
+			}
 			if (!modalState.isArchive) {
 				return;
 			}
@@ -739,7 +843,12 @@ const bindEvents = () => {
 		};
 	}
 	if (dom.fileActionTabDelete) {
-		dom.fileActionTabDelete.onclick = () => applyFileActionPage('delete');
+		dom.fileActionTabDelete.onclick = () => {
+			if (modalState.extracting) {
+				return;
+			}
+			applyFileActionPage('delete');
+		};
 	}
 	dom.fileExtractModeCurrent?.addEventListener('change', () => updateExtractTargetMode());
 	dom.fileExtractModeCustom?.addEventListener('change', () => {
@@ -751,10 +860,10 @@ const bindEvents = () => {
 	dom.fileRenameName?.addEventListener('blur', () => truncateTextInputValue(dom.fileRenameName, InputValidation.limits.fileName));
 	dom.fileExtractDirName?.addEventListener('blur', () => truncateTextInputValue(dom.fileExtractDirName, InputValidation.limits.fileName));
 	if (dom.fileExtractCancel) {
-		dom.fileExtractCancel.onclick = () => close();
+		dom.fileExtractCancel.onclick = () => requestCancelExtract();
 	}
 	if (dom.fileDeleteCancel) {
-		dom.fileDeleteCancel.onclick = () => close();
+		dom.fileDeleteCancel.onclick = () => requestClose();
 	}
 	if (dom.fileActionPageInfo) {
 		dom.fileActionPageInfo.onsubmit = async (event) => {
@@ -765,7 +874,7 @@ const bindEvents = () => {
 	if (dom.fileActionPageExtract) {
 		dom.fileActionPageExtract.onsubmit = async (event) => {
 			event.preventDefault();
-			await withActionsDisabled(dom.fileExtractActions, extractArchive);
+			await extractArchive();
 		};
 	}
 	if (dom.fileActionPageDelete) {

@@ -43,10 +43,12 @@ type InstanceProcess struct {
 	State                        processState
 	Deleting                     bool
 	Starting                     bool
+	Updating                     bool
 	Running                      bool
 	Restarting                   bool
 	RestartCancel                chan struct{}
 	StopCancel                   chan struct{}
+	StartCancel                  chan struct{}
 	Cols                         uint16
 	Rows                         uint16
 	StartTime                    time.Time
@@ -97,6 +99,7 @@ type startReservation struct {
 	startSeq                 uint64
 	resetRestarting          bool
 	instanceName             string
+	cancelCh                 chan struct{}
 }
 
 type preparedStart struct {
@@ -134,6 +137,7 @@ type TerminalInitialMessage struct {
 type InstanceStatus struct {
 	cfg.Instance
 	Running        bool   `json:"running"`
+	Updating       bool   `json:"updating"`
 	Restarting     bool   `json:"restarting"`
 	StartTime      string `json:"start_time,omitempty"`
 	RestartCount   int    `json:"restart_count"`
@@ -148,6 +152,7 @@ func (sp *InstanceProcess) StatusSnapshotLocked() InstanceStatus {
 	return InstanceStatus{
 		Instance:       sp.InstanceSnapshotLocked(),
 		Running:        sp.Running,
+		Updating:       sp.Updating,
 		Restarting:     sp.Restarting,
 		StartTime:      startTime,
 		RestartCount:   sp.RestartCount,
@@ -224,6 +229,15 @@ func (sp *InstanceProcess) IsRunning() bool {
 	sp.Mu.Lock()
 	defer sp.Mu.Unlock()
 	return sp.Running
+}
+
+func (sp *InstanceProcess) IsUpdating() bool {
+	if sp == nil {
+		return false
+	}
+	sp.Mu.Lock()
+	defer sp.Mu.Unlock()
+	return sp.Updating
 }
 
 func (sp *InstanceProcess) IsActive() bool {
@@ -670,8 +684,20 @@ func (sp *InstanceProcess) cancelStopLocked() {
 }
 
 func (sp *InstanceProcess) cancelStartLocked() {
+	if sp.StartCancel != nil {
+		close(sp.StartCancel)
+		sp.StartCancel = nil
+	}
 	sp.Starting = false
+	sp.Updating = false
 	sp.StartSeq++
+}
+
+func (sp *InstanceProcess) beginStartLocked() chan struct{} {
+	sp.cancelStartLocked()
+	sp.Starting = true
+	sp.StartCancel = make(chan struct{})
+	return sp.StartCancel
 }
 
 func (sp *InstanceProcess) beginStopLocked(state processState) {
@@ -689,6 +715,8 @@ func (sp *InstanceProcess) setProcessExitedLocked() {
 
 func (sp *InstanceProcess) setProcessStartedLocked(startTime time.Time, restartCount int) uint64 {
 	sp.Starting = false
+	sp.Updating = false
+	sp.StartCancel = nil
 	sp.ProxySeq++
 	if !startTime.IsZero() {
 		sp.StartTime = startTime
@@ -696,6 +724,24 @@ func (sp *InstanceProcess) setProcessStartedLocked(startTime time.Time, restartC
 	sp.RestartCount = restartCount
 	sp.enterRunningStateLocked()
 	return sp.ProxySeq
+}
+
+func (sp *InstanceProcess) markUpdatingLocked(reserved *startReservation) bool {
+	if reserved == nil || !sp.Starting || sp.StartSeq != reserved.startSeq || sp.Deleting {
+		return false
+	}
+	sp.Updating = true
+	NotifyInstanceStatusChanged(reserved.instanceName)
+	return true
+}
+
+func (sp *InstanceProcess) clearUpdatingLocked(reserved *startReservation) bool {
+	if reserved == nil || !sp.Starting || sp.StartSeq != reserved.startSeq {
+		return false
+	}
+	sp.Updating = false
+	NotifyInstanceStatusChanged(reserved.instanceName)
+	return true
 }
 
 func (sp *InstanceProcess) reserveStartLocked(historyLimit int, instanceUpdateStagingDir string) (*startReservation, error) {
@@ -727,13 +773,12 @@ func (sp *InstanceProcess) reserveStartLocked(historyLimit int, instanceUpdateSt
 		NotifyInstanceStatusChanged(reserved.instanceName)
 		reserved.resetRestarting = true
 	}
-	sp.cancelStartLocked()
-	sp.Starting = true
+	reserved.cancelCh = sp.beginStartLocked()
 	reserved.startSeq = sp.StartSeq
 	return reserved, nil
 }
 
-func prepareStart(reserved *startReservation) (*preparedStart, error) {
+func (sp *InstanceProcess) prepareStart(reserved *startReservation) (*preparedStart, error) {
 	if reserved == nil {
 		return nil, nil
 	}
@@ -747,10 +792,21 @@ func prepareStart(reserved *startReservation) (*preparedStart, error) {
 	if err := os.MkdirAll(resolvedPath, 0755); err != nil {
 		return nil, err
 	}
-	var warning []byte
-	if err := ApplyStagedInstanceUpdate(resolvedPath, reserved.instanceUpdateStagingDir); err != nil {
+	sp.Mu.Lock()
+	canUpdate := sp.markUpdatingLocked(reserved)
+	sp.Mu.Unlock()
+	if !canUpdate {
+		return nil, errors.New(msg.InstanceUpdateCanceled)
+	}
+	if err := ApplyStagedInstanceUpdate(resolvedPath, reserved.instanceUpdateStagingDir, reserved.cancelCh); err != nil {
 		log.Printf(msg.InstanceUpdateFailedLogFmt, reserved.ins.Name, err)
-		warning = buildTerminalMessage("\x1b[33m", fmt.Sprintf(msg.InstanceUpdateFailedFmt, err.Error()))
+		return nil, err
+	}
+	sp.Mu.Lock()
+	canStart := sp.clearUpdatingLocked(reserved)
+	sp.Mu.Unlock()
+	if !canStart {
+		return nil, errors.New(msg.InstanceUpdateCanceled)
 	}
 	state, err := startDaemonInstance(reserved.ins.Name, reserved.ins.Command, reserved.ins.CleanupCommand, resolvedPath, reserved.ins.Terminal, reserved.ins.InputEncoding, reserved.ins.OutputEncoding)
 	if err != nil {
@@ -760,7 +816,7 @@ func prepareStart(reserved *startReservation) (*preparedStart, error) {
 	if state != nil && !state.StartTime.IsZero() {
 		startTime = state.StartTime
 	}
-	return &preparedStart{state: state, warning: warning, startTime: startTime}, nil
+	return &preparedStart{state: state, startTime: startTime}, nil
 }
 
 func (sp *InstanceProcess) commitPreparedStartLocked(reserved *startReservation, prepared *preparedStart) (uint64, bool) {
@@ -859,7 +915,7 @@ func (sp *InstanceProcess) scheduleAutoRestart() {
 	if reserved == nil {
 		return
 	}
-	prepared, err := prepareStart(reserved)
+	prepared, err := sp.prepareStart(reserved)
 	if err != nil {
 		sp.Mu.Lock()
 		if sp.Starting && sp.StartSeq == reserved.startSeq {
@@ -1088,7 +1144,7 @@ func (sp *InstanceProcess) Start() error {
 	if reserved == nil {
 		return nil
 	}
-	prepared, err := prepareStart(reserved)
+	prepared, err := sp.prepareStart(reserved)
 	if err != nil {
 		sp.Mu.Lock()
 		if sp.Starting && sp.StartSeq == reserved.startSeq {

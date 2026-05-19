@@ -735,9 +735,6 @@ func getInstanceFileTargetPath(sp *process.InstanceProcess, dirPath string, file
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", "", err
 	}
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		return "", "", err
-	}
 	if err := ensurePathComponentsWithinRoot(rootPath, targetDir, true); err != nil {
 		return "", "", err
 	}
@@ -1010,7 +1007,7 @@ func HandleApiFileUploadChunk(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			web.WriteAPIError(w, http.StatusBadRequest, msg.UploadChunkSizeMismatch, err)
+			web.WriteAPIError(w, http.StatusBadRequest, msg.UploadChunkIncomplete, err)
 			return
 		}
 		web.WriteAPIError(w, http.StatusBadRequest, msg.ReadUploadChunkFailed, err)
@@ -1020,7 +1017,7 @@ func HandleApiFileUploadChunk(w http.ResponseWriter, r *http.Request) {
 	// This is cheap (reads at most 1 byte) and keeps chunk boundaries strict.
 	var extra [1]byte
 	if n, err := r.Body.Read(extra[:]); n > 0 {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.UploadChunkSizeMismatch, fmt.Errorf(msg.ReceivedMoreThanFmt, plan.Size))
+		web.WriteAPIError(w, http.StatusBadRequest, msg.UploadChunkDataExceedsExpected, fmt.Errorf(msg.ReceivedMoreThanFmt, plan.Size))
 		return
 	} else if err != nil && !errors.Is(err, io.EOF) {
 		var maxErr *http.MaxBytesError

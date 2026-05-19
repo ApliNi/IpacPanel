@@ -254,7 +254,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 	keepAliveStop := make(chan struct{})
 	defer close(keepAliveStop)
 	go func() {
-		t := time.NewTicker(10 * time.Second)
+		t := time.NewTicker(sseKeepaliveInterval)
 		defer t.Stop()
 		for {
 			select {

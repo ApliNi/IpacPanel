@@ -1,4 +1,4 @@
-﻿package web
+package web
 
 import (
 	"IpacPanel/controller/src/msg"
@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// NOTE: Frontend upload chunk size defaults to 10MiB.
+// NOTE: Frontend upload chunk size defaults to 9MiB.
 // Keep a small buffer so chunk uploads and JSON payloads can pass.
 const maxRequestBodyBytes int64 = 10*1024*1024 + 512*1024 // 10.5MiB
 

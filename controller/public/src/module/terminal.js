@@ -223,7 +223,7 @@ const updateStatusDisplay = (svc) => {
         return;
     }
 
-    const status = (typeof svc === 'string') ? svc : (svc.restarting ? 'restarting' : (svc.running ? 'online' : 'offline-status'));
+    const status = (typeof svc === 'string') ? svc : (svc.restarting ? 'restarting' : (svc.updating ? 'updating' : (svc.running ? 'online' : 'offline-status')));
 
     if (status === 'offline') {
         dom.termStatus.innerText = '[OFFLINE]';
@@ -233,6 +233,10 @@ const updateStatusDisplay = (svc) => {
         dom.termStatus.innerText = '[RESTART]';
         dom.termStatus.className = 'status status-restart';
         setControlButtons({ showStart: true, showStop: true, showRestart: false, showKill: false });
+    } else if (status === 'updating') {
+        dom.termStatus.innerText = '[UPDATE]';
+        dom.termStatus.className = 'status status-restart';
+        setControlButtons({ showStart: false, showStop: true, showRestart: false, showKill: true });
     } else {
         const isRunning = status === 'online';
         dom.termStatus.innerText = isRunning ? '[RUN]' : '[STOP]';
@@ -386,7 +390,7 @@ const initTerminal = (historySize) => {
             "black": "#0a0a0a",
             "blue": "#3D9BFF",
             "cyan": "#5FA8A4",
-            "green": "#7FA56B",
+            "green": "#89E034",
             "purple": "#8B7AA8",
             "red": "#C47A6C",
             "white": "#B7C1CB",
@@ -394,7 +398,7 @@ const initTerminal = (historySize) => {
             "brightBlack": "#5C6670",
             "brightBlue": "#78B9FF",
             "brightCyan": "#7CC8C3",
-            "brightGreen": "#9BC283",
+            "brightGreen": "#89f71c",
             "brightPurple": "#A896C7",
             "brightRed": "#D99689",
             "brightWhite": "#E2E8EE",

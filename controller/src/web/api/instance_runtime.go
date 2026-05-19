@@ -39,6 +39,7 @@ type instanceListItem struct {
 	Terminal       int    `json:"terminal"`
 	ActiveTerminal int    `json:"active_terminal"`
 	Running        bool   `json:"running"`
+	Updating       bool   `json:"updating"`
 	Restarting     bool   `json:"restarting"`
 	StartTime      string `json:"start_time,omitempty"`
 	RestartCount   int    `json:"restart_count"`
@@ -257,6 +258,7 @@ func getInstanceListResponse(authedUser *cfg.AuthUser) []instanceListItem {
 			Terminal:       cfg.NormalizeTerminalMode(ins.Terminal),
 			ActiveTerminal: status.ActiveTerminal,
 			Running:        status.Running,
+			Updating:       status.Updating,
 			Restarting:     status.Restarting,
 			StartTime:      status.StartTime,
 			RestartCount:   status.RestartCount,
@@ -313,6 +315,7 @@ func getInstanceStatusPatchResponse(authedUser *cfg.AuthUser, seq int64) []insta
 			Terminal:       cfg.NormalizeTerminalMode(ip.InstanceSnapshot().Terminal),
 			ActiveTerminal: status.ActiveTerminal,
 			Running:        status.Running,
+			Updating:       status.Updating,
 			Restarting:     status.Restarting,
 			StartTime:      status.StartTime,
 			RestartCount:   status.RestartCount,

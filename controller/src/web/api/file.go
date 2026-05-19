@@ -247,7 +247,26 @@ func HandleApiFileCreateDir(w http.ResponseWriter, r *http.Request) {
 
 	if err := os.Mkdir(targetPath, 0755); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			web.WriteAPIError(w, http.StatusConflict, msg.FileObjectAlreadyExists, nil)
+			targetInfo, statErr := os.Stat(targetPath)
+			if statErr != nil {
+				web.WriteAPIError(w, http.StatusBadRequest, msg.CreateDirectoryFailed, statErr)
+				return
+			}
+			if !targetInfo.IsDir() {
+				web.WriteAPIError(w, http.StatusConflict, msg.FileObjectAlreadyExists, nil)
+				return
+			}
+			if err := ensureResolvedPathWithinInstanceRoot(sp, targetPath); err != nil {
+				web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
+				return
+			}
+			resp, err := buildFileListResponse(sp, relativePath, "", "")
+			if err != nil {
+				web.WriteAPIError(w, http.StatusInternalServerError, msg.ReadFileListFailed, err)
+				return
+			}
+
+			web.WriteOK(w, resp)
 			return
 		}
 		web.WriteAPIError(w, http.StatusBadRequest, msg.CreateDirectoryFailed, err)

@@ -548,24 +548,24 @@ func waitDaemonOutputDone(done <-chan struct{}) {
 func (ins *DaemonInstance) runCleanupCommand(path string, command string, outputCh chan<- IPCResponse, runtimeID string) {
 	cmd, err := terminal.BuildCommand(path, command)
 	if err != nil {
-		ins.writeCleanupMessage(outputCh, runtimeID, fmt.Sprintf("[pCmd] 清理命令构建失败: %v\r\n", err))
+		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageBuildFailed, err.Error())
 		return
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		ins.writeCleanupMessage(outputCh, runtimeID, fmt.Sprintf("[pCmd] 清理命令输出读取失败: %v\r\n", err))
+		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStdoutFailed, err.Error())
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		_ = stdout.Close()
-		ins.writeCleanupMessage(outputCh, runtimeID, fmt.Sprintf("[pCmd] 清理命令错误输出读取失败: %v\r\n", err))
+		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStderrFailed, err.Error())
 		return
 	}
 	if err := cmd.Start(); err != nil {
 		_ = stdout.Close()
 		_ = stderr.Close()
-		ins.writeCleanupMessage(outputCh, runtimeID, fmt.Sprintf("[pCmd] 清理命令启动失败: %v\r\n", err))
+		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStartFailed, err.Error())
 		return
 	}
 
@@ -575,17 +575,17 @@ func (ins *DaemonInstance) runCleanupCommand(path string, command string, output
 	}
 	ins.Mu.Unlock()
 
-	ins.writeCleanupMessage(outputCh, runtimeID, "[pCmd] 清理命令开始.\r\n")
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go ins.copyCleanupOutput(&wg, outputCh, runtimeID, stdout)
 	go ins.copyCleanupOutput(&wg, outputCh, runtimeID, stderr)
+	ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStarted)
 	waitErr := cmd.Wait()
 	wg.Wait()
 	if waitErr != nil {
-		ins.writeCleanupMessage(outputCh, runtimeID, fmt.Sprintf("[pCmd] 清理命令退出: %v\r\n", waitErr))
+		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageExited, waitErr.Error())
 	} else {
-		ins.writeCleanupMessage(outputCh, runtimeID, "[pCmd] 清理命令完成.\r\n")
+		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageCompleted)
 	}
 }
 
@@ -605,11 +605,25 @@ func (ins *DaemonInstance) copyCleanupOutput(wg *sync.WaitGroup, outputCh chan<-
 	}
 }
 
-func (ins *DaemonInstance) writeCleanupMessage(outputCh chan<- IPCResponse, runtimeID string, message string) {
-	if strings.TrimSpace(message) == "" {
+const (
+	cleanupMessageBuildFailed  = "cleanup_command.build_failed"
+	cleanupMessageStdoutFailed = "cleanup_command.stdout_failed"
+	cleanupMessageStderrFailed = "cleanup_command.stderr_failed"
+	cleanupMessageStartFailed  = "cleanup_command.start_failed"
+	cleanupMessageStarted      = "cleanup_command.started"
+	cleanupMessageExited       = "cleanup_command.exited"
+	cleanupMessageCompleted    = "cleanup_command.completed"
+)
+
+func (ins *DaemonInstance) sendCleanupMessage(outputCh chan<- IPCResponse, runtimeID string, placeholder string, args ...string) {
+	if outputCh == nil || runtimeID == "" || strings.TrimSpace(placeholder) == "" {
 		return
 	}
-	ins.sendOutput(outputCh, runtimeID, []byte(message))
+	select {
+	case outputCh <- IPCResponse{Type: ipcFrameTypeCleanupMessage, Instance: runtimeID, Placeholder: placeholder, Args: args}:
+	default:
+		log.Printf("instance %s cleanup message %s dropped", runtimeID, placeholder)
+	}
 }
 
 func (ins *DaemonInstance) sendOutput(outputCh chan<- IPCResponse, runtimeID string, data []byte) {

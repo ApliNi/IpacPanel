@@ -59,7 +59,7 @@ func isResolvedDangerousDeletePath(path string) bool {
 
 func buildInstanceDeleteTombstonePath(instancePath string, instanceName string) string {
 	parent := filepath.Dir(instancePath)
-	trashRoot := filepath.Join(parent, ".pCmd-trash")
+	trashRoot := filepath.Join(parent, ".IpacPanel-trash")
 	stamp := time.Now().UTC().Format("20060102T150405.000000000")
 	name := strings.TrimSpace(instanceName)
 	if name == "" {

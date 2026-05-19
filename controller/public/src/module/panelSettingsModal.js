@@ -29,7 +29,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 					<button id="panelSettingsConfigTabWeb" class="filter-btn" type="button" data-page="web">WEB</button>
 					<button id="panelSettingsConfigTabPow" class="filter-btn" type="button" data-page="pow">POW</button>
 				</div>
-				<form id="panelSettingsOptionsPage" class="panel-settings-page active" novalidate>
+				<form id="panelSettingsOptionsPage" class="panel-settings-page modal-card-loading-content active" novalidate>
 					<div class="field-group">
 						<span>WEB TITLE</span>
 						<input id="panelSettingsWebTitle" type="text" autocomplete="off" maxlength="${InputValidation.settings.limits.webTitle}" placeholder="IpacPanel">
@@ -66,7 +66,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 						</div>
 					</div>
 				</form>
-				<form id="panelSettingsMetricsPage" class="panel-settings-page" novalidate>
+				<form id="panelSettingsMetricsPage" class="panel-settings-page modal-card-loading-content" novalidate>
 					<div class="field-group field-group-dynamic-label">
 						<label class="checkbox-group instance-advanced-toggle">
 							<input id="panelSettingsMetricsEnabled" type="checkbox" autocomplete="off">
@@ -115,7 +115,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 						</div>
 					</div>
 				</form>
-				<form id="panelSettingsWebPage" class="panel-settings-page" novalidate>
+				<form id="panelSettingsWebPage" class="panel-settings-page modal-card-loading-content" novalidate>
 					<div class="field-group field-group-dynamic-label">
 						<label class="checkbox-group instance-advanced-toggle">
 							<input id="panelSettingsWebEnableHttps" type="checkbox" autocomplete="off">
@@ -144,7 +144,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 						</div>
 					</div>
 				</form>
-				<form id="panelSettingsPowPage" class="panel-settings-page" novalidate>
+				<form id="panelSettingsPowPage" class="panel-settings-page modal-card-loading-content" novalidate>
 					<div class="field-group field-group-dynamic-label">
 						<label class="checkbox-group instance-advanced-toggle">
 							<input id="panelSettingsPowEnabled" type="checkbox" autocomplete="off">
@@ -174,7 +174,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 						</div>
 					</div>
 				</form>
-				<div id="panelSettingsDebugPage" class="panel-settings-page">
+				<div id="panelSettingsDebugPage" class="panel-settings-page modal-card-loading-content">
 					<div class="field-group field-group-dynamic-label">
 						<label class="checkbox-group instance-advanced-toggle">
 							<input id="panelSettingsDebugEnabled" type="checkbox" autocomplete="off">
@@ -233,6 +233,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 
 const dom = {
 	modal: document.getElementById('panelSettingsModal'),
+	card: document.querySelector('#panelSettingsModal .panel-settings-modal-card'),
 	close: document.getElementById('panelSettingsClose'),
 	configMainTab: document.getElementById('panelSettingsMainTabConfig'),
 	uploadMainTab: document.getElementById('panelSettingsMainTabUpload'),
@@ -527,12 +528,14 @@ const clearSettingsFormForLoad = () => {
 
 const beginSettingsLoad = () => {
 	panelSettingsState.settingsLoading = true;
+	if (dom.card) dom.card.classList.add('modal-card-loading');
 	clearSettingsFormForLoad();
 	setSettingsSaveDisabled(true);
 };
 
 const finishSettingsLoad = (loaded) => {
 	panelSettingsState.settingsLoading = false;
+	if (dom.card) dom.card.classList.remove('modal-card-loading');
 	setSettingsSaveDisabled(!loaded);
 };
 

@@ -100,8 +100,8 @@ const dom = {
 };
 
 const FILE_CREATE_RECENT_LIMIT = 10;
-const RECENT_FILE_NAMES_KEY = 'pCmd.recentCreatedFileNames';
-const RECENT_DIR_NAMES_KEY = 'pCmd.recentCreatedDirNames';
+const RECENT_FILE_NAMES_KEY = 'IpacPanel.recentCreatedFileNames';
+const RECENT_DIR_NAMES_KEY = 'IpacPanel.recentCreatedDirNames';
 
 const truncateInputValue = (input, maxLength) => {
 	const value = InputValidation.truncateText(input?.value || '', maxLength);
@@ -765,7 +765,7 @@ const createPlainUploadItem = (file, index) => ({
 	errorMessage: '',
 });
 
-const createDirectoryUploadItem = (name, pickedFiles, pickedDirs, index) => {
+const createDirectoryUploadItems = (pickedFiles, pickedDirs, index) => {
 	const files = Array.from(pickedFiles || [])
 		.map((entry) => ({
 			file: entry.file,
@@ -797,6 +797,24 @@ const createDirectoryUploadItem = (name, pickedFiles, pickedDirs, index) => {
 		});
 	});
 	return items;
+};
+
+const joinUploadTargetDir = (basePath, relativePath) => [basePath, relativePath]
+	.map((part) => String(part || '').replace(/^\/+|\/+$/g, ''))
+	.filter(Boolean)
+	.join('/');
+
+const ensureUploadDirectoryTree = async (instanceName, currentPath, relativeDirPath) => {
+	// 上传初始化不会隐式创建目录, 因此前端逐级创建目录树。
+	const dirParts = normalizeUploadRelativePath(relativeDirPath).split('/').filter(Boolean);
+	let dirAccumPath = String(currentPath || '').replace(/^\/+|\/+$/g, '');
+	for (const part of dirParts) {
+		const result = await createDirectory(instanceName, dirAccumPath, part);
+		if (!result.ok) {
+			throw new Error(result.error || '创建上传目录失败');
+		}
+		dirAccumPath = joinUploadTargetDir(dirAccumPath, part);
+	}
 };
 
 const buildUploadItemsFromPickedEntries = (entries, dirs = []) => {
@@ -851,7 +869,7 @@ const buildUploadItemsFromPickedEntries = (entries, dirs = []) => {
 		if (group.type === 'file') {
 			return createPlainUploadItem(group.file, index);
 		}
-		return createDirectoryUploadItem(group.name, group.files, group.dirs, index);
+		return createDirectoryUploadItems(group.files, group.dirs, index);
 	});
 };
 
@@ -1370,17 +1388,15 @@ const uploadSelectedFiles = async (overwrite) => {
 					continue;
 				}
 				try {
-				if (item.kind === 'empty-directory') {
-						const dirParts = item.name.split('/').filter(Boolean);
-						let dirAccumPath = currentPath;
-						for (const part of dirParts) {
-							await createDirectory(instanceName, dirAccumPath, part);
-							dirAccumPath = `${dirAccumPath}/${part}`;
-						}
+					if (item.kind === 'empty-directory') {
+						await ensureUploadDirectoryTree(instanceName, currentPath, item.name);
 						hasFinished = true;
 						hasSuccess = true;
 						updateUploadItemProgress(item, 0, 'DONE');
 						continue;
+					}
+					if (item.path) {
+						await ensureUploadDirectoryTree(instanceName, currentPath, item.path);
 					}
 					const ctx = await initFileUploadContext(instanceName, currentPath, item, overwrite, { runToken });
 					if (!ctx || ctx.failed || ctx.removed || isUploadItemCanceled(item, runToken)) {

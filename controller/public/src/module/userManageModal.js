@@ -29,7 +29,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 					<button id="userManageTabEdit" class="filter-btn" type="button" data-page="edit">EDIT</button>
 				</div>
 				<div class="user-manage-body">
-					<form id="userManagePageMe" class="user-manage-page user-manage-page-me active">
+					<form id="userManagePageMe" class="user-manage-page user-manage-page-me modal-card-loading-content active">
 						<div class="field-group">
 							<span>NAME</span>
 							<input id="userManageMeName" type="text" maxlength="32" autocomplete="off">
@@ -53,7 +53,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 							<button class="btn btn-start" type="submit" id="userManageMeSave">SAVE</button>
 						</div>
 					</form>
-					<div id="userManagePageUsers" class="user-manage-page">
+					<div id="userManagePageUsers" class="user-manage-page modal-card-loading-content">
 						<div class="field-group">
 							<div id="userManageList" class="user-manage-list"></div>
 						</div>
@@ -61,7 +61,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 							<button class="btn" type="button" id="userManageCancel2">CLOSE</button>
 						</div>
 					</div>
-					<form id="userManagePageEdit" class="user-manage-page user-manage-page-edit" novalidate>
+					<form id="userManagePageEdit" class="user-manage-page user-manage-page-edit modal-card-loading-content" novalidate>
 						<div class="field-group">
 							<span>USER</span>
 							<div class="select-wrapper"><select id="userManageEditSelect" autocomplete="off"></select></div>
@@ -165,6 +165,7 @@ const modalState = {
 	editMode: 'edit',
 	meLoading: false,
 	editLoading: false,
+	usersLoading: false,
 };
 
 const setMeStatus = (text, options = {}) => {
@@ -217,14 +218,22 @@ const updatePassConfirmVisibility = () => {
 	}
 };
 
+const syncPageLoading = () => {
+	dom.pageMe?.classList.toggle('modal-card-loading', modalState.meLoading);
+	dom.pageEdit?.classList.toggle('modal-card-loading', modalState.editLoading);
+	dom.pageUsers?.classList.toggle('modal-card-loading', modalState.usersLoading);
+};
+
 const setEditLoading = (loading) => {
 	modalState.editLoading = !!loading;
 	if (dom.editSave) dom.editSave.disabled = !!loading;
+	syncPageLoading();
 };
 
 const setMeLoading = (loading) => {
 	modalState.meLoading = !!loading;
 	if (dom.meSave) dom.meSave.disabled = !!loading;
+	syncPageLoading();
 };
 
 const clearMeFormForLoad = () => {
@@ -631,6 +640,8 @@ const renderUsers = (users) => {
 };
 
 const setLoading = (loading) => {
+	modalState.usersLoading = !!loading;
+	syncPageLoading();
 	if (!dom.list) return;
 	dom.list.classList.toggle('loading', !!loading);
 	if (loading) {
@@ -718,6 +729,17 @@ const saveMe = async () => {
 	});
 };
 
+const focusMeNameAfterLoad = () => {
+	if (modalState.currentPage !== 'me' || modalState.meLoading) {
+		return;
+	}
+	requestAnimationFrame(() => {
+		if (modalState.currentPage === 'me' && !modalState.meLoading) {
+			dom.meName?.focus();
+		}
+	});
+};
+
 const open = async () => {
 	if (!dom.modal) return;
 	modalState.closeTimer = clearTimer(modalState.closeTimer);
@@ -725,10 +747,12 @@ const open = async () => {
 	dom.modal.classList.remove('closing');
 	requestAnimationFrame(() => {
 		dom.modal.classList.add('visible');
-		dom.meName?.focus();
 	});
 	applyPage('me');
-	await loadMe();
+	const loaded = await loadMe();
+	if (loaded) {
+		focusMeNameAfterLoad();
+	}
 };
 
 const close = () => {

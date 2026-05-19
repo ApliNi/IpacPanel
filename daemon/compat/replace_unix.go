@@ -3,6 +3,7 @@
 package compat
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +11,7 @@ import (
 
 func ReplaceFileAtomic(srcPath string, dstPath string) error {
 	if srcPath == "" || dstPath == "" {
-		return errEmptyPath
+		return errors.New("path is empty")
 	}
 	return os.Rename(srcPath, dstPath)
 }

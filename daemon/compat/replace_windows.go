@@ -2,11 +2,15 @@
 
 package compat
 
-import "golang.org/x/sys/windows"
+import (
+	"errors"
+
+	"golang.org/x/sys/windows"
+)
 
 func ReplaceFileAtomic(srcPath string, dstPath string) error {
 	if srcPath == "" || dstPath == "" {
-		return errEmptyPath
+		return errors.New("path is empty")
 	}
 	src, err := windows.UTF16PtrFromString(srcPath)
 	if err != nil {
