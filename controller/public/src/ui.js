@@ -13,7 +13,7 @@ console.log(String.raw`%c
 
 import { addAuthenticatedListener, UNAUTHORIZED_REASON_LOGOUT, UNAUTHORIZED_REASON_RUNTIME, addUnauthorizedListener, clearAllStoredData } from './api/core.js';
 import { fetchPublicSettings } from './api/settings.js';
-import { DEFAULT_UI_REFRESH_INTERVAL_MS, getUrlSearchParam, parseOptionalIntegerInRange, setUrlSearchParams } from './utils/utils.js';
+import { getUrlSearchParam, parseOptionalIntegerInRange, setUrlSearchParams } from './utils/utils.js';
 
 export const state = {
 	instances: [],
@@ -527,21 +527,6 @@ const bindRuntimeSettingsApplied = () => {
 	});
 };
 
-const bindControlsThrottling = () => {
-    document.addEventListener('click', (event) => {
-        const btn = event.target.closest('.controls button');
-        if (!btn) return;
-
-        const controls = btn.closest('.controls');
-        if (!controls || controls.classList.contains('disabled')) return;
-
-        controls.classList.add('disabled');
-        setTimeout(() => {
-            controls.classList.remove('disabled');
-		}, DEFAULT_UI_REFRESH_INTERVAL_MS);
-	}, true);
-};
-
 const bindUnauthorizedHandling = () => {
 	unauthorizedCleanup?.();
 	unauthorizedCleanup = addUnauthorizedListener((detail) => {
@@ -567,7 +552,6 @@ const bootPublicDashboardPage = async (runtimeAtStart) => {
 		return;
 	}
 	dashboardPage = dashboardModule.bootDashboardPage();
-	bindControlsThrottling();
 	setDashboardRoute({ replace: true });
 	dashboardPage.showPage();
 	showShell();
@@ -649,7 +633,6 @@ export const main = async () => {
 	bindMainNavigation();
 	bindBeforeUnloadProtection();
 	bindRuntimeSettingsApplied();
-	bindControlsThrottling();
 
 	try {
 		await instanceListPage.loadInstances();
