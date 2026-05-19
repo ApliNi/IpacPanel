@@ -52,18 +52,26 @@ textarea:-webkit-autofill {
 	box-shadow: 0 0 0 1000px var(--panel-color) inset !important;
 }
 
-/* 登录页 */
-#authRoot {
-	z-index: 1000;
-}
-
+/* 根层显示状态 */
+#authRoot,
+#dialogRoot,
 #bootErrorRoot {
-	z-index: 1100;
+	position: fixed;
+	inset: 0;
+	opacity: 0;
+	transform: translateY(6px);
+	transition: opacity 0.2s, transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* 弹窗对话框 (替代 alert/confirm/prompt) */
-#dialogRoot {
-	z-index: 1200;
+#authRoot { z-index: 1000; }
+#bootErrorRoot { z-index: 1100; }
+#dialogRoot { z-index: 1200; }
+
+#authRoot.visible,
+#dialogRoot.visible,
+#bootErrorRoot.visible {
+	opacity: 1;
+	transform: translateY(0);
 }
 
 .auth-backdrop,
@@ -199,9 +207,10 @@ textarea:-webkit-autofill {
 	cursor: pointer;
 	font-family: var(--font-family);
 	transition: all 0.2s;
-	height: 27px;
-	padding: 5px 16px;
-	line-height: 0;
+	height: 25px;
+	padding: 0 12px;
+	font-size: 0.75rem;
+	line-height: 2;
 }
 
 .dialog-btn:hover {
@@ -305,6 +314,11 @@ input[type="password"] {
 	background: rgba(0, 210, 255, 0.08);
 }
 
+.auth-submit:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
 /* 顶部导航 */
 #mainHeader {
     background: var(--panel-color);
@@ -373,6 +387,7 @@ input[type="password"] {
 	display: flex;
 	align-items: center;
 	gap: 10px;
+	margin-left: 1px;
 }
 
 .file-batch-copy-options .checkbox-group {
@@ -399,6 +414,29 @@ input[type="password"] {
     position: relative;
     width: 100%;
 	overflow: hidden;
+}
+
+/* 页面与导航状态 */
+.section {
+    position: absolute;
+    top: 0;
+    left: 0;
+	right: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(7px) scale(0.985);
+    transition: opacity 0.24s, transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), visibility 0.24s;
+    display: flex;
+    flex-direction: column;
+	overflow-y: scroll;
+}
+
+.section.active {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0) scale(1);
 }
 
 .section > .section-header,
@@ -743,6 +781,14 @@ input[type="password"] {
 	transition: all 0.2s;
 }
 
+.instance-group:open {
+	margin-bottom: 24px;
+}
+
+.instance-group[open] > .instance-group-summary::before {
+	content: '[↓]';
+}
+
 .instance-group-summary {
 	list-style: none;
 	padding: 10px 0;
@@ -914,6 +960,10 @@ input[type="password"] {
 	outline: none;
 }
 
+.instance-access-link.is-copied {
+	color: var(--green);
+}
+
 .instance-access-links-input {
 	min-height: 96px;
 	resize: vertical;
@@ -924,6 +974,10 @@ input[type="password"] {
     font-size: 0.75rem;
 	margin-top: 2px;
 }
+
+.status-online { color: var(--green); }
+.status-restart { color: var(--blue); }
+.status-offline { color: var(--text-faint-color); }
 
 /* 终端界面布局与卡片 */
 .console-content {
@@ -953,6 +1007,10 @@ input[type="password"] {
 .file-panel-card {
     display: flex;
     flex-direction: column;
+}
+
+.file-panel-card.file-panel-dragover {
+	background: rgba(0, 210, 255, 0.08);
 }
 
 .file-panel-toolbar {
@@ -994,6 +1052,10 @@ input[type="password"] {
 	font-size: 13px;
 }
 
+.file-search-input.active {
+	border-color: var(--primary-color) !important;
+}
+
 .file-current-path {
     display: flex;
     align-items: center;
@@ -1022,6 +1084,11 @@ input[type="password"] {
     display: flex;
     flex-direction: column;
     transition: opacity 0.2s;
+}
+
+.file-list.loading {
+    opacity: 0.5;
+    pointer-events: none;
 }
 
 .file-pagination {
@@ -1103,6 +1170,13 @@ input[type="password"] {
 	outline-offset: 2px;
 }
 
+.file-icon.selected,
+.file-row.selected .file-icon {
+	background: var(--blue) !important;
+	color: #000;
+	clip-path: polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px);
+}
+
 .file-name {
     min-width: 0;
     overflow: hidden;
@@ -1154,6 +1228,16 @@ input[type="password"] {
     user-select: none;
 }
 
+/* 当分隔符前面没有可见按钮时, 隐藏分隔符 */
+.controls:not(:has(> .btn:not(.hidden) ~ .controls-divider)) > .controls-divider {
+	display: none;
+}
+
+.controls.disabled {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
 .page-switcher-tab-push-end {
 	margin-left: auto;
 }
@@ -1191,10 +1275,39 @@ input[type="password"] {
 	border-color: var(--text-color);
 }
 
+.btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+	pointer-events: none;
+}
+
 button:active,
 .instance-item:active,
 #fileList > .file-row:active {
 	filter: brightness(85%);
+}
+
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    display: none;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 13vh 12px;
+    background: rgb(0 0 0 / 50%);
+    z-index: 200;
+    opacity: 0;
+    transition: opacity 0.2s;
+	overflow-y: scroll;
+}
+
+.modal-overlay.visible {
+    opacity: 1;
+}
+
+.modal-overlay.closing .modal-card {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
 }
 
 .modal-overlay.visible .modal-card {
@@ -1279,6 +1392,37 @@ button:active,
 	font-size: 0.8rem;
 }
 
+.file-batch-action-page {
+	display: none;
+	flex-direction: column;
+	gap: 14px;
+}
+
+.file-batch-action-page.active {
+	display: flex;
+}
+
+/* 弹窗页卡片通用显示状态 */
+.file-create-page,
+.user-manage-page,
+.panel-settings-page,
+.file-action-page,
+.instance-group-page,
+.instance-modal-page {
+    display: none;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.file-create-page.active,
+.user-manage-page.active,
+.panel-settings-page.active,
+.file-action-page.active,
+.instance-group-page.active,
+.instance-modal-page.active {
+    display: flex;
+}
+
 .field-group {
     display: flex;
     flex-direction: column;
@@ -1325,6 +1469,19 @@ select {
 	position: relative;
 	white-space: pre-wrap;
 	word-break: break-word;
+}
+
+.text-editable[data-placeholder].is-empty::before {
+	content: attr(data-placeholder);
+	position: absolute;
+	left: 12px;
+	right: 12px;
+	top: 7px;
+	color: var(--text-dim-color);
+	pointer-events: none;
+	white-space: pre-wrap;
+	word-break: break-word;
+	opacity: 0.7;
 }
 
 textarea {
@@ -1387,6 +1544,16 @@ textarea {
     gap: 10px;
 }
 
+.modal-actions.disabled {
+	opacity: 0.5;
+	pointer-events: none;
+}
+
+/* 当分隔符前面没有可见按钮时, 隐藏分隔符 */
+.modal-actions:not(:has(> .btn:not(.hidden) ~ .controls-divider)) > .controls-divider {
+	display: none;
+}
+
 .modal-actions-group {
 	display: flex;
 	align-items: center;
@@ -1403,6 +1570,8 @@ textarea {
 #instanceGroupStatus,
 #instanceModalStatus,
 #panelSettingsStatus,
+#panelSettingsMetricsStatus,
+#panelSettingsWebStatus,
 #panelSettingsPowStatus,
 #panelSettingsDebugStatus,
 #instanceGroupDeleteStatus,
@@ -1416,6 +1585,21 @@ textarea {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 	user-select: text;
+}
+
+#fileEditorStatus.error,
+#userManageMeStatus.error,
+#userManageEditStatus.error,
+#instanceGroupStatus.error,
+#instanceModalStatus.error,
+#panelSettingsStatus.error,
+#panelSettingsMetricsStatus.error,
+#panelSettingsWebStatus.error,
+#panelSettingsPowStatus.error,
+#panelSettingsDebugStatus.error,
+#instanceGroupDeleteStatus.error,
+#controllerUpdateActionStatus.error {
+	color: var(--red);
 }
 
 .controller-update-body {
@@ -1449,6 +1633,29 @@ textarea {
     background: rgba(0, 210, 255, 0.08);
 }
 
+.file-upload-dropzone.dragover {
+    border-color: var(--blue);
+    background: rgba(0, 210, 255, 0.08);
+}
+
+.file-upload-dropzone.locked {
+    opacity: 0.55;
+    pointer-events: none;
+}
+
+.file-upload-overwrite.locked {
+    opacity: 0.55;
+    pointer-events: none;
+}
+
+.file-upload-summary-row:empty {
+    min-height: 0;
+}
+
+.progress-fill-zero {
+	width: 0%;
+}
+
 .file-upload-title,
 .file-upload-subtitle {
     display: block;
@@ -1470,8 +1677,16 @@ textarea {
 
 .file-upload-summary-row {
     display: flex;
-    justify-content: flex-end;
+    justify-content: space-between;
+    align-items: center;
     min-height: 16px;
+    gap: 8px;
+}
+
+.file-upload-speed {
+    color: var(--text-subtle-color);
+    font-size: 0.75rem;
+    white-space: nowrap;
 }
 
 .file-upload-summary {
@@ -1518,7 +1733,6 @@ textarea {
 	overflow-y: scroll;
 	padding-right: 4px;
 	min-width: calc(100% + 12px);
-	width: max-content;
 }
 
 .file-upload-item {
@@ -1594,6 +1808,58 @@ textarea {
     word-break: break-all;
 }
 
+/* 文件夹组折叠 */
+.file-upload-folder-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+	padding: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.file-upload-folder-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.file-upload-folder-header::before {
+    content: '[→]';
+    color: var(--text-subtle-color);
+    font-size: 0.75rem;
+    flex: 0 0 auto;
+    font-family: var(--font-family);
+}
+
+.file-upload-folder-group.expanded .file-upload-folder-header::before {
+    content: '[↓]';
+}
+
+.file-upload-folder-name {
+    flex: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: 12px;
+}
+
+.file-upload-folder-children {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.file-upload-folder-children.hidden {
+    display: none;
+}
+
+.file-upload-folder-group .file-upload-progress {
+    margin-top: 0;
+}
+
 .file-editor-modal-card {
     width: min(100%, 1600px);
 	height: -webkit-fill-available;
@@ -1639,6 +1905,28 @@ textarea {
 	opacity: 0;
 	pointer-events: none;
 	transition: width 0.28s cubic-bezier(0.22, 1, 0.36, 1), margin-left 0.28s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s;
+}
+
+.user-manage-page.show-pass-confirm.user-manage-page-me .user-manage-pass-row > .field-group:first-child {
+	width: calc(50% - 6px);
+}
+
+.user-manage-page.show-pass-confirm.user-manage-page-me .user-manage-pass-confirm {
+	width: calc(50% - 6px);
+	margin-left: 12px;
+}
+
+.user-manage-page.show-pass-confirm .user-manage-pass-confirm {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+/* 根据权限等级隐藏相关组件 */
+.user-manage-page-edit:has(#userManageEditPerm option:checked[value="7"]) .field-group:has(#userManageEditGroups),
+.user-manage-page-edit:has(#userManageEditPerm option:checked[value="7"]) .field-group:has(#userManageEditInstances),
+.user-manage-page-edit:has(#userManageEditPerm option:checked[value="0"]) .field-group:has(#userManageEditGroups),
+.user-manage-page-edit:has(#userManageEditPerm option:checked[value="0"]) .field-group:has(#userManageEditInstances) {
+	display: none;
 }
 
 .user-manage-scope-row {
@@ -1725,6 +2013,27 @@ textarea {
 	gap: 10px;
 	max-height: 40vh;
 	overflow: auto;
+}
+
+.instance-tasks-list:empty {
+	display: none;
+}
+
+.instance-task-row .instance-task-command.hidden {
+	display: none;
+}
+
+.instance-task-row .instance-task-restart-options.hidden {
+	display: none;
+}
+
+.instance-group-row .placeholder:has(+ .hidden) {
+	display: none;
+}
+
+#instanceModalPageAdvanced:has(#instanceModalTerminal option[value="1"]:checked) .instance-stop-command-field,
+#instanceModalPageAdvanced:has(#instanceModalTerminal option[value="1"]:checked) .instance-encoding-row {
+	display: none;
 }
 
 .instance-tasks-toolbar {
@@ -2091,6 +2400,17 @@ table > thead > tr > th {
 	margin: 0 6px;
 }
 
+/* 终端滚动行为 */
+.terminal-wrapper:hover,
+.terminal-wrapper:focus-within {
+	overscroll-behavior: contain;
+}
+
+.terminal-wrapper .xterm-viewport {
+	overscroll-behavior: contain;
+	overflow-y: scroll;
+}
+
 .terminal-wrapper {
 	height: 100%;
 	overflow: hidden;
@@ -2111,6 +2431,28 @@ table > thead > tr > th {
     height: 624px;
 	min-height: 624px;
 	max-height: 624px;
+}
+
+/* 通用隐藏 */
+.hidden {
+	display: none !important;
+}
+
+/* 可访问性: 减少动画 */
+@media (prefers-reduced-motion: reduce) {
+	#authRoot,
+	.auth-card,
+	.auth-card-shell.shake,
+	#bootErrorRoot,
+	.boot-error-card {
+		transition: none !important;
+		animation: none !important;
+	}
+	#dialogRoot,
+	.dialog-card {
+		transition: none !important;
+		animation: none !important;
+	}
 }
 
 @keyframes fadeIn {

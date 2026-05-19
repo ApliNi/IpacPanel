@@ -732,16 +732,11 @@ func getInstanceFileTargetPath(sp *process.InstanceProcess, dirPath string, file
 		if !info.IsDir() {
 			return "", "", errors.New(msg.PathNotDirectory)
 		}
+		if err := ensurePathComponentsWithinRoot(rootPath, targetDir, true); err != nil {
+			return "", "", err
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", "", err
-	}
-	if err := ensurePathComponentsWithinRoot(rootPath, targetDir, true); err != nil {
-		return "", "", err
-	}
-	if info, err := os.Stat(targetDir); err != nil {
-		return "", "", err
-	} else if !info.IsDir() {
-		return "", "", errors.New(msg.PathNotDirectory)
 	}
 
 	return relativePath, filepath.Join(targetDir, fileName), nil
@@ -834,10 +829,20 @@ func HandleApiFileUploadInit(w http.ResponseWriter, r *http.Request) {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
-	if err := ensureResolvedPathWithinInstanceRoot(sp, filepath.Dir(targetPath)); err != nil {
+
+	// 自动创建目标目录（如果不存在）, 减少前端逐级创建目录的请求
+	targetDir := filepath.Dir(targetPath)
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		web.WriteAPIError(w, http.StatusBadRequest, msg.CreateDirectoryFailed, err)
+		return
+	}
+	if err := ensureCreatedPathWithinInstanceRoot(sp, targetDir); err != nil {
+		// 创建后路径逃逸根目录（如父目录被替换为符号链接）, 回滚
+		_ = os.Remove(targetDir)
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
+
 	if info, err := os.Stat(targetPath); err == nil {
 		if info.IsDir() {
 			web.WriteAPIError(w, http.StatusBadRequest, msg.UploadTargetIsDirectory, nil)

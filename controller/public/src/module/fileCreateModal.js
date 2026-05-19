@@ -1,8 +1,8 @@
 import { mainModalOverlay, state } from "../ui.js";
-import { DEFAULT_UI_REFRESH_INTERVAL_MS, clearTimer, closeAnimatedModal, getUploadErrorText, openAnimatedModal, withActionsDisabled } from '../utils/utils.js';
+import { DEFAULT_UI_REFRESH_INTERVAL_MS, clearTimer, closeAnimatedModal, formatFileSize, getUploadErrorText, openAnimatedModal, withActionsDisabled } from '../utils/utils.js';
 import { abortFileUpload, completeFileUpload, createDirectory, createTextFileAdaptive, initFileUpload, uploadFileChunk } from '../api/file.js';
 import { showAlert, showConfirm } from './dialog.js';
-import { applyFileUploadItemView, buildFileUploadItemNode, ceilTo, renderFileUploadSummaryText } from './fileUploadView.js';
+import { applyFileUploadFolderGroupView, applyFileUploadItemView, buildFileUploadFolderGroupNode, buildFileUploadItemNode, ceilTo, computeFolderGroupAggregates, renderFileUploadSummaryText } from './fileUploadView.js';
 import { InputValidation } from '../utils/inputValidation.js';
 
 console.log('[模块] FileCreateModal 加载中...');
@@ -58,6 +58,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
                         <span>覆盖已存在文件</span>
                     </label>
                     <div class="file-upload-summary-row">
+						<span id="fileUploadSpeed" class="file-upload-speed">0 B/s</span>
 						<span id="fileUploadSummary" class="file-upload-summary"></span>
 					</div>
 					<div id="fileUploadList" class="file-upload-list"></div>
@@ -94,6 +95,7 @@ const dom = {
 	fileUploadDirectoryInput: document.getElementById('fileUploadDirectoryInput'),
 	fileUploadDropzone: document.getElementById('fileUploadDropzone'),
 	fileUploadOverwrite: document.getElementById('fileUploadOverwrite'),
+	fileUploadSpeed: document.getElementById('fileUploadSpeed'),
 	fileUploadSummary: document.getElementById('fileUploadSummary'),
 	fileUploadList: document.getElementById('fileUploadList'),
 	fileCreateActions: document.querySelector('#fileCreateForm .modal-actions'),
@@ -119,12 +121,21 @@ const rememberUploadItem = (item) => {
 		return;
 	}
 	modalState.fileUploadItemById.set(id, item);
+	// 递归索引文件夹组的子项
+	if (item.kind === 'folder-group' && item.children) {
+		item.children.forEach(rememberUploadItem);
+	}
 };
 
 const forgetUploadItem = (itemOrId) => {
 	const id = getUploadItemId(itemOrId);
 	if (!id) {
 		return;
+	}
+	// 如果是文件夹组，递归清理子项
+	const item = modalState.fileUploadItemById.get(id);
+	if (item?.kind === 'folder-group' && item.children) {
+		item.children.forEach((c) => forgetUploadItem(c.id));
 	}
 	modalState.fileUploadItemById.delete(id);
 	modalState.fileUploadRowById.delete(id);
@@ -133,13 +144,85 @@ const forgetUploadItem = (itemOrId) => {
 	modalState.fileUploadActiveContexts.delete(id);
 };
 
+/** 统计扁平（叶子）上传项数量 */
+const countUploadLeafItems = (items) => {
+	let count = 0;
+	for (const item of items || []) {
+		if (item.kind === 'folder-group') {
+			count += countUploadLeafItems(item.children);
+		} else {
+			count += 1;
+		}
+	}
+	return count;
+};
+
+/** 获取扁平（叶子）上传项数组 */
+const getUploadLeafItems = () => {
+	const result = [];
+	for (const item of modalState.fileUploadItems) {
+		if (item.kind === 'folder-group') {
+			result.push(...item.children);
+		} else {
+			result.push(item);
+		}
+	}
+	return result;
+};
+
+/**
+ * 递归查找项（支持 folder-group 嵌套）
+ */
+const findUploadItemInTree = (items, id) => {
+	for (const item of items || []) {
+		if (item.id === id) return item;
+		if (item.kind === 'folder-group') {
+			const found = findUploadItemInTree(item.children, id);
+			if (found) return found;
+		}
+	}
+	return null;
+};
+
+/**
+ * 从树中移除项，支持 folder-group 嵌套；
+ * 移除 folder-group 时一并清除子项；清空子项后自动移除空组。
+ */
+const removeUploadItemFromTree = (items, id) => {
+	if (!Array.isArray(items)) return null;
+	for (let i = items.length - 1; i >= 0; i -= 1) {
+		const item = items[i];
+		if (item.id === id) {
+			if (item.kind === 'folder-group') {
+				(item.children || []).forEach((c) => forgetUploadItem(c.id));
+			}
+			items.splice(i, 1);
+			forgetUploadItem(id);
+			return item;
+		}
+		if (item.kind === 'folder-group') {
+			const removed = removeUploadItemFromTree(item.children, id);
+			if (removed) {
+				// 重新计算父组聚合（不会更新 DOM，由外层统一渲染）
+				updateFolderGroupAggregates(item);
+				if (item.children.length === 0) {
+					// 空组也移除
+					items.splice(i, 1);
+					forgetUploadItem(item.id);
+				}
+				return removed;
+			}
+		}
+	}
+	return null;
+};
+
 const removeUploadItemById = (itemOrId) => {
 	const id = getUploadItemId(itemOrId);
 	if (!id) {
 		return;
 	}
-	modalState.fileUploadItems = modalState.fileUploadItems.filter((item) => item.id !== id);
-	forgetUploadItem(id);
+	removeUploadItemFromTree(modalState.fileUploadItems, id);
 };
 
 const modalState = {
@@ -167,6 +250,14 @@ const modalState = {
     fileUploadConcurrency: 4,
     fileUploadChunkRetryCount: 7,
     fileUploadChunkRetryDelay: 500,
+    fileUploadScanControllers: new Map(),
+    fileUploadScanPromises: [],
+    fileUploadScanPromiseByGroupId: new Map(),
+    fileUploadScanDebounceTimer: null,
+    fileUploadSpeedBytes: 0,
+    fileUploadSpeedLastTick: 0,
+    fileUploadSpeedValue: 0,
+    fileUploadSpeedTimer: null,
     onApplyFileList: null,
     onRequestReload: null,
 	getCurrentDir: null,
@@ -298,13 +389,62 @@ const renderFileCreatePage = () => {
 
 const renderFileUploadSummary = () => {
     if (dom.fileUploadSummary) {
+        // 使用缓存值保持分母/成功数在自动删除期间稳定
         const successCount = Math.max(0, modalState.fileUploadStats.success || 0);
-        const failedCount = modalState.fileUploadItems.filter((item) => item.status === 'FAILED').length;
-        const total = Math.max(0, Number(modalState.fileUploadStats.total || 0)) || modalState.fileUploadItems.length;
+        const leafItems = getUploadLeafItems();
+        const failedCount = leafItems.filter((item) => item.status === 'FAILED').length;
+        const total = Math.max(0, Number(modalState.fileUploadStats.total || 0)) || leafItems.length;
         const summaryText = renderFileUploadSummaryText({ success: successCount, total, failed: failedCount });
         dom.fileUploadSummary.innerText = summaryText;
         dom.fileUploadSummary.parentElement?.classList.toggle('hidden', !summaryText);
     }
+    renderFileUploadSpeed();
+};
+
+/** 重置上传速度跟踪状态 */
+const resetFileUploadSpeed = () => {
+    modalState.fileUploadSpeedBytes = 0;
+    modalState.fileUploadSpeedLastTick = 0;
+    modalState.fileUploadSpeedValue = 0;
+};
+
+/** 记录新上传的字节数 */
+const recordFileUploadBytes = (delta) => {
+    modalState.fileUploadSpeedBytes += delta;
+};
+
+/** 渲染当前速度到 DOM */
+const renderFileUploadSpeed = () => {
+    const el = dom.fileUploadSpeed;
+    if (!el) return;
+    const speed = modalState.fileUploadSpeedValue || 0;
+    el.textContent = speed > 0 ? `${formatFileSize(speed)}/s` : '0 B/s';
+};
+
+/** 启动速度定时器（每秒计算并更新） */
+const startFileUploadSpeedTimer = () => {
+    if (modalState.fileUploadSpeedTimer) return;
+    modalState.fileUploadSpeedLastTick = Date.now();
+    modalState.fileUploadSpeedTimer = window.setInterval(() => {
+        const now = Date.now();
+        const elapsed = now - modalState.fileUploadSpeedLastTick;
+        if (elapsed > 0) {
+            modalState.fileUploadSpeedValue = modalState.fileUploadSpeedBytes / (elapsed / 1000);
+        }
+        modalState.fileUploadSpeedBytes = 0;
+        modalState.fileUploadSpeedLastTick = now;
+        renderFileUploadSpeed();
+    }, 1000);
+};
+
+/** 停止速度定时器并显示 0 B/s */
+const stopFileUploadSpeedTimer = () => {
+    if (modalState.fileUploadSpeedTimer) {
+        clearInterval(modalState.fileUploadSpeedTimer);
+        modalState.fileUploadSpeedTimer = null;
+    }
+    modalState.fileUploadSpeedValue = 0;
+    renderFileUploadSpeed();
 };
 
 const renderFileUploadList = () => {
@@ -318,13 +458,22 @@ const renderFileUploadList = () => {
 	}
 	dom.fileUploadList.classList.remove('hidden');
 
-	dom.fileUploadList.replaceChildren(...modalState.fileUploadItems.map(buildFileUploadItemNode));
+	// Build DOM tree
+	const fragment = document.createDocumentFragment();
+	for (const item of modalState.fileUploadItems) {
+		if (item.kind === 'folder-group') {
+			fragment.appendChild(buildFileUploadFolderGroupNode(item));
+		} else {
+			fragment.appendChild(buildFileUploadItemNode(item));
+		}
+	}
+	dom.fileUploadList.replaceChildren(fragment);
 
-	// Refresh row map after full re-render.
+	// Refresh row map — 查询所有层级中的项和文件夹组
 	modalState.fileUploadRowById.clear();
-	const rows = dom.fileUploadList.querySelectorAll('.file-upload-item');
-	for (let i = 0; i < rows.length; i += 1) {
-		const row = rows[i];
+	const allItemRows = dom.fileUploadList.querySelectorAll('.file-upload-item, .file-upload-folder-group');
+	for (let i = 0; i < allItemRows.length; i += 1) {
+		const row = allItemRows[i];
 		const id = String(row?.dataset?.id || '');
 		if (id) {
 			modalState.fileUploadRowById.set(id, row);
@@ -405,7 +554,7 @@ const findFileUploadItemRow = (id) => {
     for (let i = 0; i < rows.length; i += 1) {
         const row = rows[i];
         if ((row?.dataset?.id || '') === targetId) {
-			modalState.fileUploadRowById.set(targetId, row);
+            modalState.fileUploadRowById.set(targetId, row);
             return row;
         }
     }
@@ -454,6 +603,13 @@ const queueFileUploadDomUpdate = (id) => {
                 return;
             }
             applyFileUploadItemDom(item);
+            // 同步更新父文件夹组聚合
+            if (item.parentId) {
+                const parent = modalState.fileUploadItemById.get(item.parentId);
+                if (parent?.kind === 'folder-group') {
+                    updateFolderGroupAggregates(parent);
+                }
+            }
         });
         renderFileUploadSummary();
 	}, DEFAULT_UI_REFRESH_INTERVAL_MS);
@@ -466,13 +622,15 @@ const setFileUploadItems = (items) => {
     modalState.fileUploadItems = Array.isArray(items) ? items : [];
 	modalState.fileUploadItemById.clear();
 	modalState.fileUploadItems.forEach(rememberUploadItem);
-    modalState.fileUploadStats.total = modalState.fileUploadItems.length;
+    modalState.fileUploadStats.total = countUploadLeafItems(modalState.fileUploadItems);
     modalState.fileUploadStats.success = 0;
     renderFileUploadList();
     updateFileUploadDropzoneState();
 };
 
 const resetFileUploadState = () => {
+	abortAllScans();
+	stopFileUploadSpeedTimer();
     clearFileUploadDomUpdateTimer();
 	clearFileUploadDoneClearTimers();
 	modalState.fileUploadRunToken += 1;
@@ -635,6 +793,39 @@ const createFileEntry = async (type, name, content = '', overwrite = false) => {
 	return result.data;
 };
 
+/** 重新计算文件夹组的聚合数据并更新 DOM */
+const updateFolderGroupAggregates = (group) => {
+	if (!group || group.kind !== 'folder-group') return;
+	const aggr = computeFolderGroupAggregates(group);
+	group.loaded = aggr.totalLoaded;
+	group.size = aggr.totalSize;
+	group.progress = aggr.progress;
+	// 派生子状态
+	let status = 'WAITING';
+	if (aggr.doneCount === aggr.totalCount) {
+		status = 'DONE';
+	} else if (aggr.failedCount > 0 && aggr.doneCount + aggr.failedCount === aggr.totalCount) {
+		status = 'FAILED';
+	} else if (aggr.doneCount > 0) {
+		status = 'UPLOADING';
+	}
+	group.status = status;
+	// 更新 DOM
+	const row = modalState.fileUploadRowById.get(group.id);
+	if (row) {
+		applyFileUploadFolderGroupView(row, group);
+	}
+};
+
+/** 如果子项有 parentId，更新对应的父文件夹组 */
+const updateParentFolderGroup = (item) => {
+	if (!item || !item.parentId) return;
+	const parent = modalState.fileUploadItemById.get(item.parentId);
+	if (parent?.kind === 'folder-group') {
+		updateFolderGroupAggregates(parent);
+	}
+};
+
 const setFileUploadProgress = (id, payload = {}) => {
 	const item = modalState.fileUploadItemById.get(id) || null;
 	if (!item) {
@@ -664,6 +855,7 @@ const setFileUploadProgress = (id, payload = {}) => {
 		}
 		clearFileUploadDoneClearTimer(id);
 		applyFileUploadItemDom(item);
+		updateParentFolderGroup(item);
 		renderFileUploadSummary();
 		modalState.fileUploadDoneClearTimers.set(id, window.setTimeout(() => {
 			modalState.fileUploadDoneClearTimers.delete(id);
@@ -671,10 +863,27 @@ const setFileUploadProgress = (id, payload = {}) => {
 			if (!current || current.status !== 'DONE') {
 				return;
 			}
+
+			if (current.parentId) {
+				// 文件夹组子项：只删除 DOM 行，保留数据保证聚合稳定
+				const parent = modalState.fileUploadItemById.get(current.parentId);
+				if (parent?.kind === 'folder-group') {
+					const removed = removeFileUploadItemRow(id);
+					if (!removed) {
+						renderFileUploadList();
+					}
+					updateFolderGroupAggregates(parent);
+					renderFileUploadSummary();
+					updateFileUploadDropzoneState();
+					pruneFileUploadListIfEmpty();
+					return;
+				}
+			}
+
+			// 普通文件：完整删除数据和 DOM
 			removeUploadItemById(id);
 			const removed = removeFileUploadItemRow(id);
 			if (!removed) {
-				// DOM 可能被外部改动，兜底做一次结构渲染以同步视图
 				renderFileUploadList();
 			}
 			renderFileUploadSummary();
@@ -687,6 +896,7 @@ const setFileUploadProgress = (id, payload = {}) => {
 	if (nextStatus !== 'UPLOADING' && nextStatus !== 'MERGING') {
 		// 状态切换(等待/失败等)直接局部更新一次，避免等待统一刷新间隔
 		applyFileUploadItemDom(item);
+		updateParentFolderGroup(item);
 		renderFileUploadSummary();
 		return;
 	}
@@ -749,8 +959,231 @@ const isLikelyDroppedDirectoryPlaceholder = (file) => {
 	return !!file && Number(file.size || 0) === 0 && !String(file.type || '').trim();
 };
 
-const isLikelyTopLevelDirectoryPlaceholder = (file, parentPath = '') => {
-	return !String(parentPath || '').trim() && isLikelyDroppedDirectoryPlaceholder(file);
+/** 文件夹扫描每批处理多少文件后向 UI 报告 */
+const FOLDER_SCAN_BATCH_SIZE = 50;
+
+/** 中止文件夹扫描任务 */
+const abortFolderScan = (groupId) => {
+	const controller = modalState.fileUploadScanControllers.get(groupId);
+	if (controller) {
+		controller.abort();
+		modalState.fileUploadScanControllers.delete(groupId);
+	}
+	// 从等待数组中移除该组的扫描 promise，避免 uploadSelectedFiles 等待已中止的扫描
+	const promise = modalState.fileUploadScanPromiseByGroupId.get(groupId);
+	if (promise) {
+		const idx = modalState.fileUploadScanPromises.indexOf(promise);
+		if (idx !== -1) modalState.fileUploadScanPromises.splice(idx, 1);
+		modalState.fileUploadScanPromiseByGroupId.delete(groupId);
+	}
+};
+
+/** 中止所有进行中的文件夹扫描 */
+const abortAllScans = () => {
+	const groupIds = Array.from(modalState.fileUploadScanControllers.keys());
+	groupIds.forEach(abortFolderScan);
+	modalState.fileUploadScanPromises = [];
+	modalState.fileUploadScanPromiseByGroupId.clear();
+	if (modalState.fileUploadScanDebounceTimer) {
+		clearTimeout(modalState.fileUploadScanDebounceTimer);
+		modalState.fileUploadScanDebounceTimer = null;
+	}
+};
+
+/** 创建扫描中的文件夹组占位项 */
+const createScanningFolderGroup = (name) => ({
+	id: `scan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+	kind: 'folder-group',
+	name,
+	path: '',
+	size: 0,
+	loaded: 0,
+	progress: 0,
+	status: 'WAITING',
+	errorMessage: '',
+	expanded: false,
+	scanState: 'scanning',
+	scannedCount: 0,
+	scannedSize: 0,
+	children: [],
+});
+
+/** 由扫描的文件条目创建单个上传子项 */
+const createUploadItemFromScannedFile = (file, relativePath, groupId, fileIndex) => {
+	const item = createPlainUploadItem(file, `${groupId}-${Date.now()}-${fileIndex}`);
+	const parts = getUploadPathParts(normalizeUploadRelativePath(relativePath));
+	item.path = parts.slice(0, -1).join('/');
+	item.name = parts[parts.length - 1] || item.name;
+	item.parentId = groupId;
+	return item;
+};
+
+/** 处理文件夹扫描的一批结果：添加子项、更新计数、调度 UI 刷新 */
+const handleFolderScanBatch = (groupItem, { files, scannedCount, scannedSize }) => {
+	const children = files.map((f, i) =>
+		createUploadItemFromScannedFile(f.file, f.relativePath, groupItem.id, groupItem.children.length + i)
+	);
+	children.forEach(rememberUploadItem);
+	groupItem.children.push(...children);
+	groupItem.scannedCount = scannedCount;
+	groupItem.scannedSize = scannedSize;
+	scheduleFolderScanDomUpdate();
+};
+
+/** 文件夹扫描完成：建立空目录、计算聚合、转回正常模式 */
+const handleFolderScanComplete = (groupItem, dirsFound) => {
+	if (groupItem.scanState !== 'scanning') return;
+	groupItem.scanState = null;
+	delete groupItem.scannedCount;
+	delete groupItem.scannedSize;
+
+	// 如果组已被移除，直接清理并返回
+	const stillExists = findUploadItemInTree(modalState.fileUploadItems, groupItem.id);
+	if (!stillExists) {
+		modalState.fileUploadScanControllers.delete(groupItem.id);
+		return;
+	}
+
+	// 创建扫描中发现的空目录项
+	if (dirsFound && dirsFound.size > 0) {
+		const filePaths = new Set(
+			groupItem.children
+				.filter((c) => c.kind !== 'empty-directory')
+				.map((c) => normalizeUploadRelativePath([c.path, c.name].filter(Boolean).join('/')))
+		);
+		let dirIndex = 0;
+		for (const dirPath of dirsFound) {
+			const normalizedDir = normalizeUploadRelativePath(dirPath);
+			const hasFileInDir = Array.from(filePaths).some(
+				(fp) => fp === normalizedDir || fp.startsWith(normalizedDir + '/')
+			);
+			if (!hasFileInDir) {
+				groupItem.children.push({
+					id: `${groupItem.id}-dir-${dirIndex}-${Date.now()}`,
+					kind: 'empty-directory',
+					parentId: groupItem.id,
+					name: normalizedDir,
+					size: 0,
+					loaded: 0,
+					progress: 0,
+					status: 'WAITING',
+					errorMessage: '',
+				});
+				dirIndex += 1;
+			}
+		}
+	}
+
+	const aggr = computeFolderGroupAggregates(groupItem);
+	groupItem.loaded = aggr.totalLoaded;
+	groupItem.size = aggr.totalSize;
+	groupItem.progress = aggr.progress;
+	groupItem.status = aggr.doneCount === aggr.totalCount ? 'DONE' : 'WAITING';
+
+	modalState.fileUploadScanControllers.delete(groupItem.id);
+
+	// 重建索引并刷新完整列表
+	modalState.fileUploadItemById.clear();
+	modalState.fileUploadItems.forEach(rememberUploadItem);
+	modalState.fileUploadStats.total = countUploadLeafItems(modalState.fileUploadItems);
+	modalState.fileUploadStats.success = countSuccessLeafItems(modalState.fileUploadItems);
+	renderFileUploadList();
+	updateFileUploadDropzoneState();
+};
+
+/** 调度扫描中文件夹组的 DOM 更新（防抖，与 UI 刷新间隔一致） */
+const scheduleFolderScanDomUpdate = () => {
+	if (modalState.fileUploadScanDebounceTimer) return;
+	modalState.fileUploadScanDebounceTimer = setTimeout(() => {
+		modalState.fileUploadScanDebounceTimer = null;
+		for (const [groupId] of modalState.fileUploadScanControllers) {
+			const group = findUploadItemInTree(modalState.fileUploadItems, groupId);
+			const row = modalState.fileUploadRowById.get(groupId);
+			if (group && row) {
+				applyFileUploadFolderGroupView(row, group);
+			}
+		}
+		renderFileUploadSummary();
+	}, DEFAULT_UI_REFRESH_INTERVAL_MS);
+};
+
+/** 使用 FileSystemEntry API 迭代遍历目录树，分批报告进度 */
+const scanEntryTree = async (entry, groupItem) => {
+	const controller = modalState.fileUploadScanControllers.get(groupItem.id);
+	const queue = [{ entry, path: entry.name }];
+	let batch = [];
+	let scannedCount = 0;
+	let scannedSize = 0;
+	const dirsFound = new Set();
+
+	while (queue.length > 0) {
+		if (controller?.signal.aborted) break;
+
+		const current = queue.shift();
+		if (current.entry.isFile) {
+			const file = await readEntryFile(current.entry);
+			batch.push({ file, relativePath: current.path });
+			scannedCount += 1;
+			scannedSize += file.size;
+		} else if (current.entry.isDirectory) {
+			dirsFound.add(current.path);
+			const children = await readAllDirectoryEntries(current.entry.createReader());
+			for (const child of children) {
+				queue.push({ entry: child, path: `${current.path}/${child.name}` });
+			}
+		}
+
+		if (batch.length >= FOLDER_SCAN_BATCH_SIZE) {
+			handleFolderScanBatch(groupItem, { files: batch, scannedCount, scannedSize });
+			batch = [];
+			await new Promise((r) => setTimeout(r, 0));
+		}
+	}
+
+	if (batch.length > 0) {
+		handleFolderScanBatch(groupItem, { files: batch, scannedCount, scannedSize });
+	}
+
+	handleFolderScanComplete(groupItem, dirsFound);
+};
+
+/** 使用 FileSystemHandle API 迭代遍历目录树，分批报告进度 */
+const scanHandleTree = async (handle, groupItem) => {
+	const controller = modalState.fileUploadScanControllers.get(groupItem.id);
+	const queue = [{ handle, path: handle.name }];
+	let batch = [];
+	let scannedCount = 0;
+	let scannedSize = 0;
+	const dirsFound = new Set();
+
+	while (queue.length > 0) {
+		if (controller?.signal.aborted) break;
+
+		const current = queue.shift();
+		if (current.handle.kind === 'file') {
+			const file = await current.handle.getFile();
+			batch.push({ file, relativePath: current.path });
+			scannedCount += 1;
+			scannedSize += file.size;
+		} else if (current.handle.kind === 'directory') {
+			dirsFound.add(current.path);
+			for await (const child of current.handle.values()) {
+				queue.push({ handle: child, path: `${current.path}/${child.name}` });
+			}
+		}
+
+		if (batch.length >= FOLDER_SCAN_BATCH_SIZE) {
+			handleFolderScanBatch(groupItem, { files: batch, scannedCount, scannedSize });
+			batch = [];
+			await new Promise((r) => setTimeout(r, 0));
+		}
+	}
+
+	if (batch.length > 0) {
+		handleFolderScanBatch(groupItem, { files: batch, scannedCount, scannedSize });
+	}
+
+	handleFolderScanComplete(groupItem, dirsFound);
 };
 
 const createPlainUploadItem = (file, index) => ({
@@ -765,29 +1198,34 @@ const createPlainUploadItem = (file, index) => ({
 	errorMessage: '',
 });
 
-const createDirectoryUploadItems = (pickedFiles, pickedDirs, index) => {
-	const files = Array.from(pickedFiles || [])
+const createFolderGroupItem = (pickedFiles, pickedDirs, index) => {
+	const groupId = `folder-${Date.now()}-${index}`;
+	const sorted = Array.from(pickedFiles || [])
 		.map((entry) => ({
 			file: entry.file,
 			path: normalizeUploadRelativePath(entry.relativePath || entry.file?.name || ''),
 		}))
 		.filter((entry) => entry.file && entry.path)
 		.sort((a, b) => compareUploadPath(a.path, b.path));
-	const items = files.map((entry, fileIndex) => createPlainUploadItem(entry.file, `${index}-${fileIndex}`));
-	items.forEach((item, fileIndex) => {
-		const relativePath = files[fileIndex]?.path || item.name;
-		const parts = getUploadPathParts(relativePath);
+
+	const children = sorted.map((entry, fileIndex) => {
+		const item = createPlainUploadItem(entry.file, `${index}-${fileIndex}`);
+		const parts = getUploadPathParts(entry.path);
 		item.path = parts.slice(0, -1).join('/');
 		item.name = parts[parts.length - 1] || item.name;
+		item.parentId = groupId;
+		return item;
 	});
+
 	const emptyDirs = Array.from(pickedDirs || [])
 		.map((path) => normalizeUploadRelativePath(path))
 		.filter(Boolean)
-		.filter((path) => !files.some((entry) => entry.path === path || entry.path.startsWith(`${path}/`)));
+		.filter((path) => !sorted.some((entry) => entry.path === path || entry.path.startsWith(`${path}/`)));
 	emptyDirs.forEach((path, dirIndex) => {
-		items.push({
+		children.push({
 			id: `${Date.now()}-${index}-dir-${dirIndex}-${path}`,
 			kind: 'empty-directory',
+			parentId: groupId,
 			name: path,
 			size: 0,
 			loaded: 0,
@@ -796,25 +1234,24 @@ const createDirectoryUploadItems = (pickedFiles, pickedDirs, index) => {
 			errorMessage: '',
 		});
 	});
-	return items;
-};
 
-const joinUploadTargetDir = (basePath, relativePath) => [basePath, relativePath]
-	.map((part) => String(part || '').replace(/^\/+|\/+$/g, ''))
-	.filter(Boolean)
-	.join('/');
+	const firstPath = sorted[0]?.path || '';
+	const groupName = getUploadRootName(firstPath, 'folder');
+	const totalSize = children.reduce((sum, c) => sum + (c.size || 0), 0);
 
-const ensureUploadDirectoryTree = async (instanceName, currentPath, relativeDirPath) => {
-	// 上传初始化不会隐式创建目录, 因此前端逐级创建目录树。
-	const dirParts = normalizeUploadRelativePath(relativeDirPath).split('/').filter(Boolean);
-	let dirAccumPath = String(currentPath || '').replace(/^\/+|\/+$/g, '');
-	for (const part of dirParts) {
-		const result = await createDirectory(instanceName, dirAccumPath, part);
-		if (!result.ok) {
-			throw new Error(result.error || '创建上传目录失败');
-		}
-		dirAccumPath = joinUploadTargetDir(dirAccumPath, part);
-	}
+	return {
+		id: groupId,
+		kind: 'folder-group',
+		name: groupName,
+		path: '',
+		size: totalSize,
+		loaded: 0,
+		progress: 0,
+		status: 'WAITING',
+		errorMessage: '',
+		expanded: false,
+		children,
+	};
 };
 
 const buildUploadItemsFromPickedEntries = (entries, dirs = []) => {
@@ -869,7 +1306,7 @@ const buildUploadItemsFromPickedEntries = (entries, dirs = []) => {
 		if (group.type === 'file') {
 			return createPlainUploadItem(group.file, index);
 		}
-		return createDirectoryUploadItems(group.files, group.dirs, index);
+		return [createFolderGroupItem(group.files, group.dirs, index)];
 	});
 };
 
@@ -885,64 +1322,6 @@ const readAllDirectoryEntries = async (reader) => {
 		entries.push(...batch);
 	}
 	return entries;
-};
-
-const readDroppedEntry = async (entry, parentPath = '') => {
-	const path = parentPath ? `${parentPath}/${entry.name}` : entry.name;
-	if (entry.isFile) {
-		const file = await readEntryFile(entry);
-		return {
-			files: [{
-				file,
-				relativePath: path,
-				isDirectory: !!parentPath,
-				maybeDirectoryPlaceholder: isLikelyTopLevelDirectoryPlaceholder(file, parentPath),
-			}],
-			dirs: [],
-		};
-	}
-	if (entry.isDirectory) {
-		const children = await readAllDirectoryEntries(entry.createReader());
-		const files = [];
-		const dirs = [path];
-		for (const child of children) {
-			const childResult = await readDroppedEntry(child, path);
-			files.push(...childResult.files);
-			dirs.push(...childResult.dirs);
-		}
-		return { files, dirs };
-	}
-	return { files: [], dirs: [] };
-};
-
-const readDroppedFileSystemHandle = async (handle, parentPath = '') => {
-	if (!handle) {
-		return { files: [], dirs: [] };
-	}
-	const path = parentPath ? `${parentPath}/${handle.name}` : handle.name;
-	if (handle.kind === 'file') {
-		const file = await handle.getFile();
-		return {
-			files: [{
-				file,
-				relativePath: path,
-				isDirectory: !!parentPath,
-				maybeDirectoryPlaceholder: isLikelyTopLevelDirectoryPlaceholder(file, parentPath),
-			}],
-			dirs: [],
-		};
-	}
-	if (handle.kind === 'directory') {
-		const files = [];
-		const dirs = [path];
-		for await (const child of handle.values()) {
-			const childResult = await readDroppedFileSystemHandle(child, path);
-			files.push(...childResult.files);
-			dirs.push(...childResult.dirs);
-		}
-		return { files, dirs };
-	}
-	return { files: [], dirs: [] };
 };
 
 const readDataTransferItemHandle = async (item) => {
@@ -978,16 +1357,23 @@ const readDroppedUploadItems = async (dataTransfer) => {
 		droppedItems.push({ item, entry, file, isDirectoryPlaceholder });
 	}
 	const shouldSkipDirectories = hasTopLevelFile && hasTopLevelDirectory;
-	const files = [];
-	const dirs = [];
+
+	// 直接读取的文件（非目录项）
+	const directFiles = [];
+	// 需要后台扫描的目录项
+	const scanJobs = [];
+
 	for (const dropped of droppedItems) {
 		if (shouldSkipDirectories && (dropped.entry?.isDirectory || dropped.isDirectoryPlaceholder)) {
 			continue;
 		}
 		if (dropped.entry) {
-			const result = await readDroppedEntry(dropped.entry);
-			files.push(...result.files);
-			dirs.push(...result.dirs);
+			if (dropped.entry.isFile) {
+				const file = await readEntryFile(dropped.entry);
+				directFiles.push({ file, relativePath: dropped.entry.name });
+			} else if (dropped.entry.isDirectory) {
+				scanJobs.push({ type: 'entry', entry: dropped.entry });
+			}
 			continue;
 		}
 		try {
@@ -996,9 +1382,12 @@ const readDroppedUploadItems = async (dataTransfer) => {
 				if (shouldSkipDirectories && handle.kind === 'directory') {
 					continue;
 				}
-				const result = await readDroppedFileSystemHandle(handle);
-				files.push(...result.files);
-				dirs.push(...result.dirs);
+				if (handle.kind === 'file') {
+					const file = await handle.getFile();
+					directFiles.push({ file, relativePath: handle.name });
+				} else {
+					scanJobs.push({ type: 'handle', handle });
+				}
 				continue;
 			}
 		} catch (error) {
@@ -1008,21 +1397,56 @@ const readDroppedUploadItems = async (dataTransfer) => {
 			if (shouldSkipDirectories && dropped.isDirectoryPlaceholder) {
 				continue;
 			}
-			files.push({ file: dropped.file, maybeDirectoryPlaceholder: dropped.isDirectoryPlaceholder });
+			directFiles.push({ file: dropped.file, relativePath: dropped.file.name, maybeDirectoryPlaceholder: dropped.isDirectoryPlaceholder });
 		}
 	}
-	if (!dirs.length && fallbackFiles.length > files.length) {
-		const seen = new Set(files.map((entry) => getUploadFileSignature(entry.file)));
+
+	// 回退：用 DataTransfer.files 补充缺失的文件
+	if (!scanJobs.length && fallbackFiles.length > directFiles.length) {
+		const seen = new Set(directFiles.map((entry) => getUploadFileSignature(entry.file)));
 		fallbackFiles.forEach((file) => {
 			const signature = getUploadFileSignature(file);
 			if (seen.has(signature)) {
 				return;
 			}
 			seen.add(signature);
-			files.push({ file });
+			directFiles.push({ file, relativePath: file.name });
 		});
 	}
-	return buildUploadItemsFromPickedEntries(files, dirs);
+
+	// 从直接文件创建立即显示的项
+	const resultItems = buildUploadItemsFromPickedEntries(directFiles, []);
+
+	// 为每个目录创建扫描占位并启动后台扫描
+	for (const job of scanJobs) {
+		const name = job.entry?.name || job.handle?.name || 'folder';
+		const groupItem = createScanningFolderGroup(name);
+		resultItems.push(groupItem);
+
+		const controller = new AbortController();
+		modalState.fileUploadScanControllers.set(groupItem.id, controller);
+
+		const scanFn = job.type === 'entry'
+			? () => scanEntryTree(job.entry, groupItem)
+			: () => scanHandleTree(job.handle, groupItem);
+
+		const scanPromise = scanFn().catch((error) => {
+			if (error?.name === 'AbortError') return;
+			console.error('[控制台页] 文件夹扫描失败:', error);
+			if (groupItem.scanState === 'scanning') {
+				handleFolderScanComplete(groupItem);
+			}
+		});
+		modalState.fileUploadScanPromiseByGroupId.set(groupItem.id, scanPromise);
+		modalState.fileUploadScanPromises.push(scanPromise);
+		scanPromise.finally(() => {
+			modalState.fileUploadScanPromiseByGroupId.delete(groupItem.id);
+			const idx = modalState.fileUploadScanPromises.indexOf(scanPromise);
+			if (idx !== -1) modalState.fileUploadScanPromises.splice(idx, 1);
+		});
+	}
+
+	return resultItems;
 };
 
 const uploadFileChunkWithRetry = async (instanceName, uploadId, index, chunk, onProgress, options = {}) => {
@@ -1124,12 +1548,15 @@ const initFileUploadContext = async (instanceName, currentPath, item, overwrite,
 			const delta = safeLoaded - prevLoaded;
 			ctx.chunkProgress[index] = safeLoaded;
 			ctx.totalLoaded = Math.max(0, (ctx.totalLoaded || 0) + delta);
+			recordFileUploadBytes(delta);
 			ctx.refreshProgress('UPLOADING');
 		}, { signal: ctx.controller.signal });
 		const prevLoaded = ctx.chunkProgress[index] || 0;
 		if (prevLoaded !== chunk.size) {
+			const chunkDelta = chunk.size - prevLoaded;
 			ctx.chunkProgress[index] = chunk.size;
-			ctx.totalLoaded = Math.max(0, (ctx.totalLoaded || 0) + (chunk.size - prevLoaded));
+			ctx.totalLoaded = Math.max(0, (ctx.totalLoaded || 0) + chunkDelta);
+			recordFileUploadBytes(chunkDelta);
 		}
 		ctx.refreshProgress('UPLOADING');
 	};
@@ -1320,18 +1747,45 @@ const uploadFileGroupChunks = async (contexts, limit, options = {}) => {
 	}
 };
 
-const hasFailedFileUploads = () => modalState.fileUploadItems.some((item) => item.status === 'FAILED');
+const hasFailedFileUploads = () => getUploadLeafItems().some((item) => item.status === 'FAILED');
 
 const setFileUploadAwaitConfirm = (value) => {
     modalState.fileUploadAwaitConfirm = !!value;
     renderFileCreatePage();
 };
 
+/** 递归重置文件夹组内失败子项 */
+const resetFolderGroupChildren = (group) => {
+	if (!group || group.kind !== 'folder-group') return;
+	group.children = group.children
+		.filter((child) => child.status !== 'DONE')
+		.map((child) => {
+			if (child.kind === 'folder-group') {
+				resetFolderGroupChildren(child);
+				return child;
+			}
+			if (child.status !== 'FAILED') return child;
+			return { ...child, loaded: 0, progress: 0, status: 'WAITING', errorMessage: '' };
+		});
+	const aggr = computeFolderGroupAggregates(group);
+	group.loaded = aggr.totalLoaded;
+	group.size = aggr.totalSize;
+	group.progress = aggr.progress;
+	group.status = aggr.doneCount === aggr.totalCount ? 'DONE' : 'WAITING';
+};
+
 const prepareRetryFileUploads = () => {
     modalState.fileUploadRemovedIds.clear();
     modalState.fileUploadItems = modalState.fileUploadItems
-        .filter((item) => item.status !== 'DONE')
+        .filter((item) => {
+			if (item.kind === 'folder-group') {
+				resetFolderGroupChildren(item);
+				return item.children.length > 0;
+			}
+			return item.status !== 'DONE';
+		})
         .map((item) => {
+			if (item.kind === 'folder-group') return item;
             if (item.status !== 'FAILED') {
                 return item;
             }
@@ -1344,12 +1798,8 @@ const prepareRetryFileUploads = () => {
             };
         });
 	modalState.fileUploadItemById.clear();
-	modalState.fileUploadItems.forEach((item) => {
-		if (item && item.id) {
-			modalState.fileUploadItemById.set(item.id, item);
-		}
-	});
-    modalState.fileUploadStats.total = modalState.fileUploadItems.length;
+	modalState.fileUploadItems.forEach(rememberUploadItem);
+    modalState.fileUploadStats.total = countUploadLeafItems(modalState.fileUploadItems);
     modalState.fileUploadStats.success = 0;
     modalState.fileUploadAwaitConfirm = false;
     renderFileCreatePage();
@@ -1358,9 +1808,15 @@ const prepareRetryFileUploads = () => {
 };
 
 const uploadSelectedFiles = async (overwrite) => {
+	// 等待所有进行中的文件夹扫描完成
+	if (modalState.fileUploadScanPromises.length > 0) {
+		await Promise.all(modalState.fileUploadScanPromises);
+		modalState.fileUploadScanPromises = [];
+	}
+
 	const instanceName = state.currentInstanceName;
 	const currentPath = getCurrentDir();
-	const items = modalState.fileUploadItems;
+	const items = getUploadLeafItems();
 	if (!instanceName || !items.length) {
 		await showAlert('请选择至少一个文件', { title: 'INPUT' });
 		return false;
@@ -1371,6 +1827,8 @@ const uploadSelectedFiles = async (overwrite) => {
 	let hasDone = false;
 	const limit = Math.max(1, modalState.fileUploadConcurrency || 1);
 	setFileUploadLocked(true);
+	resetFileUploadSpeed();
+	startFileUploadSpeedTimer();
 	try {
 		items.forEach((item) => {
 			updateUploadItemProgress(item, 0, 'WAITING');
@@ -1389,14 +1847,20 @@ const uploadSelectedFiles = async (overwrite) => {
 				}
 				try {
 					if (item.kind === 'empty-directory') {
-						await ensureUploadDirectoryTree(instanceName, currentPath, item.name);
+						// 空目录没有文件触发 upload/init 自动创建, 直接通过 API 逐级创建
+						const dirParts = normalizeUploadRelativePath(item.name).split('/').filter(Boolean);
+						let dirAccumPath = String(currentPath || '').replace(/^\/+|\/+$/g, '');
+						for (const part of dirParts) {
+							const result = await createDirectory(instanceName, dirAccumPath, part);
+							if (!result.ok) {
+								throw new Error(result.error || '创建上传目录失败');
+							}
+							dirAccumPath = dirAccumPath ? `${dirAccumPath}/${part}` : part;
+						}
 						hasFinished = true;
 						hasSuccess = true;
 						updateUploadItemProgress(item, 0, 'DONE');
 						continue;
-					}
-					if (item.path) {
-						await ensureUploadDirectoryTree(instanceName, currentPath, item.path);
 					}
 					const ctx = await initFileUploadContext(instanceName, currentPath, item, overwrite, { runToken });
 					if (!ctx || ctx.failed || ctx.removed || isUploadItemCanceled(item, runToken)) {
@@ -1473,7 +1937,9 @@ const uploadSelectedFiles = async (overwrite) => {
 			},
 		});
 	} finally {
+		stopFileUploadSpeedTimer();
 		setFileUploadLocked(false);
+		cleanupDoneFolderGroupChildren();
 		trimFinishedUploadStats();
 	}
     if (hasSuccess && typeof modalState.onRequestReload === 'function') {
@@ -1507,19 +1973,177 @@ const replaceFileUploadItemsWithItems = (items) => {
 	}
 };
 
+/** 获取上传项的去重标识 */
+const getUploadItemDedupKey = (item) => {
+	if (item.kind === 'folder-group') {
+		return `group:${item.name}`;
+	}
+	return `file:${item.path || ''}:${item.name}:${item.size || 0}`;
+};
+
+/** 统计 DONE 状态的叶子项数 */
+const countSuccessLeafItems = (items) => {
+	let count = 0;
+	for (const item of items || []) {
+		if (item.kind === 'folder-group') {
+			count += countSuccessLeafItems(item.children);
+		} else if (item.status === 'DONE') {
+			count += 1;
+		}
+	}
+	return count;
+};
+
+/** 追加文件到已有上传列表（去重替换） */
+const appendFileUploadItemsWithItems = (items) => {
+    setFileUploadAwaitConfirm(false);
+
+	// 构建已有项的去重映射
+	const dedupMap = new Map();
+	const buildDedupMap = (itemList) => {
+		for (const item of itemList) {
+			dedupMap.set(getUploadItemDedupKey(item), item);
+			if (item.kind === 'folder-group' && item.children) {
+				buildDedupMap(item.children);
+			}
+		}
+	};
+	buildDedupMap(modalState.fileUploadItems);
+
+	for (const newItem of items) {
+		const key = getUploadItemDedupKey(newItem);
+		const existing = dedupMap.get(key);
+
+		if (newItem.kind === 'folder-group' && existing?.kind === 'folder-group') {
+			// 同名文件夹组：合并子项；如果新组正在扫描则中止
+			if (newItem.scanState === 'scanning') {
+				abortFolderScan(newItem.id);
+			}
+			const childDedup = new Map();
+			existing.children.forEach((c) => childDedup.set(getUploadItemDedupKey(c), c));
+			for (const newChild of newItem.children) {
+				const childKey = getUploadItemDedupKey(newChild);
+				const oldChild = childDedup.get(childKey);
+				if (oldChild) {
+					cancelFileUploadItem(oldChild.id);
+					clearFileUploadDoneClearTimer(oldChild.id);
+					const idx = existing.children.indexOf(oldChild);
+					if (idx !== -1) {
+						existing.children[idx] = newChild;
+					}
+				} else {
+					existing.children.push(newChild);
+				}
+			}
+			// 合并后立即重新计算聚合，保持数据一致性
+			updateFolderGroupAggregates(existing);
+			dedupMap.set(key, existing);
+			continue;
+		}
+
+		if (existing) {
+			// 替换已有项
+			cancelFileUploadItem(existing.id);
+			clearFileUploadDoneClearTimer(existing.id);
+			removeUploadItemFromTree(modalState.fileUploadItems, existing.id);
+			modalState.fileUploadItems.push(newItem);
+			dedupMap.set(key, newItem);
+		} else {
+			// 追加新项
+			modalState.fileUploadItems.push(newItem);
+			dedupMap.set(key, newItem);
+		}
+	}
+
+	// 重建索引和统计
+	modalState.fileUploadItemById.clear();
+	modalState.fileUploadItems.forEach(rememberUploadItem);
+	modalState.fileUploadStats.total = countUploadLeafItems(modalState.fileUploadItems);
+	modalState.fileUploadStats.success = countSuccessLeafItems(modalState.fileUploadItems);
+
+	renderFileUploadList();
+	updateFileUploadDropzoneState();
+
+	if (dom.fileUploadInput) {
+		dom.fileUploadInput.value = '';
+	}
+	if (dom.fileUploadDirectoryInput) {
+		dom.fileUploadDirectoryInput.value = '';
+	}
+};
+
+const appendFileUploadItems = (files) => {
+	const items = buildUploadItemsFromPickedEntries(Array.from(files || []).map((file) => ({
+		file,
+		relativePath: file.webkitRelativePath || file.name,
+		isDirectory: !!file.webkitRelativePath,
+	})));
+	appendFileUploadItemsWithItems(items);
+};
+
+/** 取消文件夹组内所有子项上传 */
+const cancelFolderGroupChildren = (group) => {
+	if (!group || group.kind !== 'folder-group') return;
+	(group.children || []).forEach((child) => {
+		cancelFileUploadItem(child.id);
+		clearFileUploadDoneClearTimer(child.id);
+	});
+};
+
 const removeFileUploadItem = (id) => {
-    const target = modalState.fileUploadItems.find((item) => item.id === id) || null;
+    const item = findUploadItemInTree(modalState.fileUploadItems, id);
+    if (item?.kind === 'folder-group') {
+		abortFolderScan(item.id);
+		cancelFolderGroupChildren(item);
+    }
     // 不 await，保证 UI 立即响应，同时后台会异步清理/取消
     cancelFileUploadItem(id);
 	clearFileUploadDoneClearTimer(id);
 	removeUploadItemById(id);
-    void target;
+	// 手动删除后重算 PROGRESS 缓存值（文件夹组子项已在 removeUploadItemById 中更新聚合）
+	modalState.fileUploadStats.total = countUploadLeafItems(modalState.fileUploadItems);
+	modalState.fileUploadStats.success = countSuccessLeafItems(modalState.fileUploadItems);
     renderFileUploadList();
     updateFileUploadDropzoneState();
 };
 
 const trimFinishedUploadStats = () => {
 	renderFileUploadSummary();
+};
+
+/** 上传完成后清理文件夹组中已被 DOM 删除的 DONE 子项，空文件夹组一并移除 */
+const cleanupDoneFolderGroupChildren = () => {
+	let changed = false;
+	for (let i = modalState.fileUploadItems.length - 1; i >= 0; i--) {
+		const item = modalState.fileUploadItems[i];
+		if (item.kind !== 'folder-group') continue;
+
+		const doneChildren = item.children.filter((c) => c.status === 'DONE');
+		if (doneChildren.length > 0) {
+			doneChildren.forEach((c) => {
+				clearFileUploadDoneClearTimer(c.id);
+				forgetUploadItem(c.id);
+			});
+			item.children = item.children.filter((c) => c.status !== 'DONE');
+			changed = true;
+		}
+
+		if (item.children.length === 0) {
+			modalState.fileUploadItems.splice(i, 1);
+			forgetUploadItem(item.id);
+			changed = true;
+		} else {
+			updateFolderGroupAggregates(item);
+		}
+	}
+	if (changed) {
+		modalState.fileUploadStats.total = countUploadLeafItems(modalState.fileUploadItems);
+		modalState.fileUploadStats.success = countSuccessLeafItems(modalState.fileUploadItems);
+		renderFileUploadList();
+		renderFileUploadSummary();
+		updateFileUploadDropzoneState();
+		pruneFileUploadListIfEmpty();
+	}
 };
 
 const setFileCreateType = (type) => {
@@ -1601,8 +2225,23 @@ const handleFileCreateSubmit = async (event) => {
 
 const hasActiveFileUploads = () => !!modalState.fileUploadLocked;
 
+const collectAllUploadIds = () => {
+	const ids = [];
+	const walk = (items) => {
+		for (const item of items || []) {
+			ids.push(item.id);
+			if (item.kind === 'folder-group') {
+				walk(item.children);
+			}
+		}
+	};
+	walk(modalState.fileUploadItems);
+	return ids;
+};
+
 const cancelAllFileUploads = () => {
-    const ids = modalState.fileUploadItems.map((item) => item.id);
+	abortAllScans();
+    const ids = collectAllUploadIds();
     ids.forEach((id) => {
         // 不 await，避免阻塞关闭动画
         cancelFileUploadItem(id);
@@ -1654,7 +2293,7 @@ const openUploadWithDataTransfer = async (dataTransfer) => {
 	open({ type: 'upload' });
 	try {
 		const items = await readDroppedUploadItems(dataTransfer);
-		replaceFileUploadItemsWithItems(items);
+		appendFileUploadItemsWithItems(items);
 	} catch (error) {
 		console.error('[控制台页] 读取拖拽文件失败:', error);
 		await showAlert(getUploadErrorText(error), { title: 'UPLOAD' });
@@ -1755,7 +2394,7 @@ const bindEvents = () => {
 			void (async () => {
 				try {
 					const items = await readDroppedUploadItems(event.dataTransfer);
-					replaceFileUploadItemsWithItems(items);
+					appendFileUploadItemsWithItems(items);
 				} catch (error) {
 					console.error('[控制台页] 读取拖拽文件失败:', error);
 					await showAlert(getUploadErrorText(error), { title: 'UPLOAD' });
@@ -1768,7 +2407,7 @@ const bindEvents = () => {
             if (modalState.fileUploadLocked) {
                 return;
             }
-            replaceFileUploadItems(event.target.files || []);
+            appendFileUploadItems(event.target.files || []);
         };
     }
 	if (dom.fileUploadDirectoryInput) {
@@ -1776,16 +2415,36 @@ const bindEvents = () => {
 			if (modalState.fileUploadLocked) {
 				return;
 			}
-			replaceFileUploadItems(event.target.files || []);
+			appendFileUploadItems(event.target.files || []);
 		};
 	}
     if (dom.fileUploadList) {
         dom.fileUploadList.onclick = (event) => {
             const removeBtn = event.target.closest('.file-upload-remove');
-            if (!removeBtn) {
+            if (removeBtn) {
+                removeFileUploadItem(removeBtn.dataset.id || '');
                 return;
             }
-            removeFileUploadItem(removeBtn.dataset.id || '');
+            // 文件夹组折叠/展开
+            const toggleBtn = event.target.closest('.file-upload-folder-header');
+            if (toggleBtn) {
+                const folderId = toggleBtn.dataset.folderId
+                    || toggleBtn.closest('.file-upload-folder-group')?.dataset?.id
+                    || '';
+                if (!folderId) return;
+                const group = modalState.fileUploadItemById.get(folderId);
+                if (!group || group.kind !== 'folder-group') return;
+                group.expanded = !group.expanded;
+                // 局部切换子项容器而非全量重渲染
+                const container = dom.fileUploadList.querySelector(`.file-upload-folder-group[data-id="${folderId}"]`);
+                if (container) {
+                    container.classList.toggle('expanded', group.expanded);
+                    const childrenContainer = container.querySelector('.file-upload-folder-children');
+                    if (childrenContainer) {
+                        childrenContainer.classList.toggle('hidden', !group.expanded);
+                    }
+                }
+            }
         };
     }
     if (dom.fileCreateModal) {
