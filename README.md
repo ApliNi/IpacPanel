@@ -136,7 +136,7 @@ go run ./build.go
 - 网页终端: [xterm.js](https://github.com/xtermjs/xterm.js)
 - 文本编辑器: [Monaco-Editor](https://github.com/microsoft/monaco-editor)
 - 图表库: [uPlot](https://github.com/leeoniya/uPlot)
-- 中文等宽字体: [JetBrainsMapleMono-Medium](https://github.com/SpaceTimee/Fusion-JetBrainsMapleMono)
+- 中文等宽字体: [JetBrainsMapleMono-Medium](https://github.com/SpaceTimee/Fusion-JetBrainsMapleMono), [字体分包](https://chinese-font.netlify.app/zh-cn/online-split/)
 - 英文等宽字体: [JetBrainsMono-Regular](https://github.com/JetBrains/JetBrainsMono)
 - 矢量图标: [Lucide](https://lucide.dev/icons/)
 - 图像/图标: [IpacEL](https://ipacel.cc)

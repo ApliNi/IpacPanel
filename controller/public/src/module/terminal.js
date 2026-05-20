@@ -482,10 +482,10 @@ const initTerminal = (historySize) => {
 		// 普通 TERMINAL 管道只输出 LF, 需要让 xterm 转为 CRLF; PTY_TERMINAL 由伪终端处理换行.
 		convertEol: plainPipeMode,
 		cursorBlink: true,
-		fontFamily: `"JetBrains Mono", "JetBrains Maple Mono Medium"`,
+		fontFamily: `"JetBrains Mono", "JetBrains Maple Mono Regular", "JetBrains Maple Mono"`,
 		fontSize: 12,
-		letterSpacing: 0,
-		lineHeight: 1,
+		// letterSpacing: 0,
+		// lineHeight: 1,
 		// fontWeightBold: '500',
 		scrollback: Math.max(1000, Math.floor(historySize * 1024 / 100)),
 		theme: {
@@ -510,6 +510,7 @@ const initTerminal = (historySize) => {
             // "brightWhite": "#E2E8EE",
             // "brightYellow": "#D8C082",
 		},
+		allowTransparency: true,
 		copyOnSelect: true,
 		allowProposedApi: true,
 		rightClickSelectsWord: true,

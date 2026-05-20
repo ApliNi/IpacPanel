@@ -10,7 +10,7 @@
     --green: #00ff00;
     --blue: #00d2ff;
     --red: #f44b2b;
-    --font-family: "JetBrains Mono", "JetBrains Maple Mono Medium";
+    --font-family: "JetBrains Mono", "JetBrains Maple Mono Regular", "JetBrains Maple Mono";
 }
 
 ::selection { background: #34beff33; }
