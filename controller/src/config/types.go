@@ -1,6 +1,7 @@
 package config
 
 import (
+	"IpacPanel/controller/src/msg"
 	"fmt"
 
 	"gopkg.in/yaml.v3"
@@ -26,7 +27,7 @@ func ValidateTerminalMode(mode int) error {
 	case NoTerminal, Terminal, PTYTerminal:
 		return nil
 	default:
-		return fmt.Errorf("invalid terminal mode: %d", mode)
+		return fmt.Errorf(msg.InvalidTerminalModeFmt, mode)
 	}
 }
 

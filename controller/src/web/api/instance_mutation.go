@@ -18,9 +18,52 @@ import (
 )
 
 type deleteInstanceRequest struct {
-	Name                string `json:"name"`
+	Instance            string `json:"instance"`
 	DeleteFiles         bool   `json:"delete_files"`
 	ConfirmSharedDelete bool   `json:"confirm_shared_delete"`
+}
+
+type updateInstanceRequest struct {
+	Instance string                `json:"instance"`
+	Config   instanceConfigRequest `json:"config"`
+}
+
+type instanceConfigRequest struct {
+	Instance        string     `json:"instance"`
+	Group           string     `json:"group,omitempty"`
+	Path            string     `json:"path"`
+	Command         string     `json:"command"`
+	AccessLinks     string     `json:"access_links,omitempty"`
+	Terminal        int        `json:"terminal,omitempty"`
+	InputEncoding   string     `json:"input_encoding,omitempty"`
+	OutputEncoding  string     `json:"output_encoding,omitempty"`
+	StopCommand     string     `json:"stop_command,omitempty"`
+	CleanupCommand  string     `json:"cleanup_command,omitempty"`
+	AutoStart       bool       `json:"auto_start"`
+	StartPriority   *int       `json:"start_priority,omitempty"`
+	AutoRestart     bool       `json:"auto_restart"`
+	RestartInterval *int       `json:"restart_interval,omitempty"`
+	Tasks           []cfg.Task `json:"tasks,omitempty"`
+}
+
+func instanceConfigFromRequest(req instanceConfigRequest) cfg.Instance {
+	return cfg.Instance{
+		Name:            req.Instance,
+		Group:           req.Group,
+		Path:            req.Path,
+		Command:         req.Command,
+		AccessLinks:     req.AccessLinks,
+		Terminal:        req.Terminal,
+		InputEncoding:   req.InputEncoding,
+		OutputEncoding:  req.OutputEncoding,
+		StopCommand:     req.StopCommand,
+		CleanupCommand:  req.CleanupCommand,
+		AutoStart:       req.AutoStart,
+		StartPriority:   req.StartPriority,
+		AutoRestart:     req.AutoRestart,
+		RestartInterval: req.RestartInterval,
+		Tasks:           req.Tasks,
+	}
 }
 
 func normalizePathForSamePathCompare(path string) string {
@@ -121,37 +164,19 @@ func removeCreatedInstanceDirOnFailure(resolvedPath string, created bool) {
 }
 
 func HandleApiInstanceCreate(w http.ResponseWriter, r *http.Request) {
-	_, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:      true,
-		Methods:          []string{http.MethodPost},
-		CSRFFromRequest:  true,
-		RequireAdmin:     true,
-		ForbiddenMessage: msg.PermissionDenied,
-	})
-	if !ok {
-		return
-	}
-
-	var req cfg.Instance
+	var req instanceConfigRequest
 	if !web.DecodeJSONBody(w, r, &req) {
 		return
 	}
+	instanceConfig := instanceConfigFromRequest(req)
 
-	cfg.NormalizeInstanceRequest(&req)
-	if err := cfg.ValidateInstanceConfig(&req); err != nil {
-		switch err.Error() {
-		case msg.InputEncodingInvalid:
-			web.WriteAPIError(w, http.StatusBadRequest, msg.InputEncodingInvalid, nil)
-			return
-		case msg.OutputEncodingInvalid:
-			web.WriteAPIError(w, http.StatusBadRequest, msg.OutputEncodingInvalid, nil)
-			return
-		}
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), nil)
+	cfg.NormalizeInstanceRequest(&instanceConfig)
+	if err := cfg.ValidateInstanceConfig(&instanceConfig); err != nil {
+		writeInstanceConfigValidationError(w, err)
 		return
 	}
 
-	resolvedPath, err := cfg.ResolveInstancePath(req.Path)
+	resolvedPath, err := cfg.ResolveInstancePath(instanceConfig.Path)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.ResolveInstanceDirFailed, err)
 		return
@@ -161,26 +186,26 @@ func HandleApiInstanceCreate(w http.ResponseWriter, r *http.Request) {
 	defer cfg.ConfigTxnMu.Unlock()
 
 	cfg.ManagerMu.Lock()
-	if _, ok := process.InstanceProcesses[req.Name]; ok {
+	if _, ok := process.InstanceProcesses[instanceConfig.Name]; ok {
 		cfg.ManagerMu.Unlock()
 		web.WriteAPIError(w, http.StatusConflict, msg.InstanceNameDuplicate, nil)
 		return
 	}
 
 	savedCfg := cfg.CloneConfigLocked()
-	savedCfg.Instances = append(savedCfg.Instances, req)
+	savedCfg.Instances = append(savedCfg.Instances, instanceConfig)
 	createdProcess := process.NewInstanceProcess(&savedCfg.Instances[len(savedCfg.Instances)-1])
 	plan := cfg.MutationPlan{NextCfg: savedCfg}
 	plan.Publish = func() {
 		cfg.ManagerMu.Lock()
 		cfg.CurrentConfig = savedCfg
-		process.InstanceProcesses[req.Name] = createdProcess
-		process.RegisterInstanceProcessAliasLocked(req.Name, createdProcess)
+		process.InstanceProcesses[instanceConfig.Name] = createdProcess
+		process.RegisterInstanceProcessAliasLocked(instanceConfig.Name, createdProcess)
 		cfg.ManagerMu.Unlock()
 		process.SyncInstancePointers()
 	}
-	plan.AddPostCommit("rebuild instance tasks", func() error {
-		return process.RebuildInstanceTasks(req.Name)
+	plan.AddPostCommit(msg.RebuildInstanceTasks, func() error {
+		return process.RebuildInstanceTasks(instanceConfig.Name)
 	})
 	cfg.ManagerMu.Unlock()
 
@@ -202,59 +227,41 @@ func HandleApiInstanceCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	BroadcastInstanceListUpdates()
 
-	web.WriteOK(w, req)
+	web.WriteOK(w, instanceConfig)
 }
 
 func HandleApiInstanceUpdate(w http.ResponseWriter, r *http.Request) {
-	_, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:      true,
-		Methods:          []string{http.MethodPost},
-		CSRFFromRequest:  true,
-		RequireAdmin:     true,
-		ForbiddenMessage: msg.PermissionDenied,
-	})
-	if !ok {
+	var req updateInstanceRequest
+	if !web.DecodeJSONBody(w, r, &req) {
 		return
 	}
 
-	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	name := strings.TrimSpace(req.Instance)
 	if name == "" {
-		web.WriteInstanceNameRequired(w)
+		web.WriteAPIError(w, http.StatusBadRequest, msg.InstanceNameMissing, nil)
 		return
 	}
 	if err := cfg.ValidateInstanceName(name); err != nil {
 		switch err.Error() {
 		case msg.InstanceNameTooLong:
-			web.WriteAPIError(w, http.StatusBadRequest, "实例名称最多包含 32 个字符", nil)
+			web.WriteAPIError(w, http.StatusBadRequest, msg.InstanceNameTooLong, nil)
 			return
 		case msg.InstanceNameInvalidChars:
-			web.WriteAPIError(w, http.StatusBadRequest, "实例名称包含非法字符", nil)
+			web.WriteAPIError(w, http.StatusBadRequest, msg.InstanceNameInvalidChars, nil)
 			return
 		}
 		web.WriteAPIError(w, http.StatusBadRequest, msg.InstanceNameInvalid, nil)
 		return
 	}
 
-	var req cfg.Instance
-	if !web.DecodeJSONBody(w, r, &req) {
+	instanceConfig := instanceConfigFromRequest(req.Config)
+	cfg.NormalizeInstanceRequest(&instanceConfig)
+	if err := cfg.ValidateInstanceConfig(&instanceConfig); err != nil {
+		writeInstanceConfigValidationError(w, err)
 		return
 	}
 
-	cfg.NormalizeInstanceRequest(&req)
-	if err := cfg.ValidateInstanceConfig(&req); err != nil {
-		switch err.Error() {
-		case msg.InputEncodingInvalid:
-			web.WriteAPIError(w, http.StatusBadRequest, msg.InputEncodingInvalid, nil)
-			return
-		case msg.OutputEncodingInvalid:
-			web.WriteAPIError(w, http.StatusBadRequest, msg.OutputEncodingInvalid, nil)
-			return
-		}
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), nil)
-		return
-	}
-
-	resolvedPath, err := cfg.ResolveInstancePath(req.Path)
+	resolvedPath, err := cfg.ResolveInstancePath(instanceConfig.Path)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.ResolveInstanceDirFailed, err)
 		return
@@ -263,11 +270,11 @@ func HandleApiInstanceUpdate(w http.ResponseWriter, r *http.Request) {
 	cfg.ConfigTxnMu.Lock()
 	defer cfg.ConfigTxnMu.Unlock()
 
-	plan, err := buildInstanceUpdateMutationPlan(name, req)
+	plan, err := buildInstanceUpdateMutationPlan(name, instanceConfig)
 	if err != nil {
 		switch {
 		case errors.Is(err, errInstanceNotFound):
-			web.WriteAPIError(w, http.StatusNotFound, "实例不存在", nil)
+			web.WriteAPIError(w, http.StatusNotFound, msg.InstanceNotFound, nil)
 		case errors.Is(err, errInstanceNameExists):
 			web.WriteAPIError(w, http.StatusConflict, msg.InstanceNameDuplicate, nil)
 		case errors.Is(err, errInstanceConfigNotFound):
@@ -296,32 +303,17 @@ func HandleApiInstanceUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	BroadcastInstanceListUpdates()
 
-	web.WriteOK(w, req)
+	web.WriteOK(w, instanceConfig)
 }
 
 func HandleApiInstanceDelete(w http.ResponseWriter, r *http.Request) {
-	_, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:      true,
-		Methods:          []string{http.MethodPost},
-		CSRFFromRequest:  true,
-		RequireAdmin:     true,
-		ForbiddenMessage: msg.PermissionDenied,
-	})
-	if !ok {
+	var req deleteInstanceRequest
+	if !web.DecodeJSONBody(w, r, &req) {
 		return
 	}
-
-	var req deleteInstanceRequest
-	if r.ContentLength > 0 {
-		if !web.DecodeJSONBody(w, r, &req) {
-			return
-		}
-	} else {
-		req.Name = strings.TrimSpace(r.URL.Query().Get("name"))
-	}
-	name := strings.TrimSpace(req.Name)
+	name := strings.TrimSpace(req.Instance)
 	if name == "" {
-		web.WriteInstanceNameRequired(w)
+		web.WriteAPIError(w, http.StatusBadRequest, msg.InstanceNameMissing, nil)
 		return
 	}
 
@@ -330,6 +322,7 @@ func HandleApiInstanceDelete(w http.ResponseWriter, r *http.Request) {
 	var savedCfg cfg.Config
 	var originalPath string
 	var tombstonePath string
+	var ok bool
 	pathMoved := false
 
 	cfg.ConfigTxnMu.Lock()
@@ -339,7 +332,7 @@ func HandleApiInstanceDelete(w http.ResponseWriter, r *http.Request) {
 	ip, ok = process.InstanceProcesses[name]
 	if !ok {
 		cfg.ManagerMu.Unlock()
-		web.WriteAPIError(w, http.StatusNotFound, "实例不存在", nil)
+		web.WriteAPIError(w, http.StatusNotFound, msg.InstanceNotFound, nil)
 		return
 	}
 

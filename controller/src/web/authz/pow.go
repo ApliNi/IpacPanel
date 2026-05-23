@@ -1,4 +1,4 @@
-package web
+package authz
 
 import (
 	cfg "IpacPanel/controller/src/config"
@@ -10,9 +10,7 @@ import (
 	"time"
 )
 
-const (
-	loginPowSalt = "ipac-login-pow-v1"
-)
+const loginPowSalt = "ipac-login-pow-v1"
 
 type LoginPowChallenge struct {
 	Salt      string `json:"salt"`
@@ -40,7 +38,7 @@ func ValidateLoginPow(username string, password string, timestamp int64, nonces 
 		return nil
 	}
 	if timestamp <= 0 {
-		return fmt.Errorf(msg.PoWTimestampMissing)
+		return fmt.Errorf(msg.PoWVerificationFailed)
 	}
 	now := time.Now().UnixMilli()
 	delta := now - timestamp

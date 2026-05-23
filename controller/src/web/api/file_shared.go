@@ -4,12 +4,13 @@ import (
 	"IpacPanel/controller/src/atomic/file"
 	cfg "IpacPanel/controller/src/config"
 	"IpacPanel/controller/src/msg"
-	"encoding/base64"
+	"container/heap"
 	"errors"
 
 	process "IpacPanel/controller/src/process"
 
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -226,6 +227,146 @@ func commitAtomicTempDirWithinRoot(rootPath string, tempDir string, targetPath s
 	return ensurePathComponentsWithinRoot(rootPath, targetPath, true)
 }
 
+func ensureDirectoryWithinRoot(rootPath string, dirPath string) error {
+	dirPath = strings.TrimSpace(dirPath)
+	if dirPath == "" {
+		return errors.New(msg.EmptyDest)
+	}
+	if err := ensurePathComponentsWithinRoot(rootPath, dirPath, false); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		return err
+	}
+	return ensurePathComponentsWithinRoot(rootPath, dirPath, true)
+}
+
+func copyFileAtomicWithinRoot(rootPath string, srcPath string, dstPath string, mode os.FileMode, overwrite bool) error {
+	tmp, tmpPath, err := openAtomicTempFileWithinRoot(rootPath, dstPath, mode)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		_ = tmp.Close()
+		if !committed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	if _, err := io.Copy(tmp, src); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := commitAtomicTempFileWithinRoot(rootPath, tmpPath, dstPath, overwrite); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func ensureFileMoveDestinationWithinRoot(rootPath string, dstPath string, noReplace bool) error {
+	if err := ensurePathComponentsWithinRoot(rootPath, dstPath, false); err != nil {
+		return err
+	}
+	info, err := os.Lstat(dstPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if noReplace {
+		return os.ErrExist
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New(msg.PathOutsideInstanceRoot)
+	}
+	if info.IsDir() {
+		return errors.New(msg.UploadTargetIsDirectory)
+	}
+	return nil
+}
+
+func renameDirectoryWithinRoot(rootPath string, srcPath string, dstPath string) error {
+	if err := ensurePathComponentsWithinRoot(rootPath, dstPath, false); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(dstPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return errors.New(msg.PathOutsideInstanceRoot)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(srcPath, dstPath); err != nil {
+		return err
+	}
+	if err := file.SyncDir(filepath.Dir(dstPath)); err != nil {
+		return err
+	}
+	return ensurePathComponentsWithinRoot(rootPath, dstPath, true)
+}
+
+func removeFileWithinRoot(rootPath string, targetPath string) error {
+	if err := ensurePathComponentsWithinRoot(rootPath, targetPath, true); err != nil {
+		return err
+	}
+	info, err := os.Lstat(targetPath)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return errors.New(msg.UploadTargetIsDirectory)
+	}
+	return os.Remove(targetPath)
+}
+
+func removeEmptyDirectoryWithinRoot(rootPath string, targetPath string) error {
+	if err := ensurePathComponentsWithinRoot(rootPath, targetPath, true); err != nil {
+		return err
+	}
+	info, err := os.Lstat(targetPath)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return errors.New(msg.DestinationNotDirectory)
+	}
+	return os.Remove(targetPath)
+}
+
+func removeAllWithinRoot(rootPath string, targetPath string) error {
+	if err := ensurePathComponentsWithinRoot(rootPath, targetPath, true); err != nil {
+		return err
+	}
+	if err := filepath.WalkDir(targetPath, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ensurePathComponentsWithinRoot(rootPath, path, true); err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return errors.New(msg.PathOutsideInstanceRoot)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return os.RemoveAll(targetPath)
+}
+
 func ensureUploadRelativePath(path string) (string, error) {
 	path = strings.TrimSpace(strings.ReplaceAll(path, "\\", "/"))
 	if path == "" {
@@ -317,6 +458,16 @@ func renameOrCopyFile(srcPath string, dstPath string, mode os.FileMode, noReplac
 	return os.Remove(srcPath)
 }
 
+func renameOrCopyFileWithinRoot(rootPath string, srcPath string, dstPath string, mode os.FileMode, noReplace bool) error {
+	if err := ensureFileMoveDestinationWithinRoot(rootPath, dstPath, noReplace); err != nil {
+		return err
+	}
+	if err := copyFileAtomicWithinRoot(rootPath, srcPath, dstPath, mode, !noReplace); err != nil {
+		return err
+	}
+	return removeFileWithinRoot(rootPath, srcPath)
+}
+
 func writeFileAtomic(rootPath string, path string, data []byte, mode os.FileMode) error {
 	return writeFileAtomicWithinRoot(rootPath, path, data, true, mode)
 }
@@ -339,8 +490,10 @@ type fileEntryLite struct {
 type fileListResponse struct {
 	Path          string      `json:"path"`
 	Entries       []fileEntry `json:"entries"`
-	Cursor        string      `json:"cursor,omitempty"`
-	NextCursor    string      `json:"next_cursor,omitempty"`
+	Page          int         `json:"page"`
+	PageSize      int         `json:"page_size"`
+	TotalCount    int         `json:"total_count"`
+	TotalPages    int         `json:"total_pages"`
 	HasPrev       bool        `json:"has_prev"`
 	HasNext       bool        `json:"has_next"`
 	RequestedPath string      `json:"requested_path,omitempty"`
@@ -348,23 +501,14 @@ type fileListResponse struct {
 	Missing       bool        `json:"missing,omitempty"`
 }
 
-const fileListPageSize = 200
-
-type fileListCursor struct {
-	Section   string
-	LowerName string
-	Name      string
-}
-
-func parseOptionalBoolQuery(v string) bool {
-	v = strings.TrimSpace(strings.ToLower(v))
-	if v == "" {
-		return false
-	}
-	return v == "1" || v == "true" || v == "yes" || v == "y" || v == "on"
-}
+const (
+	fileListPageSize      = 200
+	fileListScanBatchSize = 256
+	maxFileListHeapItems  = 10000
+)
 
 type fileCreateFileRequest struct {
+	Instance  string `json:"instance"`
 	Path      string `json:"path"`
 	Name      string `json:"name"`
 	Content   string `json:"content"`
@@ -372,17 +516,20 @@ type fileCreateFileRequest struct {
 }
 
 type fileCreateDirRequest struct {
-	Path string `json:"path"`
-	Name string `json:"name"`
+	Instance string `json:"instance"`
+	Path     string `json:"path"`
+	Name     string `json:"name"`
 }
 
 type fileRenameRequest struct {
-	Path    string `json:"path"`
-	NewName string `json:"new_name"`
+	Instance string `json:"instance"`
+	Path     string `json:"path"`
+	NewName  string `json:"new_name"`
 }
 
 type fileDeleteRequest struct {
-	Path string `json:"path"`
+	Instance string `json:"instance"`
+	Path     string `json:"path"`
 }
 
 type fileContentResponse struct {
@@ -392,8 +539,9 @@ type fileContentResponse struct {
 }
 
 type fileSaveRequest struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
+	Instance string `json:"instance"`
+	Path     string `json:"path"`
+	Content  string `json:"content"`
 }
 
 type fileBatchRule struct {
@@ -402,6 +550,7 @@ type fileBatchRule struct {
 }
 
 type fileBatchActionRequest struct {
+	Instance      string          `json:"instance"`
 	Action        string          `json:"action"`
 	DestDir       string          `json:"dest_dir"`
 	Overwrite     bool            `json:"overwrite"`
@@ -411,6 +560,7 @@ type fileBatchActionRequest struct {
 }
 
 type fileExtractRequest struct {
+	Instance    string `json:"instance"`
 	Path        string `json:"path"`
 	TargetPath  string `json:"target_path"`
 	ExtractHere bool   `json:"extract_here"`
@@ -570,46 +720,6 @@ func buildPagedFileEntries(items []fileEntryLite) []fileEntry {
 	return entries
 }
 
-func encodeFileListCursor(item fileEntryLite) string {
-	section := "f"
-	if item.IsDir {
-		section = "d"
-	}
-	raw := section + "\n" + item.LowerName + "\n" + item.Name
-	return base64.RawURLEncoding.EncodeToString([]byte(raw))
-}
-
-func decodeFileListCursor(raw string) (*fileListCursor, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, nil
-	}
-	decoded, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil {
-		return nil, err
-	}
-	parts := strings.Split(string(decoded), "\n")
-	if len(parts) != 2 && len(parts) != 3 {
-		return nil, errors.New(msg.InvalidCursor)
-	}
-	section := strings.TrimSpace(parts[0])
-	if section != "d" && section != "f" {
-		return nil, errors.New(msg.InvalidCursor)
-	}
-	name := parts[len(parts)-1]
-	if name == "" {
-		return nil, errors.New(msg.InvalidCursor)
-	}
-	lowerName := strings.ToLower(name)
-	if len(parts) == 3 {
-		lowerName = parts[1]
-		if lowerName == "" {
-			return nil, errors.New(msg.InvalidCursor)
-		}
-	}
-	return &fileListCursor{Section: section, LowerName: lowerName, Name: name}, nil
-}
-
 func compareFileListItems(a fileEntryLite, b fileEntryLite) int {
 	if a.IsDir != b.IsDir {
 		if a.IsDir {
@@ -632,80 +742,175 @@ func compareFileListItems(a fileEntryLite, b fileEntryLite) int {
 	return 0
 }
 
-func buildFileListItems(targetPath string, query string) ([]fileEntryLite, error) {
-	if textTooLong(query, maxFileSearchLen) {
-		return nil, errors.New(msg.FileQueryTooLong)
+type fileListMaxHeap []fileEntryLite
+
+func (h fileListMaxHeap) Len() int { return len(h) }
+
+func (h fileListMaxHeap) Less(i int, j int) bool {
+	return compareFileListItems(h[i], h[j]) > 0
+}
+
+func (h fileListMaxHeap) Swap(i int, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h *fileListMaxHeap) Push(x any) {
+	*h = append(*h, x.(fileEntryLite))
+}
+
+func (h *fileListMaxHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[:n-1]
+	return item
+}
+
+func countFileListEntries(targetPath string, query string) (int, error) {
+	dir, err := os.Open(targetPath)
+	if err != nil {
+		return 0, err
 	}
-	entries, err := os.ReadDir(targetPath)
+	defer dir.Close()
+
+	totalCount := 0
+	for {
+		entries, readErr := dir.ReadDir(fileListScanBatchSize)
+		for _, entry := range entries {
+			name := entry.Name()
+			if query != "" && !strings.Contains(strings.ToLower(name), query) {
+				continue
+			}
+			totalCount++
+		}
+		if readErr == nil {
+			continue
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		return 0, readErr
+	}
+	return totalCount, nil
+}
+
+func scanFileListPageItems(targetPath string, page int, query string, pageSize int) ([]fileEntryLite, error) {
+	topK := page * pageSize
+
+	dir, err := os.Open(targetPath)
 	if err != nil {
 		return nil, err
 	}
+	defer dir.Close()
 
-	items := make([]fileEntryLite, 0, len(entries))
-	for _, entry := range entries {
-		item := fileEntryLite{
-			Name:      entry.Name(),
-			LowerName: strings.ToLower(entry.Name()),
-			IsDir:     entry.IsDir(),
+	items := &fileListMaxHeap{}
+	heap.Init(items)
+	for {
+		entries, readErr := dir.ReadDir(fileListScanBatchSize)
+		for _, entry := range entries {
+			name := entry.Name()
+			item := fileEntryLite{
+				Name:      name,
+				LowerName: strings.ToLower(name),
+				IsDir:     entry.IsDir(),
+			}
+			if query != "" && !strings.Contains(item.LowerName, query) {
+				continue
+			}
+			if items.Len() < topK {
+				heap.Push(items, item)
+				continue
+			}
+			if compareFileListItems(item, (*items)[0]) < 0 {
+				(*items)[0] = item
+				heap.Fix(items, 0)
+			}
 		}
-		if query != "" && !strings.Contains(item.LowerName, query) {
+		if readErr == nil {
 			continue
 		}
-		if info, infoErr := entry.Info(); infoErr == nil {
-			item.Size = info.Size()
-			item.ModTime = info.ModTime().Format(cfg.FileTimeLayout)
+		if errors.Is(readErr, io.EOF) {
+			break
 		}
-		items = append(items, item)
+		return nil, readErr
 	}
 
-	sort.Slice(items, func(i int, j int) bool {
-		return compareFileListItems(items[i], items[j]) < 0
+	selected := make([]fileEntryLite, items.Len())
+	copy(selected, *items)
+	sort.Slice(selected, func(i int, j int) bool {
+		return compareFileListItems(selected[i], selected[j]) < 0
 	})
-	return items, nil
-}
 
-func scanFileListPage(targetPath string, cursor *fileListCursor, query string, pageSize int) ([]fileEntryLite, string, bool, error) {
-	query = strings.ToLower(strings.TrimSpace(query))
-	items, err := buildFileListItems(targetPath, query)
-	if err != nil {
-		return nil, "", false, err
+	start := (page - 1) * pageSize
+	if start >= len(selected) {
+		return []fileEntryLite{}, nil
 	}
-
-	start := 0
-	if cursor != nil {
-		cursorItem := fileEntryLite{
-			Name:      cursor.Name,
-			LowerName: cursor.LowerName,
-			IsDir:     cursor.Section == "d",
+	end := start + pageSize
+	if end > len(selected) {
+		end = len(selected)
+	}
+	pageItems := selected[start:end]
+	filteredItems := pageItems[:0]
+	for _, item := range pageItems {
+		info, infoErr := os.Lstat(filepath.Join(targetPath, item.Name))
+		if infoErr != nil {
+			if errors.Is(infoErr, os.ErrNotExist) {
+				continue
+			}
+			return nil, infoErr
 		}
-		start = sort.Search(len(items), func(i int) bool {
-			return compareFileListItems(items[i], cursorItem) > 0
-		})
-	}
-	if start >= len(items) {
-		return []fileEntryLite{}, "", false, nil
+		item.Size = info.Size()
+		item.ModTime = info.ModTime().Format(cfg.FileTimeLayout)
+		filteredItems = append(filteredItems, item)
 	}
 
-	items = items[start:]
-	hasNext := len(items) > pageSize
-	if !hasNext {
-		return items, "", false, nil
-	}
-	pageItems := items[:pageSize]
-	return pageItems, encodeFileListCursor(pageItems[len(pageItems)-1]), true, nil
+	return filteredItems, nil
 }
 
-func buildFileListResponse(sp *process.InstanceProcess, relativePath string, cursorRaw string, query string) (*fileListResponse, error) {
+func scanFileListPage(targetPath string, page int, query string, pageSize int) ([]fileEntryLite, int, int, int, error) {
+	if page < 0 {
+		return nil, 0, 0, 0, errors.New(msg.InvalidPage)
+	}
+	if page == 0 {
+		page = 1
+	}
+	if textTooLong(query, maxFileSearchLen) {
+		return nil, 0, 0, 0, errors.New(msg.FileQueryTooLong)
+	}
+	query = strings.ToLower(strings.TrimSpace(query))
+
+	totalCount, err := countFileListEntries(targetPath, query)
+	if err != nil {
+		return nil, 0, 0, 0, err
+	}
+	totalPages := (totalCount + pageSize - 1) / pageSize
+	if totalPages == 0 {
+		return []fileEntryLite{}, totalCount, totalPages, 1, nil
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	if page > maxFileListHeapItems/pageSize {
+		return nil, 0, 0, 0, errors.New(msg.FileListPageTooDeep)
+	}
+
+	pageItems, err := scanFileListPageItems(targetPath, page, query, pageSize)
+	if err != nil {
+		return nil, 0, 0, 0, err
+	}
+
+	return pageItems, totalCount, totalPages, page, nil
+}
+
+func buildFileListResponse(sp *process.InstanceProcess, relativePath string, page int, query string) (*fileListResponse, error) {
 	rootPath, normalizedPath, err := resolveInstanceFilePath(sp, relativePath)
-	return buildFileListResponseFromResolvedPath(sp, rootPath, normalizedPath, cursorRaw, query, err)
+	return buildFileListResponseFromResolvedPath(sp, rootPath, normalizedPath, page, query, err)
 }
 
-func buildFileListJumpResponse(sp *process.InstanceProcess, requestedPath string, cursorRaw string, query string) (*fileListResponse, error) {
+func buildFileListJumpResponse(sp *process.InstanceProcess, requestedPath string, page int, query string) (*fileListResponse, error) {
 	rootPath, normalizedPath, err := resolveFileListJumpPath(sp, requestedPath)
-	return buildFileListResponseFromResolvedPath(sp, rootPath, normalizedPath, cursorRaw, query, err)
+	return buildFileListResponseFromResolvedPath(sp, rootPath, normalizedPath, page, query, err)
 }
 
-func buildFileListResponseFromResolvedPath(sp *process.InstanceProcess, rootPath string, normalizedPath string, cursorRaw string, query string, resolveErr error) (*fileListResponse, error) {
+func buildFileListResponseFromResolvedPath(sp *process.InstanceProcess, rootPath string, normalizedPath string, page int, query string, resolveErr error) (*fileListResponse, error) {
 	if resolveErr != nil {
 		return nil, resolveErr
 	}
@@ -717,10 +922,10 @@ func buildFileListResponseFromResolvedPath(sp *process.InstanceProcess, rootPath
 		targetPath = filepath.Join(rootPath, filepath.FromSlash(normalizedPath))
 	}
 
-	return buildFileListResponseFromTargetPath(sp, targetPath, normalizedPath, cursorRaw, query)
+	return buildFileListResponseFromTargetPath(sp, targetPath, normalizedPath, page, query)
 }
 
-func buildFileListResponseFromTargetPath(sp *process.InstanceProcess, targetPath string, normalizedPath string, cursorRaw string, query string) (*fileListResponse, error) {
+func buildFileListResponseFromTargetPath(sp *process.InstanceProcess, targetPath string, normalizedPath string, page int, query string) (*fileListResponse, error) {
 	targetPath = filepath.Clean(targetPath)
 	normalizedPath = normalizeRelativeFilePath(normalizedPath)
 
@@ -735,15 +940,10 @@ func buildFileListResponseFromTargetPath(sp *process.InstanceProcess, targetPath
 		return nil, errors.New(msg.PathNotDirectory)
 	}
 
-	cursor, err := decodeFileListCursor(cursorRaw)
-	if err != nil {
-		return nil, fmt.Errorf(msg.InvalidCursorFmt, err)
-	}
-
 	if err := ensureResolvedPathWithinInstanceRoot(sp, targetPath); err != nil {
 		return nil, err
 	}
-	items, nextCursor, hasNext, err := scanFileListPage(targetPath, cursor, query, fileListPageSize)
+	items, totalCount, totalPages, page, err := scanFileListPage(targetPath, page, query, fileListPageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -752,10 +952,12 @@ func buildFileListResponseFromTargetPath(sp *process.InstanceProcess, targetPath
 	return &fileListResponse{
 		Path:       ensureTrailingSlash(normalizedPath),
 		Entries:    pagedItems,
-		Cursor:     strings.TrimSpace(cursorRaw),
-		NextCursor: nextCursor,
-		HasPrev:    cursor != nil,
-		HasNext:    hasNext,
+		Page:       page,
+		PageSize:   fileListPageSize,
+		TotalCount: totalCount,
+		TotalPages: totalPages,
+		HasPrev:    page > 1,
+		HasNext:    totalPages > 0 && page < totalPages,
 	}, nil
 }
 

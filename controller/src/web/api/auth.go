@@ -1,7 +1,9 @@
 package api
 
 import (
+	"errors"
 	"IpacPanel/controller/src/msg"
+	"IpacPanel/controller/src/web/authz"
 	"math/rand"
 	"net/http"
 	"strings"
@@ -22,18 +24,14 @@ func loginFailureDelay() {
 }
 
 type loginRequest struct {
-	User         string   `json:"user"`
-	Pass         string   `json:"pass"`
-	PowTimestamp int64    `json:"pow_timestamp"`
-	PowNonces    []uint64 `json:"pow_nonces"`
+	User         string    `json:"user"`
+	Pass         string    `json:"pass"`
+	PowTimestamp *int64    `json:"pow_timestamp"`
+	PowNonces    *[]uint64 `json:"pow_nonces"`
 }
 
 func HandleApiAuthPow(w http.ResponseWriter, r *http.Request) {
-	if !web.RequireMethod(w, r, http.MethodGet) {
-		return
-	}
-
-	challenge := web.GetLoginPowChallenge()
+	challenge := authz.GetLoginPowChallenge()
 	if challenge == nil {
 		web.WriteOK(w, map[string]any{"enabled": false})
 		return
@@ -48,36 +46,56 @@ func HandleApiAuthPow(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
-	if !web.RequireMethod(w, r, http.MethodPost) {
-		return
-	}
-
 	var req loginRequest
 	if !web.DecodeJSONBody(w, r, &req) {
 		return
 	}
-	username := web.NormalizeUsername(req.User)
+	username := authz.NormalizeUsername(req.User)
 	password := req.Pass
 	if err := cfg.ValidateUserName(username); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), nil)
+		writeUserNameValidationError(w, err)
 		return
 	}
 	if err := cfg.ValidateUserPassword(password); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), nil)
+		writeUserPasswordValidationError(w, err)
 		return
 	}
 	if username == "" || strings.TrimSpace(password) == "" {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.UsernameOrPasswordRequired, nil)
 		return
 	}
-	if err := web.ValidateLoginPow(username, password, req.PowTimestamp, req.PowNonces); err != nil {
+	if cfg.IsPowEnabled() {
+		if req.PowTimestamp == nil || *req.PowTimestamp <= 0 || req.PowNonces == nil {
+			loginFailureDelay()
+			web.WriteAPIError(w, http.StatusBadRequest, msg.PoWParamsInvalid, nil)
+			return
+		}
+	}
+	var powTimestamp int64
+	var powNonces []uint64
+	if req.PowTimestamp != nil {
+		powTimestamp = *req.PowTimestamp
+	}
+	if req.PowNonces != nil {
+		powNonces = *req.PowNonces
+	}
+	if err := authz.ValidateLoginPow(username, password, powTimestamp, powNonces); err != nil {
 		loginFailureDelay()
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), nil)
+		switch err.Error() {
+		case msg.PoWTimestampExpired:
+			web.WriteAPIError(w, http.StatusBadRequest, msg.PoWTimestampExpired, err)
+		case msg.PoWParamsInvalid:
+			web.WriteAPIError(w, http.StatusBadRequest, msg.PoWParamsInvalid, err)
+		case msg.PoWVerificationFailed:
+			web.WriteAPIError(w, http.StatusBadRequest, msg.PoWVerificationFailed, err)
+		default:
+			web.WriteAPIError(w, http.StatusBadRequest, msg.PoWVerificationFailed, err)
+		}
 		return
 	}
 
 	cfg.ManagerMu.RLock()
-	u, ok := web.FindAuthUserLocked(username)
+	u, ok := authz.FindAuthUserLocked(username)
 	cfg.ManagerMu.RUnlock()
 	if !ok {
 		loginFailureDelay()
@@ -96,61 +114,57 @@ func HandleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	web.MarkRequestUser(w, username)
 
-	token, err := web.GetOrCreateUserToken(username)
+	token, err := authz.DefaultRuntime.Sessions.GetOrCreateUserToken(username)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.GenerateTokenFailed, err)
 		return
 	}
-	csrfToken := web.EnsureCSRFCookie(w, r)
-	if csrfToken == "" {
-		web.WriteAPIError(w, http.StatusInternalServerError, msg.GenerateCSRFTokenFailed, nil)
+	csrfToken, err := authz.DefaultRuntime.Cookies.EnsureCSRFCookie(w, r)
+	if err != nil || csrfToken == "" {
+		if err == nil {
+			err = errors.New("generated CSRF token is empty")
+		}
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.GenerateCSRFTokenFailed, err)
 		return
 	}
 
-	web.WriteAuthCookie(w, r, token)
+	authz.DefaultRuntime.Cookies.WriteAuthCookie(w, r, token)
 	web.WriteOK(w, map[string]bool{"ok": true})
 }
 
 func HandleApiAuthLogout(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:     true,
-		Methods:         []string{http.MethodPost},
-		CSRFFromRequest: true,
-	})
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
 	if !ok {
+		web.WriteUnauthorized(w)
 		return
 	}
 
-	username := guard.User.User
-	web.DisconnectUserWs(username)
-	web.ClearAuthCookie(w, r)
-	web.ClearCSRFCookie(w, r)
+	username := authedUser.User
+	disconnectUserWS(username)
+	authz.DefaultRuntime.Cookies.ClearAuthCookie(w, r)
+	authz.DefaultRuntime.Cookies.ClearCSRFCookie(w, r)
 
 	web.MarkRequestUser(w, username)
 	web.WriteOK(w, map[string]bool{"ok": true})
 }
 
 func HandleApiAuthReset(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:     true,
-		Methods:         []string{http.MethodPost},
-		CSRFFromRequest: true,
-	})
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
 	if !ok {
+		web.WriteUnauthorized(w)
 		return
 	}
-	authedUser := guard.User
 
 	username := authedUser.User
-	_, err := web.ResetUserToken(username, "")
+	_, err := authz.DefaultRuntime.Sessions.ResetUserToken(username, "")
 	if err != nil {
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.GenerateTokenFailed, err)
 		return
 	}
 
-	web.DisconnectUserWs(username)
-	web.ClearAuthCookie(w, r)
-	web.ClearCSRFCookie(w, r)
+	disconnectUserWS(username)
+	authz.DefaultRuntime.Cookies.ClearAuthCookie(w, r)
+	authz.DefaultRuntime.Cookies.ClearCSRFCookie(w, r)
 
 	web.MarkRequestUser(w, username)
 	web.WriteOK(w, map[string]bool{"ok": true})

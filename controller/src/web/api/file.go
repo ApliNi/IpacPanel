@@ -2,6 +2,8 @@ package api
 
 import (
 	"IpacPanel/controller/src/msg"
+	process "IpacPanel/controller/src/process"
+	"IpacPanel/controller/src/web/authz"
 	"bufio"
 
 	web "IpacPanel/controller/src/web"
@@ -19,6 +21,30 @@ import (
 )
 
 const fileSaveJSONBodyLimit int64 = maxOpenFileSize + (256 * 1024)
+
+type fileListRequest struct {
+	Instance   string `json:"instance"`
+	Path       string `json:"path"`
+	Fallback   bool   `json:"fallback"`
+	Jump       bool   `json:"jump"`
+	Query      string `json:"query"`
+	Page       int    `json:"page"`
+	AllowLarge bool   `json:"allow_large"`
+}
+
+func requireFileRequestInstance(w http.ResponseWriter, r *http.Request, instance string) (*process.InstanceProcess, string, bool) {
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
+	if !ok {
+		web.WriteUnauthorized(w)
+		return nil, "", false
+	}
+	name := strings.TrimSpace(instance)
+	sp, ok := web.RequireInstanceProcessByName(w, authedUser, name)
+	if !ok {
+		return nil, "", false
+	}
+	return sp, name, true
+}
 
 func writeJSONStringChunk(w io.Writer, text string, escapeBuf *[]byte) error {
 	quoted := strconv.AppendQuote((*escapeBuf)[:0], text)
@@ -73,32 +99,30 @@ func writeFileReadResponse(w http.ResponseWriter, relativePath string, targetPat
 }
 
 func HandleApiFileList(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:       true,
-		Methods:           []string{http.MethodGet},
-		InstanceFromQuery: true,
-	})
+	var req fileListRequest
+	if !web.DecodeJSONBody(w, r, &req) {
+		return
+	}
+	sp, _, ok := requireFileRequestInstance(w, r, req.Instance)
 	if !ok {
 		return
 	}
-	sp := guard.Instance
-
-	requestedPath := r.URL.Query().Get("path")
-	fallback := parseOptionalBoolQuery(r.URL.Query().Get("fallback"))
-	jump := parseOptionalBoolQuery(r.URL.Query().Get("jump"))
-	query := strings.TrimSpace(r.URL.Query().Get("query"))
-	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
+	requestedPath := req.Path
+	fallback := req.Fallback
+	jump := req.Jump
+	query := strings.TrimSpace(req.Query)
+	page := req.Page
 
 	var resp *fileListResponse
 	var err error
 	if jump {
-		resp, err = buildFileListJumpResponse(sp, requestedPath, cursor, query)
+		resp, err = buildFileListJumpResponse(sp, requestedPath, page, query)
 	} else {
-		resp, err = buildFileListResponse(sp, requestedPath, cursor, query)
+		resp, err = buildFileListResponse(sp, requestedPath, page, query)
 	}
 	if err != nil {
 		if fallback && strings.TrimSpace(requestedPath) != "" && errors.Is(err, os.ErrNotExist) {
-			fallbackResp, fbErr := buildFileListResponse(sp, "", "", query)
+			fallbackResp, fbErr := buildFileListResponse(sp, "", page, query)
 			if fbErr != nil {
 				web.WriteAPIError(w, http.StatusBadRequest, msg.ReadFileListFailed, fbErr)
 				return
@@ -120,19 +144,12 @@ func HandleApiFileList(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleApiFileCreateFile(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:       true,
-		Methods:           []string{http.MethodPost},
-		CSRFFromRequest:   true,
-		InstanceFromQuery: true,
-	})
-	if !ok {
-		return
-	}
-	sp := guard.Instance
-
 	var req fileCreateFileRequest
 	if !web.DecodeJSONBody(w, r, &req, web.WithJSONBodyLimit(fileSaveJSONBodyLimit)) {
+		return
+	}
+	sp, _, ok := requireFileRequestInstance(w, r, req.Instance)
+	if !ok {
 		return
 	}
 	if int64(len([]byte(req.Content))) > maxOpenFileSize {
@@ -142,7 +159,7 @@ func HandleApiFileCreateFile(w http.ResponseWriter, r *http.Request) {
 
 	fileName, err := ensureFileName(req.Name)
 	if err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), nil)
+		writeFileNameValidationError(w, err)
 		return
 	}
 
@@ -188,7 +205,7 @@ func HandleApiFileCreateFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := buildFileListResponse(sp, relativePath, "", "")
+	resp, err := buildFileListResponse(sp, relativePath, 1, "")
 	if err != nil {
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.ReadFileListFailed, err)
 		return
@@ -198,25 +215,18 @@ func HandleApiFileCreateFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleApiFileCreateDir(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:       true,
-		Methods:           []string{http.MethodPost},
-		CSRFFromRequest:   true,
-		InstanceFromQuery: true,
-	})
-	if !ok {
-		return
-	}
-	sp := guard.Instance
-
 	var req fileCreateDirRequest
 	if !web.DecodeJSONBody(w, r, &req) {
+		return
+	}
+	sp, _, ok := requireFileRequestInstance(w, r, req.Instance)
+	if !ok {
 		return
 	}
 
 	dirName, err := ensureFileName(req.Name)
 	if err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), nil)
+		writeFileNameValidationError(w, err)
 		return
 	}
 
@@ -260,7 +270,7 @@ func HandleApiFileCreateDir(w http.ResponseWriter, r *http.Request) {
 				web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 				return
 			}
-			resp, err := buildFileListResponse(sp, relativePath, "", "")
+			resp, err := buildFileListResponse(sp, relativePath, 1, "")
 			if err != nil {
 				web.WriteAPIError(w, http.StatusInternalServerError, msg.ReadFileListFailed, err)
 				return
@@ -278,7 +288,7 @@ func HandleApiFileCreateDir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := buildFileListResponse(sp, relativePath, "", "")
+	resp, err := buildFileListResponse(sp, relativePath, 1, "")
 	if err != nil {
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.ReadFileListFailed, err)
 		return
@@ -288,25 +298,18 @@ func HandleApiFileCreateDir(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleApiFileRename(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:       true,
-		Methods:           []string{http.MethodPost},
-		CSRFFromRequest:   true,
-		InstanceFromQuery: true,
-	})
-	if !ok {
-		return
-	}
-	sp := guard.Instance
-
 	var req fileRenameRequest
 	if !web.DecodeJSONBody(w, r, &req) {
+		return
+	}
+	sp, _, ok := requireFileRequestInstance(w, r, req.Instance)
+	if !ok {
 		return
 	}
 
 	newName, err := ensureFileName(req.NewName)
 	if err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), nil)
+		writeFileNameValidationError(w, err)
 		return
 	}
 
@@ -335,7 +338,7 @@ func HandleApiFileRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if filepath.Clean(oldPath) == filepath.Clean(newPath) {
-		resp, err := buildFileListResponse(sp, parentRelative, "", "")
+		resp, err := buildFileListResponse(sp, parentRelative, 1, "")
 		if err != nil {
 			web.WriteAPIError(w, http.StatusInternalServerError, msg.ReadFileListFailed, err)
 			return
@@ -353,7 +356,7 @@ func HandleApiFileRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := buildFileListResponse(sp, parentRelative, "", "")
+	resp, err := buildFileListResponse(sp, parentRelative, 1, "")
 	if err != nil {
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.ReadFileListFailed, err)
 		return
@@ -363,17 +366,16 @@ func HandleApiFileRename(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleApiFileRead(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:       true,
-		Methods:           []string{http.MethodGet},
-		InstanceFromQuery: true,
-	})
+	var req fileListRequest
+	if !web.DecodeJSONBody(w, r, &req) {
+		return
+	}
+	sp, _, ok := requireFileRequestInstance(w, r, req.Instance)
 	if !ok {
 		return
 	}
-	sp := guard.Instance
 
-	rootPath, relativePath, err := resolveInstanceFilePath(sp, r.URL.Query().Get("path"))
+	rootPath, relativePath, err := resolveInstanceFilePath(sp, req.Path)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
@@ -401,7 +403,7 @@ func HandleApiFileRead(w http.ResponseWriter, r *http.Request) {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.TargetIsDirectory, nil)
 		return
 	}
-	allowLarge := parseOptionalBoolQuery(r.URL.Query().Get("allow_large"))
+	allowLarge := req.AllowLarge
 	if info.Size() > maxOpenFileSize && !allowLarge {
 		web.WriteAPIError(w, http.StatusRequestEntityTooLarge, msg.FileSizeExceeds10MB, nil)
 		return
@@ -420,19 +422,12 @@ func HandleApiFileRead(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleApiFileSave(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:       true,
-		Methods:           []string{http.MethodPost},
-		CSRFFromRequest:   true,
-		InstanceFromQuery: true,
-	})
-	if !ok {
-		return
-	}
-	sp := guard.Instance
-
 	var req fileSaveRequest
 	if !web.DecodeJSONBody(w, r, &req, web.WithJSONBodyLimit(fileSaveJSONBodyLimit)) {
+		return
+	}
+	sp, _, ok := requireFileRequestInstance(w, r, req.Instance)
+	if !ok {
 		return
 	}
 	if int64(len([]byte(req.Content))) > maxOpenFileSize {
@@ -482,19 +477,12 @@ func HandleApiFileSave(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleApiFileDelete(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:       true,
-		Methods:           []string{http.MethodPost},
-		CSRFFromRequest:   true,
-		InstanceFromQuery: true,
-	})
-	if !ok {
-		return
-	}
-	sp := guard.Instance
-
 	var req fileDeleteRequest
 	if !web.DecodeJSONBody(w, r, &req) {
+		return
+	}
+	sp, _, ok := requireFileRequestInstance(w, r, req.Instance)
+	if !ok {
 		return
 	}
 
@@ -539,7 +527,7 @@ func HandleApiFileDelete(w http.ResponseWriter, r *http.Request) {
 	if parentRelative == "." {
 		parentRelative = ""
 	}
-	resp, err := buildFileListResponse(sp, parentRelative, "", "")
+	resp, err := buildFileListResponse(sp, parentRelative, 1, "")
 	if err != nil {
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.ReadFileListFailed, err)
 		return

@@ -1,7 +1,7 @@
 package api
 
 import (
-	web "IpacPanel/controller/src/web"
+	"IpacPanel/controller/src/web/authz"
 
 	cfg "IpacPanel/controller/src/config"
 	process "IpacPanel/controller/src/process"
@@ -247,7 +247,7 @@ func getInstanceListResponse(authedUser *cfg.AuthUser) []instanceListItem {
 
 	for _, ip := range processes {
 		ins := ip.InstanceSnapshot()
-		if !web.CanAccessInstance(authedUser, ins.Name) {
+		if !authz.DefaultRuntime.CanAccessInstance(authedUser, ins.Name) {
 			continue
 		}
 		status := ip.StatusSnapshot()
@@ -305,7 +305,7 @@ func getInstanceStatusPatchResponse(authedUser *cfg.AuthUser, seq int64) []insta
 
 	for _, ip := range processes {
 		status := ip.StatusSnapshot()
-		if !web.CanAccessInstance(authedUser, status.Name) {
+		if !authz.DefaultRuntime.CanAccessInstance(authedUser, status.Name) {
 			continue
 		}
 		resp = append(resp, instanceListItem{

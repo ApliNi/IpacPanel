@@ -1,8 +1,8 @@
 package api
 
 import (
-	"IpacPanel/controller/src/atomic/file"
 	"IpacPanel/controller/src/msg"
+	"IpacPanel/controller/src/web/authz"
 
 	web "IpacPanel/controller/src/web"
 
@@ -86,10 +86,6 @@ func (m fileBatchExcludeMatcher) excludes(path string, isDir bool) bool {
 	return false
 }
 
-func copyFileAtomic(src string, dst string, mode os.FileMode, overwrite bool) error {
-	return file.CopyFile(src, dst, file.Options{Overwrite: overwrite, Mode: mode, SyncDir: true})
-}
-
 func copyDuplicatePath(path string, index int) string {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
@@ -147,20 +143,17 @@ func resolveCopyDirectoryDestination(path string, createDuplicate bool) (string,
 }
 
 func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
-	web.MarkRequestRouteKind(w, "sse")
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:       true,
-		Methods:           []string{http.MethodPost},
-		CSRFFromRequest:   true,
-		InstanceFromQuery: true,
-	})
-	if !ok {
-		return
-	}
-	sp := guard.Instance
-
 	var req fileBatchActionRequest
 	if !web.DecodeJSONBody(w, r, &req) {
+		return
+	}
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
+	if !ok {
+		web.WriteUnauthorized(w)
+		return
+	}
+	sp, ok := web.RequireInstanceProcessByName(w, authedUser, req.Instance)
+	if !ok {
 		return
 	}
 
@@ -178,6 +171,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	destAbs := destRoot
+	rootPath := destRoot
 	if destRel != "" {
 		destAbs = filepath.Join(destRoot, filepath.FromSlash(destRel))
 	}
@@ -196,6 +190,10 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := ensureResolvedPathWithinInstanceRoot(sp, destAbs); err != nil {
+			web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
+			return
+		}
+		if err := ensurePathComponentsWithinRoot(rootPath, destAbs, true); err != nil {
 			web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 			return
 		}
@@ -247,7 +245,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 	logSseFailureOnce := func() {
 		err := getSseErr()
 		if err != nil {
-			web.MarkAPIError(w, http.StatusInternalServerError, "SSE 写入失败", err)
+			web.MarkAPIError(w, http.StatusInternalServerError, msg.SSEWriteFailed, err)
 		}
 	}
 
@@ -358,6 +356,10 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
+			if err := ensurePathComponentsWithinRoot(rootPath, dstAbs, false); err != nil {
+				fail(rule.Path, msg.FilePathInvalid, isDir)
+				continue
+			}
 		}
 
 		// Apply subdir protection for directory rules in copy/move after final destination is known.
@@ -381,14 +383,14 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if isDir {
-				if err := os.RemoveAll(srcAbs); err != nil {
+				if err := removeAllWithinRoot(rootPath, srcAbs); err != nil {
 					fail(rule.Path, err.Error(), true)
 					continue
 				}
 				success()
 				continue
 			}
-			if err := os.Remove(srcAbs); err != nil {
+			if err := removeFileWithinRoot(rootPath, srcAbs); err != nil {
 				fail(rule.Path, err.Error(), false)
 				continue
 			}
@@ -397,25 +399,9 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if isDir {
-			if action == "move" && len(req.Exclude) == 0 {
-				if !req.Overwrite {
-					if _, err := os.Stat(dstAbs); err == nil {
-						fail(rule.Path, msg.TargetAlreadyExists, true)
-						continue
-					} else if !errors.Is(err, os.ErrNotExist) {
-						fail(rule.Path, err.Error(), true)
-						continue
-					}
-				}
-				if err := os.Rename(srcAbs, dstAbs); err == nil {
-					success()
-					continue
-				}
-			}
-
 			// Always ensure destination directory exists, even if it ends up empty
 			// (e.g. everything inside is excluded).
-			if err := os.MkdirAll(dstAbs, 0755); err != nil {
+			if err := ensureDirectoryWithinRoot(rootPath, dstAbs); err != nil {
 				fail(rule.Path, err.Error(), true)
 				continue
 			}
@@ -466,8 +452,18 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 					return nil
 				}
 				dstPath := filepath.Join(dstAbs, rel)
+				if err := ensurePathComponentsWithinRoot(rootPath, dstPath, false); err != nil {
+					fail(filepath.ToSlash(srcPath), err.Error(), srcIsDir)
+					if sseFailed.Load() {
+						return getSseErr()
+					}
+					if srcIsDir {
+						return filepath.SkipDir
+					}
+					return nil
+				}
 				if srcIsDir {
-					if err := os.MkdirAll(dstPath, 0755); err != nil {
+					if err := ensureDirectoryWithinRoot(rootPath, dstPath); err != nil {
 						fail(filepath.ToSlash(srcPath), err.Error(), true)
 						if sseFailed.Load() {
 							return getSseErr()
@@ -493,8 +489,15 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 						}
 						return nil
 					}
+					if err := ensurePathComponentsWithinRoot(rootPath, dstPath, false); err != nil {
+						fail(filepath.ToSlash(srcPath), err.Error(), false)
+						if sseFailed.Load() {
+							return getSseErr()
+						}
+						return nil
+					}
 				}
-				if err := copyFileAtomic(srcPath, dstPath, st.Mode(), req.Overwrite && !req.CopyDuplicate); err != nil {
+				if err := copyFileAtomicWithinRoot(rootPath, srcPath, dstPath, st.Mode(), req.Overwrite && !req.CopyDuplicate); err != nil {
 					if errors.Is(err, os.ErrExist) {
 						fail(filepath.ToSlash(srcPath), msg.TargetAlreadyExists, false)
 						if sseFailed.Load() {
@@ -509,7 +512,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 					return nil
 				}
 				if action == "move" {
-					if err := os.Remove(srcPath); err != nil {
+					if err := removeFileWithinRoot(rootPath, srcPath); err != nil {
 						fail(filepath.ToSlash(srcPath), err.Error(), false)
 						if sseFailed.Load() {
 							return getSseErr()
@@ -536,7 +539,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 			}
 			if action == "move" {
 				// Remove the root directory if empty.
-				_ = os.RemoveAll(srcAbs)
+				_ = removeEmptyDirectoryWithinRoot(rootPath, srcAbs)
 			}
 			continue
 		}
@@ -553,7 +556,11 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
-			if err := copyFileAtomic(srcAbs, dstAbs, info.Mode(), req.Overwrite && !req.CopyDuplicate); err != nil {
+			if err := ensurePathComponentsWithinRoot(rootPath, dstAbs, false); err != nil {
+				fail(rule.Path, err.Error(), false)
+				continue
+			}
+			if err := copyFileAtomicWithinRoot(rootPath, srcAbs, dstAbs, info.Mode(), req.Overwrite && !req.CopyDuplicate); err != nil {
 				if errors.Is(err, os.ErrExist) {
 					fail(rule.Path, msg.TargetAlreadyExists, false)
 					continue
@@ -575,7 +582,11 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 			}
-			if err := renameOrCopyFile(srcAbs, dstAbs, info.Mode(), !req.Overwrite); err != nil {
+			if err := ensurePathComponentsWithinRoot(rootPath, dstAbs, false); err != nil {
+				fail(rule.Path, err.Error(), false)
+				continue
+			}
+			if err := renameOrCopyFileWithinRoot(rootPath, srcAbs, dstAbs, info.Mode(), !req.Overwrite); err != nil {
 				if errors.Is(err, os.ErrExist) {
 					fail(rule.Path, msg.TargetAlreadyExists, false)
 					continue

@@ -183,7 +183,9 @@ const fmState = {
     isRuleActionBound: false,
     isBound: false,
 	instanceUpdateStagingDirName: '',
-	cursorHistory: [],
+	currentPage: 1,
+	totalPages: 1,
+	totalCount: 0,
 	searchQuery: '',
 	searchActivated: false,
 	fileListError: '',
@@ -211,10 +213,6 @@ const isLoadContextStale = (context) => {
 		return true;
 	}
 	return false;
-};
-
-const isStaleLoadResult = (result) => {
-	return result === STALE_LOAD_RESULT || result?.stale === true;
 };
 
 const getUpdateDirDisplayName = (value) => {
@@ -257,43 +255,20 @@ const getDirIconType = (name, isDir, currentDirPath) => {
 	return '';
 };
 
-const getFileCursorHistory = () => Array.isArray(fmState.cursorHistory) ? fmState.cursorHistory : [];
+const getFileListPage = () => Math.max(1, Number(fmState.currentPage) || 1);
 
-const getCurrentCursor = () => {
-	const history = getFileCursorHistory();
-	if (history.length === 0) {
-		return '';
+const getFileListTotalPages = () => {
+	const totalPages = Number(fmState.totalPages);
+	if (!Number.isFinite(totalPages)) {
+		return 0;
 	}
-	return String(history[history.length - 1] || '');
+	return Math.max(0, Math.trunc(totalPages));
 };
-
-const getFileListPage = () => getFileCursorHistory().length + 1;
 
 const resetFileListPage = () => {
-	fmState.cursorHistory = [];
-};
-
-const pushFileCursor = (cursor) => {
-	const value = String(cursor || '').trim();
-	if (!value) {
-		return;
-	}
-	const history = getFileCursorHistory();
-	if (history[history.length - 1] === value) {
-		return;
-	}
-	history.push(value);
-	fmState.cursorHistory = history;
-};
-
-const popFileCursor = () => {
-	const history = getFileCursorHistory();
-	if (history.length === 0) {
-		return '';
-	}
-	history.pop();
-	fmState.cursorHistory = history;
-	return getCurrentCursor();
+	fmState.currentPage = 1;
+	fmState.totalPages = 1;
+	fmState.totalCount = 0;
 };
 
 const getFileSearchQuery = () => String(fmState.searchQuery || '').trim();
@@ -316,8 +291,19 @@ const setFileSearchActivated = (value) => {
 	fmState.searchActivated = value === true;
 };
 
+const clearFileSearch = () => {
+	setFileSearchQuery('');
+	setFileSearchActivated(false);
+	if (dom.fileSearchInput) {
+		dom.fileSearchInput.value = '';
+	}
+};
+
 const shouldUseServerSearch = (data) => {
-	return !!data?.has_prev || !!data?.has_next || !!data?.next_cursor || getFileCursorHistory().length > 0;
+	if (data && Object.prototype.hasOwnProperty.call(data, 'total_pages')) {
+		return Math.max(0, Number(data.total_pages) || 0) > 1;
+	}
+	return getFileListTotalPages() > 1;
 };
 
 const shouldRunServerSearch = () => {
@@ -327,7 +313,7 @@ const shouldRunServerSearch = () => {
 const getFilteredEntries = (data) => {
 	const entries = Array.isArray(data?.entries) ? data.entries : [];
 	const query = getFileSearchQuery().toLowerCase();
-	if (!query || shouldUseServerSearch(data)) {
+	if (!query || shouldRunServerSearch()) {
 		return entries;
 	}
 	return entries.filter((entry) => String(entry?.name || '').toLowerCase().includes(query));
@@ -336,7 +322,7 @@ const getFilteredEntries = (data) => {
 const getVisibleFileEntries = (data = fmState.currentFileList) => getFilteredEntries(data);
 
 const renderFileSearchState = (data) => {
-	const hasLocalSearch = !shouldUseServerSearch(data) && !!getFileSearchQuery();
+	const hasLocalSearch = !shouldRunServerSearch() && !!getFileSearchQuery();
 	if (!shouldUseServerSearch(data) && !shouldRunServerSearch()) {
 		setFileSearchActivated(false);
 	}
@@ -350,7 +336,7 @@ const renderFileSearchState = (data) => {
 
 const reloadFilesFromFirstPage = (path = getCurrentDir()) => {
 	resetFileListPage();
-	return loadFiles(path, '');
+	return loadFiles(path, 1);
 };
 
 const buildFilePathLink = (segment) => {
@@ -370,6 +356,52 @@ const buildFilePaginationNode = (action, enabled) => {
 	button.disabled = !enabled;
 	button.textContent = action.toUpperCase();
 	return button;
+};
+
+const buildFilePaginationStatus = (page, totalPages, totalCount) => {
+	const status = document.createElement('span');
+	status.className = 'file-pagination-status';
+	const inputMax = Math.max(1, totalPages);
+
+	const label = document.createElement('span');
+	label.textContent = 'PAGE';
+
+	const input = document.createElement('input');
+	input.type = 'number';
+	input.className = 'input file-pagination-input';
+	input.dataset.pageInput = '1';
+	input.min = '1';
+	input.max = String(inputMax);
+	input.step = '1';
+	input.inputMode = 'numeric';
+	input.autocomplete = 'off';
+	input.value = String(page);
+	input.setAttribute('aria-label', 'PAGE');
+
+	const summary = document.createElement('span');
+	summary.textContent = `/ ${totalPages} [${totalCount}]`;
+
+	status.append(label, input, summary);
+	return status;
+};
+
+const normalizeFilePaginationInputPage = (input) => {
+	const totalPages = Math.max(1, getFileListTotalPages());
+	const value = Number(input.value);
+	if (!Number.isFinite(value)) {
+		return getFileListPage();
+	}
+	return Math.min(totalPages, Math.max(1, Math.trunc(value)));
+};
+
+const submitFilePaginationInput = async (input) => {
+	const nextPage = normalizeFilePaginationInputPage(input);
+	input.value = String(nextPage);
+	if (nextPage === getFileListPage()) {
+		return;
+	}
+	clearFileListError();
+	await loadFiles(getCurrentDir(), nextPage);
 };
 
 const buildEmptyFileListNode = (message = 'EMPTY') => {
@@ -432,17 +464,18 @@ const renderFilePagination = (data) => {
 		return;
 	}
 	const page = getFileListPage();
-	const hasPrev = getFileCursorHistory().length > 0;
-	const hasNext = !!data?.has_next && !!data?.next_cursor;
-	if (!hasPrev && !hasNext) {
+	const dataTotalPages = Number(data?.total_pages);
+	const totalPages = Number.isFinite(dataTotalPages) ? Math.max(0, Math.trunc(dataTotalPages)) : getFileListTotalPages();
+	const totalCount = Math.max(0, Number(fmState.totalCount) || Number(data?.total_count) || 0);
+	const hasPrev = totalPages > 0 && page > 1;
+	const hasNext = totalPages > 0 && page < totalPages;
+	if (!data && totalCount === 0) {
 		dom.filePagination.replaceChildren();
 		dom.filePagination.classList.add('hidden');
 		return;
 	}
 	dom.filePagination.classList.remove('hidden');
-	const status = document.createElement('span');
-	status.className = 'file-pagination-status';
-	status.textContent = `PAGE ${page}`;
+	const status = buildFilePaginationStatus(page, totalPages, totalCount);
 	dom.filePagination.replaceChildren(buildFilePaginationNode('prev', hasPrev), status, buildFilePaginationNode('next', hasNext));
 };
 
@@ -774,6 +807,9 @@ export const applyFileListResponse = (data, options = {}) => {
 	}
 	fmState.currentFileList = data;
 	fmState.currentFilePath = normalizeRelativeDirPath(data?.path || '');
+	fmState.currentPage = Math.max(1, Number(data?.page) || 1);
+	fmState.totalPages = Math.max(0, Math.trunc(Number(data?.total_pages) || 0));
+	fmState.totalCount = Math.max(0, Number(data?.total_count) || 0);
 	clearFileListError();
 
 	if (!skipRemember) {
@@ -800,7 +836,7 @@ const showFileListLoadError = async (result) => {
 
 const tryJumpToSearchPath = async () => {
 	ensureDom();
-	const requestedPath = InputValidation.truncateText(dom.fileSearchInput?.value || '', InputValidation.limits.fileSearch).trim();
+	const requestedPath = InputValidation.truncateText(dom.fileSearchInput.value || '', InputValidation.limits.fileSearch).trim();
 	if (dom.fileSearchInput) dom.fileSearchInput.value = requestedPath;
 	if (!requestedPath || !isFilePathSearchQuery(requestedPath)) {
 		return false;
@@ -818,7 +854,9 @@ const tryJumpToSearchPath = async () => {
 		sessionId,
 		loadSeq,
 	};
-	const previousCursorHistory = [...getFileCursorHistory()];
+	const previousPage = fmState.currentPage;
+	const previousTotalPages = fmState.totalPages;
+	const previousTotalCount = fmState.totalCount;
 	const previousSearchQuery = fmState.searchQuery;
 	const previousSearchActivated = fmState.searchActivated;
 
@@ -828,12 +866,14 @@ const tryJumpToSearchPath = async () => {
 	}
 
 	try {
-		const result = await fetchFiles(name, requestedPath, false, '', '', { jump: true });
+		const result = await fetchFiles(name, requestedPath, false, 1, '', { jump: true });
 		if (isLoadContextStale(context)) {
 			return true;
 		}
 		if (!result.ok || !result.data) {
-			fmState.cursorHistory = previousCursorHistory;
+			fmState.currentPage = previousPage;
+			fmState.totalPages = previousTotalPages;
+			fmState.totalCount = previousTotalCount;
 			fmState.searchQuery = previousSearchQuery;
 			fmState.searchActivated = previousSearchActivated;
 			setFileListError(result.error || '路径不存在或不允许访问');
@@ -842,11 +882,7 @@ const tryJumpToSearchPath = async () => {
 		}
 
 		resetFileListPage();
-		setFileSearchQuery('');
-		setFileSearchActivated(false);
-		if (dom.fileSearchInput) {
-			dom.fileSearchInput.value = '';
-		}
+		clearFileSearch();
 		applyFileListResponse(result.data, { instanceName: name });
 		return true;
 	} finally {
@@ -858,24 +894,17 @@ const tryJumpToSearchPath = async () => {
 
 const submitFileSearch = async () => {
 	ensureDom();
-	const inputValue = InputValidation.truncateText(dom.fileSearchInput?.value || '', InputValidation.limits.fileSearch);
+	const inputValue = InputValidation.truncateText(dom.fileSearchInput.value || '', InputValidation.limits.fileSearch);
 	if (dom.fileSearchInput) dom.fileSearchInput.value = inputValue;
 	if (await tryJumpToSearchPath()) {
 		return;
 	}
 
-	const data = fmState.currentFileList;
 	const previousQuery = getFileSearchQuery();
 	const nextQuery = String(inputValue || '').trim();
-	if (!shouldUseServerSearch(data) && !fmState.searchActivated) {
-		setFileSearchQuery(inputValue);
-		clearFileListError();
-		renderFileList(data);
-		return;
-	}
 	if (previousQuery === nextQuery && fmState.searchActivated === !!nextQuery) {
 		clearFileListError();
-		renderFileSearchState(data);
+		renderFileSearchState(fmState.currentFileList);
 		return;
 	}
 
@@ -883,10 +912,10 @@ const submitFileSearch = async () => {
 	setFileSearchActivated(!!getFileSearchQuery());
 	clearFileListError();
 	resetFileListPage();
-	loadFiles(getCurrentDir(), '');
+	loadFiles(getCurrentDir(), 1);
 };
 
-const loadFiles = async (path = getCurrentDir(), cursorValue = getCurrentCursor(), options = {}) => {
+const loadFiles = async (path = getCurrentDir(), pageValue = getFileListPage(), options = {}) => {
 	ensureDom();
 	const name = String(options.instanceName || state.currentInstanceName || '').trim();
     if (!name) {
@@ -906,8 +935,8 @@ const loadFiles = async (path = getCurrentDir(), cursorValue = getCurrentCursor(
 	if (Object.prototype.hasOwnProperty.call(options, 'instanceUpdateStagingDirName')) {
 		fmState.instanceUpdateStagingDirName = String(options.instanceUpdateStagingDirName || '');
 	}
-	const cursor = String(cursorValue || '').trim();
-	const shouldRestoreFromMemory = !requested && !getCurrentDir() && !cursor && !fmState.currentFileList;
+	const page = Math.max(1, Number(pageValue) || 1);
+	const shouldRestoreFromMemory = !requested && !getCurrentDir() && page === 1 && !fmState.currentFileList;
 
     if (dom.fileList) {
         dom.fileList.classList.add('loading');
@@ -917,7 +946,7 @@ const loadFiles = async (path = getCurrentDir(), cursorValue = getCurrentCursor(
 		if (shouldRestoreFromMemory) {
 			const rel = getRememberedRelDir(name);
 			if (rel) {
-				const restoredResult = await fetchFiles(name, rel, true, cursor, useServerSearch ? searchQuery : '');
+				const restoredResult = await fetchFiles(name, rel, true, 1, useServerSearch ? searchQuery : '');
 				if (isLoadContextStale(context)) {
 					return STALE_LOAD_RESULT;
 				}
@@ -928,7 +957,7 @@ const loadFiles = async (path = getCurrentDir(), cursorValue = getCurrentCursor(
 				}
 			}
 
-			const rootResult = await fetchFiles(name, '', false, cursor, useServerSearch ? searchQuery : '');
+			const rootResult = await fetchFiles(name, '', false, 1, useServerSearch ? searchQuery : '');
 			if (isLoadContextStale(context)) {
 				return STALE_LOAD_RESULT;
 			}
@@ -941,7 +970,7 @@ const loadFiles = async (path = getCurrentDir(), cursorValue = getCurrentCursor(
 			return null;
 		}
 
-		const result = await fetchFiles(name, requested, true, cursor, useServerSearch ? searchQuery : '');
+		const result = await fetchFiles(name, requested, true, page, useServerSearch ? searchQuery : '');
 	        if (isLoadContextStale(context)) {
 	            return STALE_LOAD_RESULT;
 	        }
@@ -953,7 +982,7 @@ const loadFiles = async (path = getCurrentDir(), cursorValue = getCurrentCursor(
 		if (!useServerSearch && searchQuery && shouldUseServerSearch(data)) {
 			setFileSearchActivated(true);
 			resetFileListPage();
-			return await loadFiles(requested, '', options);
+			return await loadFiles(requested, 1, options);
 		}
 
 	        applyFileListResponse(data, { instanceName: name });
@@ -1063,7 +1092,7 @@ const bindEvents = () => {
 	if (dom.fileRefreshBtn) {
 		dom.fileRefreshBtn.onclick = () => {
 			clearFileListError();
-			loadFiles(getCurrentDir(), '');
+			loadFiles(getCurrentDir(), getFileListPage());
 		};
 	}
 	if (dom.fileSearchInput) {
@@ -1101,9 +1130,9 @@ const bindEvents = () => {
 				return;
 			}
 			resetFileListPage();
-			setFileSearchActivated(false);
+			clearFileSearch();
 			clearFileListError();
-			loadFiles(link.dataset.path || '', '');
+			loadFiles(link.dataset.path || '', 1);
 		};
 	}
 
@@ -1114,32 +1143,35 @@ const bindEvents = () => {
 				return;
 			}
 			const action = btn.dataset.pageAction;
+			const page = getFileListPage();
 			if (action === 'prev') {
 				clearFileListError();
-				const removedCursor = getCurrentCursor();
-				const prevCursor = popFileCursor();
-				const data = await loadFiles(getCurrentDir(), prevCursor);
-				if (isStaleLoadResult(data)) {
-					return;
-				}
-				if (!data && removedCursor) {
-					pushFileCursor(removedCursor);
-				}
+				await loadFiles(getCurrentDir(), Math.max(1, page - 1));
 				return;
 			}
-			const nextCursor = String(fmState.currentFileList?.next_cursor || '').trim();
-			if (!nextCursor) {
+			if (action !== 'next') {
 				return;
 			}
 			clearFileListError();
-			pushFileCursor(nextCursor);
-			const data = await loadFiles(getCurrentDir(), nextCursor);
-			if (isStaleLoadResult(data)) {
+			await loadFiles(getCurrentDir(), page + 1);
+		};
+		dom.filePagination.onkeydown = (event) => {
+			if (event.repeat || event.isComposing || event.keyCode === 229 || event.key !== 'Enter') {
 				return;
 			}
-			if (!data) {
-				popFileCursor();
+			const input = event.target.closest('[data-page-input]');
+			if (!input) {
+				return;
 			}
+			event.preventDefault();
+			input.blur();
+		};
+		dom.filePagination.onfocusout = (event) => {
+			const input = event.target.closest('[data-page-input]');
+			if (!input) {
+				return;
+			}
+			submitFilePaginationInput(input);
 		};
 	}
 
@@ -1219,8 +1251,9 @@ const bindEvents = () => {
 
 			if (isDir) {
 				resetFileListPage();
+				clearFileSearch();
 				clearFileListError();
-				loadFiles(fullPath, '');
+				loadFiles(fullPath, 1);
 				return;
 			}
 

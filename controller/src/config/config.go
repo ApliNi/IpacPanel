@@ -210,13 +210,13 @@ func containsInvalidSettingsControlChar(value string, allowNewline bool) bool {
 func ValidateSettingsWebTitle(title string) error {
 	t := NormalizeWebTitle(title)
 	if utf8.RuneCountInString(t) > maxWebTitleLen {
-		return errors.New("WEB TITLE 最多包含 32 个字符")
+		return errors.New(msg.SettingsWebTitleTooLong)
 	}
 	if nameRegex.MatchString(t) {
-		return errors.New("WEB TITLE 包含非法字符")
+		return errors.New(msg.SettingsWebTitleInvalidChars)
 	}
 	if containsInvalidSettingsControlChar(t, false) {
-		return errors.New("WEB TITLE 包含非法控制字符")
+		return errors.New(msg.SettingsWebTitleInvalidControlChars)
 	}
 	return nil
 }
@@ -224,10 +224,10 @@ func ValidateSettingsWebTitle(title string) error {
 func ValidateSettingsListenAddress(listen string) error {
 	value := NormalizeListenAddress(listen)
 	if containsInvalidSettingsControlChar(value, false) {
-		return errors.New("LISTEN 包含非法控制字符")
+		return errors.New(msg.SettingsListenInvalidControlChars)
 	}
 	if utf8.RuneCountInString(value) > maxPathLen {
-		return errors.New("LISTEN 最多包含 4096 个字符")
+		return errors.New(msg.SettingsListenTooLong)
 	}
 	if err := validateListenHostPort(value); err != nil {
 		return err
@@ -238,31 +238,31 @@ func ValidateSettingsListenAddress(listen string) error {
 func validateListenHostPort(listen string) error {
 	host, portText, err := net.SplitHostPort(listen)
 	if err != nil {
-		return errors.New("LISTEN 必须是 host:port 或 :port")
+		return errors.New(msg.SettingsListenHostPortInvalid)
 	}
 	if strings.TrimSpace(host) != host || strings.TrimSpace(portText) != portText || portText == "" {
-		return errors.New("LISTEN 必须是 host:port 或 :port")
+		return errors.New(msg.SettingsListenHostPortInvalid)
 	}
 	port, err := strconv.Atoi(portText)
 	if err != nil || port < 1 || port > 65535 {
-		return errors.New("LISTEN 端口必须在 1-65535 范围内")
+		return errors.New(msg.SettingsListenPortInvalid)
 	}
 	return nil
 }
 
 func ValidateSettingsInstanceUpdateStagingDir(path string) error {
 	if utf8.RuneCountInString(strings.TrimSpace(path)) > maxPathLen {
-		return errors.New("INSTANCE UPDATE DIR 最多包含 4096 个字符")
+		return errors.New(msg.SettingsInstanceUpdateDirTooLong)
 	}
 	return nil
 }
 
 func ValidateSettingsWebCertificatePath(label string, path string) error {
 	if containsInvalidSettingsControlChar(path, false) {
-		return errors.New(label + " 包含非法控制字符")
+		return fmt.Errorf(msg.SettingsFieldInvalidControlCharsFmt, label)
 	}
 	if utf8.RuneCountInString(strings.TrimSpace(path)) > maxPathLen {
-		return errors.New(label + " 最多包含 4096 个字符")
+		return fmt.Errorf(msg.SettingsFieldTooLongFmt, label)
 	}
 	return nil
 }
@@ -270,7 +270,7 @@ func ValidateSettingsWebCertificatePath(label string, path string) error {
 func ValidateSettingsTrustedProxyIPs(values []string) error {
 	text := strings.Join(values, "\n")
 	if containsInvalidSettingsControlChar(text, true) {
-		return errors.New("TRUSTED PROXY IPS 包含非法控制字符")
+		return errors.New(msg.SettingsTrustedProxyIPsInvalidControlChars)
 	}
 	for _, value := range values {
 		item := strings.TrimSpace(value)
@@ -278,7 +278,7 @@ func ValidateSettingsTrustedProxyIPs(values []string) error {
 			continue
 		}
 		if utf8.RuneCountInString(item) > maxTrustedProxyIPLen {
-			return fmt.Errorf("TRUSTED PROXY IPS 每项最多包含 %d 个字符", maxTrustedProxyIPLen)
+			return fmt.Errorf(msg.SettingsTrustedProxyIPsItemTooLongFmt, maxTrustedProxyIPLen)
 		}
 	}
 	return nil
@@ -291,10 +291,10 @@ func ValidateSettingsTextFields(webTitle string, listen string, webConfig WebCon
 	if err := ValidateSettingsListenAddress(listen); err != nil {
 		return err
 	}
-	if err := ValidateSettingsWebCertificatePath("HTTPS PRIVATE KEY PATH", webConfig.PrivateKeyPath); err != nil {
+	if err := ValidateSettingsWebCertificatePath(msg.SettingsHTTPSPrivateKeyPathLabel, webConfig.PrivateKeyPath); err != nil {
 		return err
 	}
-	if err := ValidateSettingsWebCertificatePath("HTTPS PUBLIC KEY PATH", webConfig.PublicKeyPath); err != nil {
+	if err := ValidateSettingsWebCertificatePath(msg.SettingsHTTPSPublicKeyPathLabel, webConfig.PublicKeyPath); err != nil {
 		return err
 	}
 	if err := ValidateSettingsInstanceUpdateStagingDir(instanceUpdateStagingDir); err != nil {
@@ -827,18 +827,18 @@ func LoadConfig() error {
 	data, err := os.ReadFile(ResolveDataPath("config.yml"))
 	if err != nil {
 		if !os.IsNotExist(err) {
-			return fmt.Errorf("读取 config.yml 失败: %w", err)
+			return fmt.Errorf(msg.ReadConfigFileFailedFmt, err)
 		}
-		log.Printf("配置文件不存在, 使用默认配置")
+		log.Printf(msg.ConfigFileMissingUseDefaultLog)
 		CurrentConfig = NewDefaultConfig()
 		authUsers, authErr := loadNormalizedAuth()
 		if authErr != nil {
-			return fmt.Errorf("读取 auth.yml 失败: %w", authErr)
+			return fmt.Errorf(msg.ReadAuthFileFailedFmt, authErr)
 		}
 		CurrentConfig.Auth = authUsers
 		instances, instancesErr := loadInstances()
 		if instancesErr != nil {
-			return fmt.Errorf("读取 instances.yml 失败: %w", instancesErr)
+			return fmt.Errorf(msg.ReadInstancesFileFailedFmt, instancesErr)
 		}
 		CurrentConfig.Instances = instances
 		NormalizeConfig()
@@ -849,7 +849,7 @@ func LoadConfig() error {
 		cfg := CloneConfigLocked()
 		ManagerMu.RUnlock()
 		if err := CreateConfigFileSnapshot(cfg); err != nil {
-			return fmt.Errorf("创建 config.yml 失败: %w", err)
+			return fmt.Errorf(msg.CreateConfigFileFailedFmt, err)
 		}
 		if err := ensureAdminUserAuthOnly(); err != nil {
 			return err
@@ -865,13 +865,13 @@ func LoadConfig() error {
 
 	authUsers, err := loadNormalizedAuth()
 	if err != nil {
-		return fmt.Errorf("读取 auth.yml 失败: %w", err)
+		return fmt.Errorf(msg.ReadAuthFileFailedFmt, err)
 	}
 	CurrentConfig.Auth = authUsers
 
 	instances, err := loadInstances()
 	if err != nil {
-		return fmt.Errorf("读取 instances.yml 失败: %w", err)
+		return fmt.Errorf(msg.ReadInstancesFileFailedFmt, err)
 	}
 	CurrentConfig.Instances = instances
 
@@ -1050,7 +1050,7 @@ func NormalizeHistorySize(size int) int {
 
 func ValidateHistorySize(size int) error {
 	if size < minHistorySizeKB || size > maxHistorySizeKB {
-		return fmt.Errorf("HISTORY SIZE 必须在 %d-%d 范围内", minHistorySizeKB, maxHistorySizeKB)
+		return fmt.Errorf(msg.HistorySizeInvalidFmt, minHistorySizeKB, maxHistorySizeKB)
 	}
 	return nil
 }
@@ -1098,13 +1098,13 @@ func NormalizePowConfig(pow PowConfig) PowConfig {
 
 func ValidatePowConfig(pow PowConfig) error {
 	if pow.TaskCount < minPowTaskCount || pow.TaskCount > maxPowTaskCount {
-		return fmt.Errorf("TASK COUNT 必须在 %d-%d 范围内", minPowTaskCount, maxPowTaskCount)
+		return fmt.Errorf(msg.PowTaskCountInvalidFmt, minPowTaskCount, maxPowTaskCount)
 	}
 	if pow.Difficulty < minPowDifficulty || pow.Difficulty > maxPowDifficulty {
-		return fmt.Errorf("DIFFICULTY 必须在 %d-%d 范围内", minPowDifficulty, maxPowDifficulty)
+		return fmt.Errorf(msg.PowDifficultyInvalidFmt, minPowDifficulty, maxPowDifficulty)
 	}
 	if pow.TimestampMaxSkew < minPowTimestampSkew || pow.TimestampMaxSkew > maxPowTimestampSkew {
-		return fmt.Errorf("TIMESTAMP MAX SKEW 必须在 %d-%d 范围内", minPowTimestampSkew, maxPowTimestampSkew)
+		return fmt.Errorf(msg.PowTimestampMaxSkewInvalidFmt, minPowTimestampSkew, maxPowTimestampSkew)
 	}
 	return nil
 }
@@ -1349,16 +1349,16 @@ func NormalizeMetricsConfig(metrics MetricsConfig) MetricsConfig {
 func ValidateMetricsConfig(metrics MetricsConfig) error {
 	storageMode := strings.ToLower(strings.TrimSpace(metrics.StorageMode))
 	if storageMode != "memory" && storageMode != "sqlite" {
-		return errors.New("METRICS STORAGE MODE 无效")
+		return errors.New(msg.MetricsStorageModeInvalid)
 	}
 	if metrics.MemoryMaxMin < minMetricsMemoryMin || metrics.MemoryMaxMin > maxMetricsMemoryMin {
-		return fmt.Errorf("MEMORY MAX MIN 必须在 %d-%d 范围内", minMetricsMemoryMin, maxMetricsMemoryMin)
+		return fmt.Errorf(msg.MetricsMemoryMaxMinInvalidFmt, minMetricsMemoryMin, maxMetricsMemoryMin)
 	}
 	if metrics.SQLiteMaxDay < minMetricsSQLiteDay || metrics.SQLiteMaxDay > maxMetricsSQLiteDay {
-		return fmt.Errorf("SQLITE MAX DAY 必须在 %d-%d 范围内", minMetricsSQLiteDay, maxMetricsSQLiteDay)
+		return fmt.Errorf(msg.MetricsSQLiteMaxDayInvalidFmt, minMetricsSQLiteDay, maxMetricsSQLiteDay)
 	}
 	if metrics.SQLiteCompactAfterDay < minMetricsSQLiteDay || metrics.SQLiteCompactAfterDay > maxMetricsSQLiteDay {
-		return fmt.Errorf("SQLITE COMPACT AFTER DAY 必须在 %d-%d 范围内", minMetricsSQLiteDay, maxMetricsSQLiteDay)
+		return fmt.Errorf(msg.MetricsSQLiteCompactAfterDayInvalidFmt, minMetricsSQLiteDay, maxMetricsSQLiteDay)
 	}
 	return nil
 }

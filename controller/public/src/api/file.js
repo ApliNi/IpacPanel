@@ -2,6 +2,7 @@ import {
 	authedFetch,
 	getCSRFToken,
 	dispatchUnauthorized,
+	postEventStream,
 	parseJsonData,
 	withApiResult,
 } from './core.js';
@@ -70,14 +71,14 @@ const uploadTextChunkWithRetry = async (instanceName, uploadId, index, chunk, op
 			await wait(TEXT_UPLOAD_RETRY_DELAY_MS);
 		}
 	}
-	throw lastError || new Error(`Chunk ${index} upload failed`);
+	throw lastError || new Error(`分块 ${index} 上传失败`);
 };
 
 const uploadTextBlobAsFile = async (instanceName, dirPath, fileName, blob, overwrite, options = {}) => {
 	return await withApiResult(async () => {
 		const signal = options.signal || null;
 		if (signal && signal.aborted) {
-			const err = new Error('aborted');
+			const err = new Error('中止');
 			err.name = 'AbortError';
 			throw err;
 		}
@@ -103,7 +104,7 @@ const uploadTextBlobAsFile = async (instanceName, dirPath, fileName, blob, overw
 			const worker = async () => {
 				while (nextIndex < chunkCount) {
 					if (signal && signal.aborted) {
-						const err = new Error('aborted');
+						const err = new Error('中止');
 						err.name = 'AbortError';
 						throw err;
 					}
@@ -117,7 +118,7 @@ const uploadTextBlobAsFile = async (instanceName, dirPath, fileName, blob, overw
 			const workers = Array.from({ length: Math.min(TEXT_UPLOAD_CONCURRENCY, chunkCount) }, () => worker());
 			await Promise.all(workers);
 			if (signal && signal.aborted) {
-				const err = new Error('aborted');
+				const err = new Error('中止');
 				err.name = 'AbortError';
 				throw err;
 			}
@@ -132,25 +133,20 @@ const uploadTextBlobAsFile = async (instanceName, dirPath, fileName, blob, overw
 	}, { logMessage: `[API] 上传文本文件 ${fileName} 失败:` });
 };
 
-export const fetchFiles = async (name, path = '', fallback = false, cursor = '', search = '', options = {}) => {
+export const fetchFiles = async (name, path = '', fallback = false, page = 1, search = '', options = {}) => {
 	return await withApiResult(async () => {
-		const params = new URLSearchParams({ name });
-		if (path) {
-			params.set('path', path);
-		}
-		if (fallback) {
-			params.set('fallback', '1');
-		}
-		if (String(cursor || '').trim()) {
-			params.set('cursor', String(cursor || '').trim());
-		}
-		if (String(search || '').trim()) {
-			params.set('query', String(search || '').trim());
-		}
-		if (options && options.jump) {
-			params.set('jump', '1');
-		}
-		const res = await authedFetch(`/api/file/list?${params.toString()}`);
+		const res = await authedFetch('/api/file/list', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				instance: name,
+				path,
+				fallback: fallback === true,
+				page: Math.max(1, Number(page) || 1),
+				query: String(search || '').trim(),
+				jump: !!(options && options.jump),
+			}),
+		});
 		return await parseJsonData(res);
 	}, {
 		logMessage: `[API] 获取实例 ${name} 文件列表失败:`,
@@ -158,7 +154,8 @@ export const fetchFiles = async (name, path = '', fallback = false, cursor = '',
 };
 
 export const createEmptyFile = async (name, path, fileName, content = '', overwrite = false) => {
-	return await postFileAction(`/api/file/create/file?name=${encodeURIComponent(name)}`, {
+	return await postFileAction('/api/file/create/file', {
+		instance: name,
 		path,
 		name: fileName,
 		content,
@@ -167,32 +164,39 @@ export const createEmptyFile = async (name, path, fileName, content = '', overwr
 };
 
 export const createDirectory = async (name, path, dirName) => {
-	return await postFileAction(`/api/file/create/dir?name=${encodeURIComponent(name)}`, {
+	return await postFileAction('/api/file/create/dir', {
+		instance: name,
 		path,
 		name: dirName,
 	}, '创建目录');
 };
 
 export const renameFile = async (name, path, newName) => {
-	return await postFileAction(`/api/file/rename?name=${encodeURIComponent(name)}`, {
+	return await postFileAction('/api/file/rename', {
+		instance: name,
 		path,
 		new_name: newName,
 	}, '重命名');
 };
 
 export const deleteFile = async (name, path) => {
-	return await postFileAction(`/api/file/delete?name=${encodeURIComponent(name)}`, {
+	return await postFileAction('/api/file/delete', {
+		instance: name,
 		path,
 	}, '删除');
 };
 
 export const readFileContent = async (name, path, options = {}) => {
 	return await withApiResult(async () => {
-		const query = new URLSearchParams({ name, path });
-		if (options && options.allowLarge) {
-			query.set('allow_large', '1');
-		}
-		const res = await authedFetch(`/api/file/read?${query.toString()}`);
+		const res = await authedFetch('/api/file/read', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				instance: name,
+				path,
+				allow_large: !!(options && options.allowLarge),
+			}),
+		});
 		return await parseJsonData(res);
 	}, {
 		logMessage: `[API] 读取文件 ${path} 失败:`,
@@ -201,12 +205,12 @@ export const readFileContent = async (name, path, options = {}) => {
 
 export const saveFileContentDetailed = async (name, path, content) => {
 	return await withApiResult(async () => {
-		const res = await authedFetch(`/api/file/save?name=${encodeURIComponent(name)}`, {
+		const res = await authedFetch('/api/file/save', {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json'
 			},
-			body: JSON.stringify({ path, content })
+			body: JSON.stringify({ instance: name, path, content })
 		});
 		return await parseJsonData(res);
 	}, { logMessage: `[API] 保存文件 ${path} 失败:` });
@@ -235,29 +239,25 @@ export const saveFileContentAdaptive = async (name, path, content, options = {})
 };
 
 export const initFileUpload = async (name, payload) => {
-	return await postFileActionSilent(`/api/file/upload/init?name=${encodeURIComponent(name)}`, payload);
+	return await postFileActionSilent('/api/file/upload/init', Object.assign({}, payload || {}, { instance: name }));
 };
 
 export const completeFileUpload = async (name, uploadId) => {
-	return await postFileActionSilent(`/api/file/upload/complete?name=${encodeURIComponent(name)}`, {
+	return await postFileActionSilent('/api/file/upload/complete', {
+		instance: name,
 		upload_id: uploadId,
 	});
 };
 
 export const abortFileUpload = async (name, uploadId) => {
-	return await postFileActionSilent(`/api/file/upload/abort?name=${encodeURIComponent(name)}`, {
+	return await postFileActionSilent('/api/file/upload/abort', {
+		instance: name,
 		upload_id: uploadId,
 	});
 };
 
 export const uploadFileChunk = (name, uploadId, index, chunk, onProgress, options = {}) => new Promise((resolve, reject) => {
 	const xhr = new XMLHttpRequest();
-	const query = new URLSearchParams({
-		name,
-		upload_id: uploadId,
-		index: String(index),
-	});
-
 	const signal = options && options.signal ? options.signal : null;
 	let cleaned = false;
 	const cleanup = () => {
@@ -278,7 +278,7 @@ export const uploadFileChunk = (name, uploadId, index, chunk, onProgress, option
 	};
 	if (signal) {
 		if (signal.aborted) {
-			const err = new Error('aborted');
+			const err = new Error('中止');
 			err.name = 'AbortError';
 			reject(err);
 			return;
@@ -286,11 +286,14 @@ export const uploadFileChunk = (name, uploadId, index, chunk, onProgress, option
 		signal.addEventListener('abort', onAbort, { once: true });
 	}
 
-	xhr.open('POST', `/api/file/upload/chunk?${query.toString()}`);
+	xhr.open('POST', '/api/file/upload/chunk');
 	const csrfToken = getCSRFToken();
 	if (csrfToken) {
 		xhr.setRequestHeader('X-CSRF-Token', csrfToken);
 	}
+	xhr.setRequestHeader('X-Ipac-Upload-Id', String(uploadId || ''));
+	xhr.setRequestHeader('X-Ipac-Chunk-Index', String(index));
+	xhr.setRequestHeader('X-Ipac-Instance', String(name || ''));
 	xhr.responseType = 'json';
 
 	xhr.upload.onprogress = (event) => {
@@ -303,7 +306,7 @@ export const uploadFileChunk = (name, uploadId, index, chunk, onProgress, option
 		cleanup();
 		if (xhr.status === 401) {
 			dispatchUnauthorized();
-			const err = new Error('unauthorized');
+			const err = new Error('未授权');
 			err.name = 'UnauthorizedError';
 			reject(err);
 			return;
@@ -329,7 +332,7 @@ export const uploadFileChunk = (name, uploadId, index, chunk, onProgress, option
 
 	xhr.onerror = () => {
 		cleanup();
-		reject(new Error('Network error'));
+		reject(new Error('Network Error'));
 	};
 
 	xhr.onabort = () => {
@@ -342,34 +345,11 @@ export const uploadFileChunk = (name, uploadId, index, chunk, onProgress, option
 });
 
 export const streamFileBatchAction = async (name, payload) => {
-	const res = await authedFetch(`/api/file/batch?name=${encodeURIComponent(name)}`, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'Accept': 'text/event-stream',
-		},
-		body: JSON.stringify(payload || {}),
-	});
-	if (!res.ok) {
-		const err = await res.text().catch(() => '');
-		throw new Error(err || `HTTP ${res.status}`);
-	}
-	return res;
+	return await postEventStream('/api/file/batch', Object.assign({}, payload || {}, { instance: name }));
 };
 
 export const streamFileExtractAction = async (name, payload, options = {}) => {
-	const res = await authedFetch(`/api/file/extract?name=${encodeURIComponent(name)}`, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'Accept': 'text/event-stream',
-		},
-		body: JSON.stringify(payload || {}),
+	return await postEventStream('/api/file/extract', Object.assign({}, payload || {}, { instance: name }), {
 		signal: options && options.signal ? options.signal : undefined,
 	});
-	if (!res.ok) {
-		const err = await res.text().catch(() => '');
-		throw new Error(err || `HTTP ${res.status}`);
-	}
-	return res;
 };

@@ -4,26 +4,20 @@ import (
 	"IpacPanel/controller/src/msg"
 	"IpacPanel/controller/src/process"
 	web "IpacPanel/controller/src/web"
+	"IpacPanel/controller/src/web/authz"
 
 	cfg "IpacPanel/controller/src/config"
 
-	"fmt"
 	"log"
 	"net/http"
-
-	"github.com/gorilla/websocket"
 )
 
 func HandleApiInstanceControl(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:     true,
-		Methods:         []string{http.MethodPost},
-		CSRFFromRequest: true,
-	})
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
 	if !ok {
+		web.WriteUnauthorized(w)
 		return
 	}
-	authedUser := guard.User
 
 	name, action, ok := web.ParseInstanceControlParams(w, r)
 	if !ok {
@@ -43,8 +37,7 @@ func HandleApiInstanceControl(w http.ResponseWriter, r *http.Request) {
 		if err := ip.Start(); err != nil {
 			limit := cfg.GetHistoryLimit() * 1024
 			ip.Mu.Lock()
-			terminalMsg := []byte(fmt.Sprintf("\r\n\r\n\x1b[31m\x1b[1m[IpacPanel] %s\x1b[0m\r\n\r\n", err.Error()))
-			ip.AppendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
+			ip.AppendAndBroadcastWarningSystemMessageLocked(err.Error(), limit)
 			ip.Mu.Unlock()
 			web.WriteAPIError(w, http.StatusInternalServerError, msg.StartInstanceFailed, err)
 			return

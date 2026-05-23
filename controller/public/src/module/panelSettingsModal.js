@@ -375,14 +375,14 @@ const clampInteger = (value, fallback, minValue, maxValue) => {
 const normalizeStringList = (value) => InputValidation.normalizeTrustedProxyIps(value);
 
 const normalizeTrustedProxyIpsInput = () => {
-	const value = normalizeStringList(dom.trustedProxyIps?.value || '').join('\n');
-	if (dom.trustedProxyIps) dom.trustedProxyIps.value = value;
+	const value = normalizeStringList(dom.trustedProxyIps.value || '').join('\n');
+	dom.trustedProxyIps.value = value;
 	return value;
 };
 
 const truncateInputValue = (input, maxLength) => {
-	const value = InputValidation.truncateText(input?.value || '', maxLength).trim();
-	if (input) input.value = value;
+	const value = InputValidation.truncateText(input.value || '', maxLength).trim();
+	input.value = value;
 	return value;
 };
 
@@ -403,7 +403,7 @@ const setSettingsStatus = (text, error = false) => {
 
 const rejectSettingsField = (message, input) => {
 	setSettingsStatus(message, true);
-	input?.focus?.();
+	input.focus();
 	return false;
 };
 
@@ -414,6 +414,18 @@ const settingsFieldInputs = {
 	webPublicKeyPath: () => dom.webPublicKeyPath,
 	instanceUpdateStagingDir: () => dom.instanceUpdateStagingDir,
 	trustedProxyIps: () => dom.trustedProxyIps,
+};
+
+const getSettingsFieldInput = (field) => {
+	const resolveInput = settingsFieldInputs[field];
+	if (typeof resolveInput !== 'function') {
+		throw new Error(`缺失设置字段输入映射: ${String(field || '')}`);
+	}
+	const input = resolveInput();
+	if (!input) {
+		throw new Error(`缺少设置字段输入元素: ${String(field || '')}`);
+	}
+	return input;
 };
 
 const settingsFieldConfigPages = {
@@ -431,17 +443,17 @@ const rejectSettingsValidation = (result) => {
 	}
 	const page = settingsFieldConfigPages[result.field];
 	if (page) applyConfigPage(page);
-	const input = settingsFieldInputs[result.field]?.();
+	const input = getSettingsFieldInput(result.field);
 	if (page === 'web') {
 		setWebStatus(result.message || 'WEB SETTINGS INVALID', true);
-		input?.focus?.();
+		input.focus();
 		return false;
 	}
 	return rejectSettingsField(result.message || 'SETTINGS INVALID', input);
 };
 
 const readClampedInteger = (input, fallback, minValue, maxValue) => {
-	const raw = String(input?.value ?? '').trim();
+	const raw = String(input.value ?? '').trim();
 	const value = Number.parseInt(raw, 10);
 	if (raw === '' || !Number.isInteger(value)) {
 		return fallback;
@@ -451,15 +463,15 @@ const readClampedInteger = (input, fallback, minValue, maxValue) => {
 
 const showInputLimitAlert = async (message, input, setStatus) => {
 	setStatus(message, true);
-	input?.focus?.();
+	input.focus();
 	await showAlert(message, { title: 'INVALID', okText: 'OK' });
 	return false;
 };
 
 const syncMetricsStorageModeFields = () => {
-	const storageMode = normalizeMetricsStorageMode(dom.metricsStorageMode?.value);
-	dom.metricsMemoryGroup?.classList.toggle('hidden', storageMode !== 'memory');
-	dom.metricsSqliteGroup?.classList.toggle('hidden', storageMode !== 'sqlite');
+	const storageMode = normalizeMetricsStorageMode(dom.metricsStorageMode.value);
+	dom.metricsMemoryGroup.classList.toggle('hidden', storageMode !== 'memory');
+	dom.metricsSqliteGroup.classList.toggle('hidden', storageMode !== 'sqlite');
 };
 
 const setPowStatus = (text, error = false) => {
@@ -542,33 +554,33 @@ const finishSettingsLoad = (loaded) => {
 const applyConfigPage = (page) => {
 	const targetPage = page === 'metrics' || page === 'web' || page === 'pow' ? page : 'options';
 	panelSettingsState.currentConfigPage = targetPage;
-	dom.optionsConfigTab?.classList.toggle('active', targetPage === 'options');
-	dom.metricsConfigTab?.classList.toggle('active', targetPage === 'metrics');
-	dom.webConfigTab?.classList.toggle('active', targetPage === 'web');
-	dom.powConfigTab?.classList.toggle('active', targetPage === 'pow');
-	dom.optionsPage?.classList.toggle('active', targetPage === 'options');
-	dom.metricsPage?.classList.toggle('active', targetPage === 'metrics');
-	dom.webPage?.classList.toggle('active', targetPage === 'web');
-	dom.powPage?.classList.toggle('active', targetPage === 'pow');
+	dom.optionsConfigTab.classList.toggle('active', targetPage === 'options');
+	dom.metricsConfigTab.classList.toggle('active', targetPage === 'metrics');
+	dom.webConfigTab.classList.toggle('active', targetPage === 'web');
+	dom.powConfigTab.classList.toggle('active', targetPage === 'pow');
+	dom.optionsPage.classList.toggle('active', targetPage === 'options');
+	dom.metricsPage.classList.toggle('active', targetPage === 'metrics');
+	dom.webPage.classList.toggle('active', targetPage === 'web');
+	dom.powPage.classList.toggle('active', targetPage === 'pow');
 };
 
 const applyMainPage = (page, configPage = panelSettingsState.currentConfigPage) => {
 	const targetPage = page === 'upload' || page === 'debug' ? page : 'config';
 	panelSettingsState.currentMainPage = targetPage;
-	dom.configMainTab?.classList.toggle('active', targetPage === 'config');
-	dom.uploadMainTab?.classList.toggle('active', targetPage === 'upload');
-	dom.debugMainTab?.classList.toggle('active', targetPage === 'debug');
-	dom.configTabs?.classList.toggle('hidden', targetPage !== 'config');
+	dom.configMainTab.classList.toggle('active', targetPage === 'config');
+	dom.uploadMainTab.classList.toggle('active', targetPage === 'upload');
+	dom.debugMainTab.classList.toggle('active', targetPage === 'debug');
+	dom.configTabs.classList.toggle('hidden', targetPage !== 'config');
 	if (targetPage === 'config') {
 		applyConfigPage(configPage);
 	} else {
-		dom.optionsPage?.classList.remove('active');
-		dom.metricsPage?.classList.remove('active');
-		dom.webPage?.classList.remove('active');
-		dom.powPage?.classList.remove('active');
+		dom.optionsPage.classList.remove('active');
+		dom.metricsPage.classList.remove('active');
+		dom.webPage.classList.remove('active');
+		dom.powPage.classList.remove('active');
 	}
-	dom.uploadPage?.classList.toggle('active', targetPage === 'upload');
-	dom.debugPage?.classList.toggle('active', targetPage === 'debug');
+	dom.uploadPage.classList.toggle('active', targetPage === 'upload');
+	dom.debugPage.classList.toggle('active', targetPage === 'debug');
 };
 
 const buildRuntimeSettingsSnapshot = () => ({
@@ -833,7 +845,7 @@ const renderControllerUpdateActions = () => {
 
 const setLocked = (locked) => {
 	panelSettingsState.locked = !!locked;
-	dom.dropzone?.classList.toggle('locked', panelSettingsState.locked);
+	dom.dropzone.classList.toggle('locked', panelSettingsState.locked);
 	renderControllerUpdateActions();
 };
 
@@ -856,7 +868,7 @@ const validateControllerUpdateFile = (file) => {
 };
 
 const renderEmptyControllerUpdate = () => {
-	dom.progressWrap?.classList.add('hidden');
+	dom.progressWrap.classList.add('hidden');
 	if (dom.fileName) dom.fileName.textContent = '';
 	if (dom.loaded) dom.loaded.textContent = '0 B / 0 B';
 	if (dom.percent) dom.percent.textContent = '0%';
@@ -866,7 +878,7 @@ const renderEmptyControllerUpdate = () => {
 };
 
 const renderPendingControllerUpdate = () => {
-	dom.progressWrap?.classList.remove('hidden');
+	dom.progressWrap.classList.remove('hidden');
 	if (dom.fileName) dom.fileName.textContent = panelSettingsState.updateFileName;
 	if (dom.loaded) dom.loaded.textContent = `${formatFileSize(panelSettingsState.updateFileSize)} / ${formatFileSize(panelSettingsState.updateFileSize)}`;
 	if (dom.percent) dom.percent.textContent = '100%';
@@ -929,10 +941,10 @@ const refreshStatus = async () => {
 
 const closeModal = () => {
 	if (panelSettingsState.locked) return;
-	dom.modal?.classList.add('closing');
+	dom.modal.classList.add('closing');
 	panelSettingsState.closeTimer = setTimeout(() => {
-		dom.modal?.classList.remove('visible', 'closing');
-		dom.modal && (dom.modal.style.display = 'none');
+		dom.modal.classList.remove('visible', 'closing');
+		dom.modal.style.display = 'none';
 	}, 240);
 };
 
@@ -940,7 +952,7 @@ const updateProgress = (file, loaded, status = 'UPLOADING') => {
 	const total = Math.max(0, file.size || 0);
 	const safeLoaded = Math.max(0, Math.min(total, loaded || 0));
 	const percent = total > 0 ? Math.min(100, Math.round((safeLoaded / total) * 100)) : 100;
-	dom.progressWrap?.classList.remove('hidden');
+	dom.progressWrap.classList.remove('hidden');
 	if (dom.fileName) dom.fileName.textContent = file.name || '';
 	if (dom.loaded) dom.loaded.textContent = `${formatFileSize(safeLoaded)} / ${formatFileSize(total)}`;
 	if (dom.percent) dom.percent.textContent = `${percent}%`;
@@ -968,7 +980,7 @@ const uploadControllerUpdateChunkWithRetry = async (uploadId, index, chunk, onPr
 			await waitUpdateUploadRetryDelay();
 		}
 	}
-	throw lastError || new Error(`Chunk ${index} upload failed`);
+	throw lastError || new Error(`分块 ${index} 上传失败`);
 };
 
 const uploadControllerUpdateChunks = async (file, uploadId, chunkSize, chunkCount, signal) => {
@@ -1089,66 +1101,66 @@ const uploadSelectedFileAndApply = async () => {
 const bindEvents = () => {
 	if (panelSettingsState.isBound) return;
 	panelSettingsState.isBound = true;
-	dom.close?.addEventListener('click', closeModal);
-	dom.configMainTab?.addEventListener('click', () => applyMainPage('config'));
-	dom.uploadMainTab?.addEventListener('click', () => applyMainPage('upload'));
-	dom.debugMainTab?.addEventListener('click', () => applyMainPage('debug'));
-	dom.optionsConfigTab?.addEventListener('click', () => applyConfigPage('options'));
-	dom.metricsConfigTab?.addEventListener('click', () => applyConfigPage('metrics'));
-	dom.webConfigTab?.addEventListener('click', () => applyConfigPage('web'));
-	dom.powConfigTab?.addEventListener('click', () => applyConfigPage('pow'));
-	dom.settingsCancel?.addEventListener('click', closeModal);
-	dom.metricsCancel?.addEventListener('click', closeModal);
-	dom.webCancel?.addEventListener('click', closeModal);
-	dom.powCancel?.addEventListener('click', closeModal);
-	dom.debugCancel?.addEventListener('click', closeModal);
-	dom.optionsPage?.addEventListener('submit', (event) => {
+	dom.close.addEventListener('click', closeModal);
+	dom.configMainTab.addEventListener('click', () => applyMainPage('config'));
+	dom.uploadMainTab.addEventListener('click', () => applyMainPage('upload'));
+	dom.debugMainTab.addEventListener('click', () => applyMainPage('debug'));
+	dom.optionsConfigTab.addEventListener('click', () => applyConfigPage('options'));
+	dom.metricsConfigTab.addEventListener('click', () => applyConfigPage('metrics'));
+	dom.webConfigTab.addEventListener('click', () => applyConfigPage('web'));
+	dom.powConfigTab.addEventListener('click', () => applyConfigPage('pow'));
+	dom.settingsCancel.addEventListener('click', closeModal);
+	dom.metricsCancel.addEventListener('click', closeModal);
+	dom.webCancel.addEventListener('click', closeModal);
+	dom.powCancel.addEventListener('click', closeModal);
+	dom.debugCancel.addEventListener('click', closeModal);
+	dom.optionsPage.addEventListener('submit', (event) => {
 		event.preventDefault();
 		void withActionsDisabled(dom.optionsPage.querySelector('.modal-actions'), saveSettings);
 	});
-	dom.powPage?.addEventListener('submit', (event) => {
+	dom.powPage.addEventListener('submit', (event) => {
 		event.preventDefault();
 		void withActionsDisabled(dom.powPage.querySelector('.modal-actions'), savePowSettings);
 	});
-	dom.metricsPage?.addEventListener('submit', (event) => {
+	dom.metricsPage.addEventListener('submit', (event) => {
 		event.preventDefault();
 		void withActionsDisabled(dom.metricsPage.querySelector('.modal-actions'), saveMetricsSettings);
 	});
-	dom.webPage?.addEventListener('submit', (event) => {
+	dom.webPage.addEventListener('submit', (event) => {
 		event.preventDefault();
 		void withActionsDisabled(dom.webPage.querySelector('.modal-actions'), saveWebSettings);
 	});
-	dom.metricsStorageMode?.addEventListener('change', syncMetricsStorageModeFields);
-	dom.trustedProxyIps?.addEventListener('blur', normalizeTrustedProxyIpsInput);
-	dom.debugSave?.addEventListener('click', () => {
-		void withActionsDisabled(dom.debugPage?.querySelector('.modal-actions'), saveDebugSettings);
+	dom.metricsStorageMode.addEventListener('change', syncMetricsStorageModeFields);
+	dom.trustedProxyIps.addEventListener('blur', normalizeTrustedProxyIpsInput);
+	dom.debugSave.addEventListener('click', () => {
+		void withActionsDisabled(dom.debugPage.querySelector('.modal-actions'), saveDebugSettings);
 	});
-	dom.restartController?.addEventListener('click', () => {
-		void withActionsDisabled(dom.restartController?.parentElement, restartControllerFromSettings);
+	dom.restartController.addEventListener('click', () => {
+		void withActionsDisabled(dom.restartController.parentElement, restartControllerFromSettings);
 	});
-	dom.dropzone?.addEventListener('click', () => {
-		if (!panelSettingsState.locked) dom.fileInput?.click();
+	dom.dropzone.addEventListener('click', () => {
+		if (!panelSettingsState.locked) dom.fileInput.click();
 	});
-	dom.fileInput?.addEventListener('change', () => {
-		const file = dom.fileInput?.files?.[0] || null;
+	dom.fileInput.addEventListener('change', () => {
+		const file = dom.fileInput.files?.[0] || null;
 		dom.fileInput.value = '';
 		stageControllerUpdateFile(file);
 	});
-	dom.dropzone?.addEventListener('dragover', (event) => {
+	dom.dropzone.addEventListener('dragover', (event) => {
 		event.preventDefault();
 		if (panelSettingsState.locked) return;
-		dom.dropzone?.classList.add('dragover');
+		dom.dropzone.classList.add('dragover');
 	});
-	dom.dropzone?.addEventListener('dragleave', () => dom.dropzone?.classList.remove('dragover'));
-	dom.dropzone?.addEventListener('drop', (event) => {
+	dom.dropzone.addEventListener('dragleave', () => dom.dropzone.classList.remove('dragover'));
+	dom.dropzone.addEventListener('drop', (event) => {
 		event.preventDefault();
-		dom.dropzone?.classList.remove('dragover');
+		dom.dropzone.classList.remove('dragover');
 		if (panelSettingsState.locked) return;
 		const dataTransfer = event.dataTransfer;
 		stageControllerUpdateFile(dataTransfer && dataTransfer.files ? dataTransfer.files[0] || null : null);
 	});
-	dom.cancel?.addEventListener('click', closeModal);
-	dom.apply?.addEventListener('click', async () => {
+	dom.cancel.addEventListener('click', closeModal);
+	dom.apply.addEventListener('click', async () => {
 		if (panelSettingsState.selectedFile) {
 			void uploadSelectedFileAndApply();
 			return;
@@ -1169,12 +1181,12 @@ export const bootPanelSettingsModal = () => {
 			beginSettingsLoad();
 			dom.modal.style.display = 'flex';
 			dom.modal.classList.remove('closing');
-			requestAnimationFrame(() => dom.modal?.classList.add('visible'));
+			requestAnimationFrame(() => dom.modal.classList.add('visible'));
 			const loaded = await refreshSettings();
 			finishSettingsLoad(loaded);
 			setActionStatus('');
 			void refreshStatus();
-			if (loaded) dom.webTitle?.focus();
+			if (loaded) dom.webTitle.focus();
 		},
 	};
 };

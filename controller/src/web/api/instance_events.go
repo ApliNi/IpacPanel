@@ -2,36 +2,30 @@ package api
 
 import (
 	web "IpacPanel/controller/src/web"
+	"IpacPanel/controller/src/web/authz"
 
 	"net/http"
 	"time"
 )
 
+type instanceEventsRequest struct{}
+
 const sseKeepaliveInterval = 15 * time.Second
 
 func HandleApiInstanceEvents(w http.ResponseWriter, r *http.Request) {
-	web.MarkRequestRouteKind(w, "sse")
-	if !web.RequireMethod(w, r, http.MethodGet) {
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
+	if !ok {
+		web.WriteUnauthorized(w)
+		return
+	}
+	var req instanceEventsRequest
+	if !web.DecodeJSONBody(w, r, &req) {
 		return
 	}
 	sse, ok := web.BeginSSE(w)
 	if !ok {
 		return
 	}
-	if !web.ValidateCSRFFromQuery(r) {
-		web.MarkAPIError(w, http.StatusForbidden, "CSRF 验证失败", nil)
-		_ = sse.SendEvent("auth_required", map[string]bool{"auth_required": true})
-		web.LogWebAccess(w, r, http.StatusOK)
-		return
-	}
-	authedUser, authed := web.GetAuthedUserFromRequest(r)
-	if !authed {
-		web.MarkAPIError(w, http.StatusUnauthorized, "未授权", nil)
-		_ = sse.SendEvent("auth_required", map[string]bool{"auth_required": true})
-		web.LogWebAccess(w, r, http.StatusOK)
-		return
-	}
-	web.MarkRequestUser(w, authedUser.User)
 	web.LogWebAccess(w, r, http.StatusOK)
 	subscriber := subscribeInstanceListUpdates()
 	defer unsubscribeInstanceListUpdates(subscriber)

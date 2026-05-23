@@ -474,7 +474,7 @@ func (ins *DaemonInstance) readOutput(proxy *terminal.Proxy, proxySeq uint64, ru
 			if outputCh != nil {
 				releaseData := data
 				select {
-				case outputCh <- IPCResponse{Type: ipcFrameTypeInstanceOutput, Instance: runtimeID, Body: data, release: func() { putDaemonOutputBuffer(releaseData) }}:
+				case outputCh <- IPCResponse{Type: "o", Instance: runtimeID, Body: data, release: func() { putDaemonOutputBuffer(releaseData) }}:
 				default:
 					putDaemonOutputBuffer(data)
 				}
@@ -649,7 +649,7 @@ func (ins *DaemonInstance) sendCleanupMessage(outputCh chan<- IPCResponse, runti
 		return
 	}
 	select {
-	case outputCh <- IPCResponse{Type: ipcFrameTypeCleanupMessage, Instance: runtimeID, Placeholder: placeholder, Args: args}:
+	case outputCh <- IPCResponse{Type: "cleanup_message", Instance: runtimeID, Placeholder: placeholder, Args: args}:
 	default:
 		log.Printf("instance %s cleanup message %s dropped", runtimeID, placeholder)
 	}
@@ -660,7 +660,7 @@ func (ins *DaemonInstance) sendOutput(outputCh chan<- IPCResponse, runtimeID str
 		return
 	}
 	select {
-	case outputCh <- IPCResponse{Type: ipcFrameTypeInstanceOutput, Instance: runtimeID, Body: data}:
+	case outputCh <- IPCResponse{Type: "o", Instance: runtimeID, Body: data}:
 	default:
 	}
 }

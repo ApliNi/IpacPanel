@@ -1,6 +1,7 @@
 package api
 
 import (
+	"IpacPanel/controller/src/web/authz"
 	"archive/zip"
 	"context"
 	"errors"
@@ -71,13 +72,13 @@ func controllerUpdateBinaryPath() string {
 func validateControllerUpdatePackageName(name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return fmt.Errorf("更新压缩包文件名不能为空, 只支持 .zip 文件")
+		return errors.New(msg.ControllerUpdatePackageNameRequired)
 	}
 	if strings.HasSuffix(name, string(os.PathSeparator)) || filepath.Base(filepath.Clean(name)) != name {
-		return fmt.Errorf("更新压缩包文件名无效, 只支持 .zip 文件")
+		return errors.New(msg.ControllerUpdatePackageNameInvalid)
 	}
 	if strings.ToLower(filepath.Ext(name)) != ".zip" {
-		return fmt.Errorf("更新文件类型无效, 只支持 .zip 压缩包")
+		return errors.New(msg.ControllerUpdatePackageTypeInvalid)
 	}
 	return nil
 }
@@ -88,22 +89,22 @@ func parseControllerVersion(binaryPath string) (*controllerUpdateVersionInfo, er
 	cmd := exec.CommandContext(ctx, binaryPath, "--version")
 	output, err := cmd.Output()
 	if ctx.Err() != nil {
-		return nil, fmt.Errorf("版本检查超时: %w", ctx.Err())
+		return nil, fmt.Errorf(msg.ControllerVersionCheckTimeoutFmt, ctx.Err())
 	}
 	if err != nil {
-		return nil, fmt.Errorf("版本检查失败: %w", err)
+		return nil, fmt.Errorf(msg.ControllerVersionCheckFailedFmt, err)
 	}
 	var wrapper struct {
 		Version controllerUpdateVersionInfo `yaml:"version"`
 	}
 	if err := yaml.Unmarshal(output, &wrapper); err != nil {
-		return nil, fmt.Errorf("版本输出解析失败: %w", err)
+		return nil, fmt.Errorf(msg.ControllerVersionOutputParseFailedFmt, err)
 	}
 	if wrapper.Version.Role != "controller" {
-		return nil, fmt.Errorf("版本角色无效: %s", wrapper.Version.Role)
+		return nil, fmt.Errorf(msg.ControllerVersionRoleInvalidFmt, wrapper.Version.Role)
 	}
 	if wrapper.Version.DaemonProtocol != version.DaemonProtocol {
-		return nil, fmt.Errorf("守护协议不匹配, expected=%d, got=%d", version.DaemonProtocol, wrapper.Version.DaemonProtocol)
+		return nil, fmt.Errorf(msg.ControllerUpdateDaemonProtocolMismatchFmt, version.DaemonProtocol, wrapper.Version.DaemonProtocol)
 	}
 	return &wrapper.Version, nil
 }
@@ -111,7 +112,7 @@ func parseControllerVersion(binaryPath string) (*controllerUpdateVersionInfo, er
 func extractControllerFromZip(zipPath string, targetPath string) error {
 	reader, err := zip.OpenReader(zipPath)
 	if err != nil {
-		return fmt.Errorf("打开发布压缩包失败: %w", err)
+		return fmt.Errorf(msg.OpenControllerReleaseArchiveFailedFmt, err)
 	}
 	defer reader.Close()
 
@@ -125,16 +126,16 @@ func extractControllerFromZip(zipPath string, targetPath string) error {
 			continue
 		}
 		if zipEntry.FileInfo().Mode()&os.ModeType != 0 {
-			return fmt.Errorf("发布压缩包中的管理进程二进制文件类型无效: %s", zipEntry.Name)
+			return fmt.Errorf(msg.ControllerBinaryTypeInvalidFmt, zipEntry.Name)
 		}
 		if zipEntry.UncompressedSize64 > controllerUpdateMaxBinarySize {
-			return fmt.Errorf("发布压缩包中的管理进程二进制文件过大: %s", zipEntry.Name)
+			return fmt.Errorf(msg.ControllerBinaryTooLargeFmt, zipEntry.Name)
 		}
 		candidate = zipEntry
 		break
 	}
 	if candidate == nil {
-		return fmt.Errorf("发布压缩包中未找到 %s", expectedName)
+		return fmt.Errorf(msg.ControllerBinaryNotFoundFmt, expectedName)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
@@ -142,7 +143,7 @@ func extractControllerFromZip(zipPath string, targetPath string) error {
 	}
 	src, err := candidate.Open()
 	if err != nil {
-		return fmt.Errorf("读取发布压缩包中的管理进程二进制失败: %w", err)
+		return fmt.Errorf(msg.ReadControllerBinaryFromArchiveFailedFmt, err)
 	}
 	defer src.Close()
 
@@ -159,10 +160,10 @@ func extractControllerFromZip(zipPath string, targetPath string) error {
 	}()
 	written, err := io.Copy(out, io.LimitReader(src, controllerUpdateMaxBinarySize+1))
 	if err != nil {
-		return fmt.Errorf("提取发布压缩包中的管理进程二进制失败: %w", err)
+		return fmt.Errorf(msg.ExtractControllerBinaryFromArchiveFailedFmt, err)
 	}
 	if written > controllerUpdateMaxBinarySize {
-		return fmt.Errorf("发布压缩包中的管理进程二进制文件过大: %s", candidate.Name)
+		return fmt.Errorf(msg.ControllerBinaryTooLargeFmt, candidate.Name)
 	}
 	if err := out.Sync(); err != nil {
 		return err
@@ -181,11 +182,11 @@ func prepareControllerUpdateBinary(uploadPath string, tempDir string) (string, *
 	extractDir := filepath.Join(tempDir, "extracted-controller")
 	extractedPath := filepath.Join(extractDir, controllerBinaryName())
 	if err := extractControllerFromZip(uploadPath, extractedPath); err != nil {
-		return "", nil, fmt.Errorf("更新压缩包无效: %w", err)
+		return "", nil, fmt.Errorf(msg.ControllerUpdatePackageInvalidFmt, err)
 	}
 	versionInfo, err := parseControllerVersion(extractedPath)
 	if err != nil {
-		return "", nil, fmt.Errorf("发布压缩包中的管理进程二进制无效: %w", err)
+		return "", nil, fmt.Errorf(msg.ControllerBinaryInvalidFmt, err)
 	}
 	return extractedPath, versionInfo, nil
 }
@@ -237,9 +238,6 @@ func writeControllerUpdateCompletionResult(w http.ResponseWriter, uploadID strin
 }
 
 func HandleApiControllerUpdateStatus(w http.ResponseWriter, r *http.Request) {
-	if _, ok := web.RequireAdminAuthedUserWithMethod(w, r, "只有管理员可以查看面板更新状态", http.MethodGet); !ok {
-		return
-	}
 	path := controllerUpdateBinaryPath()
 	info, err := os.Stat(path)
 	pending := err == nil && !info.IsDir()
@@ -255,11 +253,9 @@ func HandleApiControllerUpdateStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleApiControllerUpdateUploadInit(w http.ResponseWriter, r *http.Request) {
-	if !web.RequireCSRFFromRequest(w, r) {
-		return
-	}
-	authedUser, ok := web.RequireAdminAuthedUserWithMethod(w, r, "只有管理员可以上传面板更新", http.MethodPost)
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
 	if !ok {
+		web.WriteUnauthorized(w)
 		return
 	}
 	var req controllerUpdateInitRequest
@@ -267,7 +263,7 @@ func HandleApiControllerUpdateUploadInit(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := validateControllerUpdatePackageName(req.Name); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), err)
+		writeControllerUpdatePackageNameValidationError(w, err)
 		return
 	}
 	chunkSize, chunkCount, err := validateUploadPlan(req.Size, req.ChunkSize, req.ChunkCount)
@@ -277,7 +273,7 @@ func HandleApiControllerUpdateUploadInit(w http.ResponseWriter, r *http.Request)
 	}
 	updateDir := controllerUpdateDir()
 	if err := os.MkdirAll(updateDir, 0755); err != nil {
-		web.WriteAPIError(w, http.StatusInternalServerError, "创建更新目录失败", err)
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.CreateControllerUpdateDirFailed, err)
 		return
 	}
 	if req.Size > 0 {
@@ -324,21 +320,19 @@ func HandleApiControllerUpdateUploadInit(w http.ResponseWriter, r *http.Request)
 }
 
 func HandleApiControllerUpdateUploadChunk(w http.ResponseWriter, r *http.Request) {
-	if !web.RequireCSRFFromRequest(w, r) {
-		return
-	}
-	authedUser, ok := web.RequireAdminAuthedUserWithMethod(w, r, "只有管理员可以上传面板更新", http.MethodPost)
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
 	if !ok {
+		web.WriteUnauthorized(w)
 		return
 	}
-	uploadID := strings.TrimSpace(r.URL.Query().Get("upload_id"))
+	uploadID := strings.TrimSpace(r.Header.Get(uploadIDHeaderName))
 	if uploadID != controllerUpdateUploadID {
 		web.WriteAPIError(w, http.StatusNotFound, msg.UploadSessionNotFound, nil)
 		return
 	}
-	index, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("index")))
+	index, err := strconv.Atoi(strings.TrimSpace(r.Header.Get(uploadChunkHeaderName)))
 	if err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, "分片索引无效", err)
+		web.WriteAPIError(w, http.StatusBadRequest, msg.InvalidChunkIndex, err)
 		return
 	}
 	session, ok := acquireUploadSession(uploadID)
@@ -348,7 +342,7 @@ func HandleApiControllerUpdateUploadChunk(w http.ResponseWriter, r *http.Request
 	}
 	defer releaseUploadSession(session)
 	if err := requireControllerUpdateSession(session, authedUser.User); err != nil {
-		web.WriteAPIError(w, http.StatusForbidden, err.Error(), err)
+		writeControllerUpdateSessionError(w, err)
 		return
 	}
 	plan, err := planSingleFileUploadChunkWrite(session, index)
@@ -362,7 +356,7 @@ func HandleApiControllerUpdateUploadChunk(w http.ResponseWriter, r *http.Request
 	}
 	chunkLock := getUploadChunkLock(session, index)
 	if chunkLock == nil {
-		web.WriteAPIError(w, http.StatusInternalServerError, msg.UploadSessionInvalid, nil)
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.UploadSessionInvalid, errors.New("controller update upload chunk lock is nil"))
 		return
 	}
 	chunkLock.Lock()
@@ -401,11 +395,9 @@ func HandleApiControllerUpdateUploadChunk(w http.ResponseWriter, r *http.Request
 }
 
 func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Request) {
-	if !web.RequireCSRFFromRequest(w, r) {
-		return
-	}
-	authedUser, ok := web.RequireAdminAuthedUserWithMethod(w, r, "只有管理员可以上传面板更新", http.MethodPost)
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
 	if !ok {
+		web.WriteUnauthorized(w)
 		return
 	}
 	var req controllerUpdateCompleteRequest
@@ -423,7 +415,7 @@ func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Requ
 	}
 	defer releaseUploadSession(session)
 	if err := requireControllerUpdateSession(session, authedUser.User); err != nil {
-		web.WriteAPIError(w, http.StatusForbidden, err.Error(), err)
+		writeControllerUpdateSessionError(w, err)
 		return
 	}
 	status, waitCh := beginUploadCompletion(session)
@@ -484,7 +476,7 @@ func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Requ
 	updateBinaryPath, versionInfo, err := prepareControllerUpdateBinary(session.StagePath, session.TempDir)
 	if err != nil {
 		completionStatus = uploadSessionActive
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), err)
+		web.WriteAPIError(w, http.StatusBadRequest, controllerUpdatePrepareUserMessage(err), err)
 		return
 	}
 	finalPath := controllerUpdateBinaryPath()
@@ -507,7 +499,7 @@ func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Requ
 	}
 	if err != nil {
 		completionStatus = uploadSessionActive
-		web.WriteAPIError(w, http.StatusInternalServerError, "提交更新文件失败", err)
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.CommitControllerUpdateFileFailed, err)
 		return
 	}
 	if runtime.GOOS != "windows" {
@@ -525,12 +517,21 @@ func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Requ
 	})
 }
 
-func HandleApiControllerUpdateUploadAbort(w http.ResponseWriter, r *http.Request) {
-	if !web.RequireCSRFFromRequest(w, r) {
-		return
+func controllerUpdatePrepareUserMessage(err error) string {
+	if err == nil {
+		return msg.ControllerUpdatePackageInvalid
 	}
-	authedUser, ok := web.RequireAdminAuthedUserWithMethod(w, r, "只有管理员可以取消面板更新上传", http.MethodPost)
+	message := err.Error()
+	if strings.Contains(message, msg.ControllerBinaryInvalid) {
+		return msg.ControllerBinaryInvalid
+	}
+	return msg.ControllerUpdatePackageInvalid
+}
+
+func HandleApiControllerUpdateUploadAbort(w http.ResponseWriter, r *http.Request) {
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
 	if !ok {
+		web.WriteUnauthorized(w)
 		return
 	}
 	var req controllerUpdateAbortRequest
@@ -545,7 +546,7 @@ func HandleApiControllerUpdateUploadAbort(w http.ResponseWriter, r *http.Request
 		return requireControllerUpdateSession(session, authedUser.User)
 	})
 	if err != nil {
-		web.WriteAPIError(w, http.StatusForbidden, err.Error(), err)
+		writeControllerUpdateSessionError(w, err)
 		return
 	}
 	if tempDir != "" {
@@ -555,20 +556,14 @@ func HandleApiControllerUpdateUploadAbort(w http.ResponseWriter, r *http.Request
 }
 
 func HandleApiControllerUpdateApply(w http.ResponseWriter, r *http.Request) {
-	if !web.RequireCSRFFromRequest(w, r) {
-		return
-	}
-	if _, ok := web.RequireAdminAuthedUserWithMethod(w, r, "只有管理员可以应用面板更新", http.MethodPost); !ok {
-		return
-	}
 	path := controllerUpdateBinaryPath()
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
-		web.WriteAPIError(w, http.StatusConflict, "没有待应用的更新文件", err)
+		web.WriteAPIError(w, http.StatusConflict, msg.ControllerUpdateFileMissing, err)
 		return
 	}
 	if _, err := parseControllerVersion(path); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, "更新文件无效", err)
+		web.WriteAPIError(w, http.StatusBadRequest, msg.ControllerUpdateFileInvalid, err)
 		return
 	}
 	web.WriteOK(w, map[string]bool{"restarting": true})

@@ -1,4 +1,4 @@
-import { dispatchUnauthorized, getCSRFToken } from '../api/core.js';
+import { dispatchUnauthorized, parseSSEJsonData, postEventStream, readSSEStream } from '../api/core.js';
 
 const RECONNECT_BASE_DELAY_MS = 400;
 const RECONNECT_MAX_DELAY_MS = 5000;
@@ -10,7 +10,7 @@ const readyWaiters = new Set();
 const storeState = {
 	instances: [],
 	version: 0,
-	source: null,
+	stream: null,
 	reconnectTimer: null,
 	reconnectAttempt: 0,
 	started: false,
@@ -129,17 +129,10 @@ const applyPatch = (payload) => {
 	emit(changedNames);
 };
 
-const buildEventsURL = () => {
-	const query = new URLSearchParams();
-	const csrfToken = getCSRFToken();
-	if (csrfToken) query.set('csrf', csrfToken);
-	return `/api/instance/events?${query.toString()}`;
-};
-
 const stopSource = () => {
-	if (!storeState.source) return;
-	storeState.source.close();
-	storeState.source = null;
+	if (!storeState.stream) return;
+	storeState.stream.controller.abort();
+	storeState.stream = null;
 };
 
 const scheduleReconnect = (delay = null) => {
@@ -152,34 +145,46 @@ const scheduleReconnect = (delay = null) => {
 	}, reconnectDelay);
 };
 
-const connect = () => {
-	if (!storeState.started || storeState.source) return;
-	const source = new EventSource(buildEventsURL());
-	storeState.source = source;
-source.addEventListener('auth_required', () => {
-		rejectReadyWaiters(new Error('authentication required'));
-		stop();
-		dispatchUnauthorized();
-	});
-	source.addEventListener('instances_full', (event) => {
-		try {
-			replaceSnapshot(JSON.parse(event.data || 'null'));
-		} catch (error) {
-			console.error('[SSE] 解析实例全量事件失败:', error);
+const connect = async () => {
+	if (!storeState.started || storeState.stream) return;
+	const controller = new AbortController();
+	const stream = { controller };
+	storeState.stream = stream;
+	try {
+		const res = await postEventStream('/api/instance/events', {}, { signal: controller.signal });
+		await readSSEStream(res, {
+			auth_required() {
+				rejectReadyWaiters(new Error('需要身份验证'));
+				stop();
+				dispatchUnauthorized();
+			},
+			instances_full(event) {
+				try {
+					replaceSnapshot(parseSSEJsonData(event, '实例全量事件解析失败'));
+				} catch (error) {
+					console.error('[SSE] 解析实例全量事件失败:', error);
+				}
+			},
+			instances_patch(event) {
+				try {
+					applyPatch(parseSSEJsonData(event, '实例增量事件解析失败'));
+				} catch (error) {
+					console.error('[SSE] 解析实例增量事件失败:', error);
+				}
+			},
+		});
+	} catch (error) {
+		if (error.name !== 'AbortError') {
+			console.error('[SSE] 实例状态流连接失败:', error);
 		}
-	});
-	source.addEventListener('instances_patch', (event) => {
-		try {
-			applyPatch(JSON.parse(event.data || 'null'));
-		} catch (error) {
-			console.error('[SSE] 解析实例增量事件失败:', error);
+	} finally {
+		if (storeState.stream === stream) {
+			storeState.stream = null;
+			if (storeState.started) {
+				scheduleReconnect();
+			}
 		}
-	});
-	source.onerror = () => {
-		if (source !== storeState.source) return;
-		stopSource();
-		scheduleReconnect();
-	};
+	}
 };
 
 export const start = () => {
@@ -201,7 +206,7 @@ export const stop = () => {
 	storeState.ready = false;
 	storeState.version = 0;
 	storeState.instances = [];
-	rejectReadyWaiters(new Error('instance status stream stopped'));
+	rejectReadyWaiters(new Error('实例状态流已停止'));
 	emit();
 };
 

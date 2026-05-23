@@ -117,6 +117,133 @@ export const parseJsonPayload = async (res) => {
 	return await parseJsonSafe(res);
 };
 
+export const postJson = async (url, payload = {}, options = {}) => {
+	const requestOptions = Object.assign({}, options);
+	delete requestOptions.headers;
+	const headers = Object.assign({
+		'Content-Type': 'application/json',
+	}, options.headers || {});
+	const res = await authedFetch(url, Object.assign(requestOptions, {
+		method: 'POST',
+		headers,
+		body: JSON.stringify(payload || {}),
+	}));
+	return res;
+};
+
+export const postJsonData = async (url, payload = {}, options = {}) => {
+	const res = await postJson(url, payload, options);
+	return await parseJsonData(res);
+};
+
+export const postEventStream = async (url, payload = {}, options = {}) => {
+	const requestOptions = Object.assign({}, options);
+	delete requestOptions.headers;
+	const headers = Object.assign({
+		'Content-Type': 'application/json',
+		'Accept': 'text/event-stream',
+	}, options.headers || {});
+	const res = await authedFetch(url, Object.assign(requestOptions, {
+		method: 'POST',
+		headers,
+		body: JSON.stringify(payload || {}),
+	}));
+	if (!res.ok) {
+		throw await createHttpError(res);
+	}
+	return res;
+};
+
+export const createSSEParser = (onEvent) => {
+	let buffer = '';
+	let eventName = 'message';
+	let dataLines = [];
+	const dispatch = () => {
+		if (dataLines.length === 0) {
+			eventName = 'message';
+			return;
+		}
+		onEvent({
+			type: eventName || 'message',
+			data: dataLines.join('\n'),
+		});
+		eventName = 'message';
+		dataLines = [];
+	};
+	const handleLine = (line) => {
+		if (line === '') {
+			dispatch();
+			return;
+		}
+		if (line.startsWith(':')) {
+			return;
+		}
+		const colonIndex = line.indexOf(':');
+		const field = colonIndex >= 0 ? line.slice(0, colonIndex) : line;
+		const rawValue = colonIndex >= 0 ? line.slice(colonIndex + 1) : '';
+		const value = rawValue.startsWith(' ') ? rawValue.slice(1) : rawValue;
+		if (field === 'event') {
+			eventName = value;
+			return;
+		}
+		if (field === 'data') {
+			dataLines.push(value);
+		}
+	};
+	return {
+		feed(chunk) {
+			buffer += String(chunk || '');
+			const lines = buffer.split(/\r\n|\n|\r/);
+			buffer = lines.pop() || '';
+			for (const line of lines) {
+				handleLine(line);
+			}
+		},
+		finish() {
+			if (buffer) {
+				handleLine(buffer);
+				buffer = '';
+			}
+			dispatch();
+		},
+	};
+};
+
+export const readSSEStream = async (res, handlers = {}) => {
+	if (!res.body || typeof res.body.getReader !== 'function') {
+		throw new Error('SSE 流正文不可用');
+	}
+	const decoder = new TextDecoder();
+	const parser = createSSEParser((event) => {
+		const handler = handlers[event.type] || handlers.message;
+		if (typeof handler === 'function') {
+			handler(event);
+		}
+	});
+	const reader = res.body.getReader();
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) {
+				break;
+			}
+			parser.feed(decoder.decode(value, { stream: true }));
+		}
+		parser.feed(decoder.decode());
+		parser.finish();
+	} finally {
+		reader.releaseLock();
+	}
+};
+
+export const parseSSEJsonData = (event, errorPrefix = 'SSE 数据解析失败') => {
+	try {
+		return JSON.parse(event.data || 'null');
+	} catch (error) {
+		throw new Error(`${errorPrefix}: ${error.message || String(error)}`);
+	}
+};
+
 export const withApiFallback = async (run, fallback, logMessage = '') => {
 	try {
 		return await run();
@@ -241,7 +368,7 @@ export const buildAuthedFileRawUrl = (name, path, options = {}) => {
 		return '';
 	}
 	const query = new URLSearchParams({
-		name: instanceName,
+		instance: instanceName,
 		path: filePath,
 	});
 	if (options.download) {

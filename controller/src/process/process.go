@@ -18,14 +18,27 @@ import (
 
 const (
 	wsSendQueueSize         = 64
+	maxTerminalCols         = 4000
+	maxTerminalRows         = 2500
+	maxTerminalInputBytes   = 16 * 1024
 	wsWriteTimeout          = 5 * time.Second
 	wsPingInterval          = 25 * time.Second
 	wsTerminalFrameMaxBytes = 256 * 1024
+	terminalSystemBlue      = "\x1b[34m"
+	terminalSystemYellow    = "\x1b[33m"
 )
 
 func buildTerminalMessage(colorCode string, text string) []byte {
 	timestamp := time.Now().Format(cfg.DisplayTimeLayout)
-	return []byte(fmt.Sprintf("\r\n%s\x1b[1m[%s] [IpacPanel] %s\x1b[0m\r\n", colorCode, timestamp, text))
+	return []byte(fmt.Sprintf("\r\n\r\n%s\x1b[1m[%s] [IpacPanel] %s\x1b[0m\r\n\r\n", colorCode, timestamp, text))
+}
+
+func BuildNormalTerminalSystemMessage(text string) []byte {
+	return buildTerminalMessage(terminalSystemBlue, text)
+}
+
+func BuildWarningTerminalSystemMessage(text string) []byte {
+	return buildTerminalMessage(terminalSystemYellow, text)
 }
 
 type processState uint8
@@ -116,6 +129,7 @@ type WSClient struct {
 
 	Send           chan wsOutMessage
 	Done           chan struct{}
+	WriteMu        sync.Mutex
 	TerminalWake   chan struct{}
 	StartOnce      sync.Once
 	CloseOnce      sync.Once
@@ -329,8 +343,18 @@ func (client *WSClient) writeMessage(messageType int, data []byte) error {
 	if client == nil || client.Conn == nil {
 		return nil
 	}
+	client.WriteMu.Lock()
+	defer client.WriteMu.Unlock()
 	_ = client.Conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 	return client.Conn.WriteMessage(messageType, data)
+}
+
+func (client *WSClient) SendControlError(message string) error {
+	if strings.TrimSpace(message) == "" {
+		message = msg.WSControlFrameInvalid
+	}
+	data := []byte(fmt.Sprintf(`{"type":"error","message":%q}`, message))
+	return client.writeMessage(websocket.TextMessage, data)
 }
 
 func (client *WSClient) SendInitialTerminal(initial TerminalInitialMessage) error {
@@ -368,7 +392,7 @@ func (client *WSClient) flushTerminalHistory() error {
 	sp.Mu.Unlock()
 
 	if dropped {
-		notice := buildTerminalMessage("\x1b[33m", msg.TerminalOutputDroppedWarning)
+		notice := BuildWarningTerminalSystemMessage(msg.TerminalOutputDroppedWarning)
 		payload = append(notice, payload...)
 	}
 
@@ -628,6 +652,14 @@ func (sp *InstanceProcess) AppendAndBroadcastLocked(messageType int, data []byte
 	sp.appendAndBroadcastLocked(messageType, data, limit)
 }
 
+func (sp *InstanceProcess) AppendAndBroadcastNormalSystemMessageLocked(text string, limit int) {
+	sp.appendAndBroadcastLocked(websocket.BinaryMessage, BuildNormalTerminalSystemMessage(text), limit)
+}
+
+func (sp *InstanceProcess) AppendAndBroadcastWarningSystemMessageLocked(text string, limit int) {
+	sp.appendAndBroadcastLocked(websocket.BinaryMessage, BuildWarningTerminalSystemMessage(text), limit)
+}
+
 func (sp *InstanceProcess) AddClientWithHistoryLocked(client *WSClient) []byte {
 	if sp == nil || client == nil {
 		return nil
@@ -862,6 +894,11 @@ func (sp *InstanceProcess) prepareStart(reserved *startReservation) (*preparedSt
 	if !canStart {
 		return nil, errors.New(msg.InstanceUpdateCanceled)
 	}
+	sp.Mu.Lock()
+	if sp.Starting && sp.StartSeq == reserved.startSeq {
+		sp.appendAndBroadcastLocked(websocket.BinaryMessage, BuildNormalTerminalSystemMessage(msg.StartingInstance), reserved.historyLimit)
+	}
+	sp.Mu.Unlock()
 	state, err := startDaemonInstance(reserved.ins.Name, reserved.ins.Command, reserved.ins.CleanupCommand, resolvedPath, reserved.ins.Terminal, reserved.ins.InputEncoding, reserved.ins.OutputEncoding, reserved.cols, reserved.rows)
 	if err != nil {
 		return nil, err
@@ -957,7 +994,7 @@ func (sp *InstanceProcess) scheduleAutoRestart() {
 	sp.Mu.Unlock()
 	if err != nil {
 		sp.Mu.Lock()
-		msg := buildTerminalMessage("\x1b[31m", fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
+		msg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
 		sp.enterStoppedStateLocked()
 		sp.appendAndBroadcastLocked(websocket.BinaryMessage, msg, historyLimit)
 		NotifyInstanceStatusChanged(sp.InstanceSnapshotLocked().Name)
@@ -972,7 +1009,7 @@ func (sp *InstanceProcess) scheduleAutoRestart() {
 		sp.Mu.Lock()
 		if sp.Starting && sp.StartSeq == reserved.startSeq {
 			sp.cancelStartLocked()
-			msg := buildTerminalMessage("\x1b[31m", fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
+			msg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
 			sp.enterStoppedStateLocked()
 			sp.appendAndBroadcastLocked(websocket.BinaryMessage, msg, historyLimit)
 			NotifyInstanceStatusChanged(sp.InstanceSnapshotLocked().Name)
@@ -1010,10 +1047,10 @@ func (sp *InstanceProcess) handleDaemonProcessExit(state *DaemonRuntimeState) bo
 		}
 	}
 	shouldAutoRestart := prevState == processStateStoppingForRestart || runtimeCode == RuntimeCodeRestarting || (ins.AutoRestart && runtimeCode == RuntimeCodeUnexpectedExit)
-	terminalMsg := buildTerminalMessage("\x1b[34m", msg.ProcessExited)
+	terminalMsg := BuildNormalTerminalSystemMessage(msg.ProcessExited)
 	if shouldAutoRestart {
 		sp.enterRestartWaitingLocked()
-		terminalMsg = buildTerminalMessage("\x1b[34m", msg.ProcessExitedWaitingRestart)
+		terminalMsg = BuildNormalTerminalSystemMessage(msg.ProcessExitedWaitingRestart)
 	}
 	sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
 
@@ -1076,7 +1113,7 @@ func (sp *InstanceProcess) ScheduleRecoveredAutoRestart(state DaemonRuntimeState
 		if err := sp.Start(); err != nil {
 			limit := cfg.GetHistoryLimit() * 1024
 			sp.Mu.Lock()
-			terminalMsg := buildTerminalMessage("\x1b[31m", fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
+			terminalMsg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
 			sp.enterStoppedStateLocked()
 			sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
 			NotifyInstanceStatusChanged(sp.InstanceSnapshotLocked().Name)
@@ -1122,7 +1159,7 @@ func (sp *InstanceProcess) requestRestartWithKillStop(mode restartRequestMode, u
 		NotifyInstanceStatusChanged(instanceName)
 		sp.Mu.Unlock()
 		if err := markDaemonInstanceRuntimeCode(instanceName, RuntimeCodeRestarting); err != nil {
-			log.Printf("mark instance %s restarting intent failed: %v", instanceName, err)
+			log.Printf(msg.MarkInstanceRestartingIntentFailedLogFmt, instanceName, err)
 		}
 		if useKillStop {
 			_ = stopDaemonInstance(instanceName, true)
@@ -1133,16 +1170,17 @@ func (sp *InstanceProcess) requestRestartWithKillStop(mode restartRequestMode, u
 		instanceName := sp.InstanceSnapshotLocked().Name
 		sp.beginStopLocked(processStateStoppingForRestart)
 		stopCommand := sp.InstanceSnapshotLocked().StopCommand
+		noTerminal := cfg.IsNoTerminal(sp.activeTerminalLocked())
 		NotifyInstanceStatusChanged(instanceName)
 		sp.Mu.Unlock()
 		if useKillStop {
 			_ = stopDaemonInstanceWithCode(instanceName, true, RuntimeCodeRestarting)
-		} else if strings.TrimSpace(stopCommand) != "" {
+		} else if strings.TrimSpace(stopCommand) != "" && !noTerminal {
 			if err := markDaemonInstanceStopping(instanceName, RuntimeCodeRestarting); err != nil {
-				log.Printf("mark instance %s restarting intent failed: %v", instanceName, err)
+				log.Printf(msg.MarkInstanceRestartingIntentFailedLogFmt, instanceName, err)
 			}
 			if err := writeDaemonInstanceStdin(instanceName, formatRuntimeCommand(stopCommand)); err != nil {
-				log.Printf("write instance %s restart stop command failed: %v", instanceName, err)
+				log.Printf(msg.WriteInstanceRestartStopCommandFailedLogFmt, instanceName, err)
 			}
 		} else {
 			_ = stopDaemonInstanceWithCode(instanceName, false, RuntimeCodeRestarting)
@@ -1229,7 +1267,7 @@ func (sp *InstanceProcess) Stop(force bool) {
 		sp.cancelRestartLocked()
 		sp.cancelStopLocked()
 		sp.enterStoppedStateLocked()
-		msg := buildTerminalMessage("\x1b[34m", msg.AutoRestartStopped)
+		msg := BuildNormalTerminalSystemMessage(msg.AutoRestartStopped)
 		sp.appendAndBroadcastLocked(websocket.BinaryMessage, msg, limit)
 		NotifyInstanceStatusChanged(sp.InstanceSnapshotLocked().Name)
 		sp.Mu.Unlock()
@@ -1246,7 +1284,7 @@ func (sp *InstanceProcess) Stop(force bool) {
 			intentCode = RuntimeCodeManualKill
 		}
 		if err := markDaemonInstanceRuntimeCode(instanceName, intentCode); err != nil {
-			log.Printf("mark instance %s stop intent failed: %v", instanceName, err)
+			log.Printf(msg.MarkInstanceStopIntentFailedLogFmt, instanceName, err)
 		}
 		if force {
 			_ = stopDaemonInstance(instanceName, true)
@@ -1276,7 +1314,7 @@ func (sp *InstanceProcess) Stop(force bool) {
 		sp.cancelStopLocked()
 		sp.cancelStartLocked()
 		sp.enterStoppedStateLocked()
-		msg := buildTerminalMessage("\x1b[34m", msg.StartingInstanceCanceled)
+		msg := BuildNormalTerminalSystemMessage(msg.StartingInstanceCanceled)
 		sp.appendAndBroadcastLocked(websocket.BinaryMessage, msg, limit)
 		NotifyInstanceStatusChanged(sp.InstanceSnapshotLocked().Name)
 		sp.Mu.Unlock()
@@ -1289,6 +1327,7 @@ func (sp *InstanceProcess) Stop(force bool) {
 	instanceName := sp.InstanceSnapshotLocked().Name
 	sp.beginStopLocked(processStateStopping)
 	stopCommand := sp.InstanceSnapshotLocked().StopCommand
+	noTerminal := cfg.IsNoTerminal(sp.activeTerminalLocked())
 	NotifyInstanceStatusChanged(instanceName)
 	if force {
 		sp.Mu.Unlock()
@@ -1296,12 +1335,12 @@ func (sp *InstanceProcess) Stop(force bool) {
 		return
 	}
 	sp.Mu.Unlock()
-	if strings.TrimSpace(stopCommand) != "" {
+	if strings.TrimSpace(stopCommand) != "" && !noTerminal {
 		if err := markDaemonInstanceStopping(instanceName, RuntimeCodeManualStop); err != nil {
-			log.Printf("mark instance %s manual stop intent failed: %v", instanceName, err)
+			log.Printf(msg.MarkInstanceManualStopIntentFailedLogFmt, instanceName, err)
 		}
 		if err := writeDaemonInstanceStdin(instanceName, formatRuntimeCommand(stopCommand)); err != nil {
-			log.Printf("write instance %s stop command failed: %v", instanceName, err)
+			log.Printf(msg.WriteInstanceStopCommandFailedLogFmt, instanceName, err)
 		}
 	} else {
 		_ = stopDaemonInstance(instanceName, false)
@@ -1375,7 +1414,7 @@ func (sp *InstanceProcess) SendCommand(command string) error {
 	}
 	if cfg.IsNoTerminal(sp.activeTerminalLocked()) {
 		sp.Mu.Unlock()
-		return errors.New("实例当前为无终端模式, 不支持输入")
+		return errors.New(msg.NoTerminalInputUnsupported)
 	}
 	instanceName := sp.InstanceSnapshotLocked().Name
 	sp.Mu.Unlock()
@@ -1389,6 +1428,9 @@ func (sp *InstanceProcess) SendInput(data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
+	if len(data) > maxTerminalInputBytes {
+		return fmt.Errorf(msg.ReceivedMoreThanFmt, maxTerminalInputBytes)
+	}
 
 	sp.Mu.Lock()
 	if sp.Deleting {
@@ -1401,11 +1443,11 @@ func (sp *InstanceProcess) SendInput(data []byte) error {
 	}
 	if cfg.IsNoTerminal(sp.activeTerminalLocked()) {
 		sp.Mu.Unlock()
-		return errors.New("实例当前为无终端模式, 不支持输入")
+		return errors.New(msg.NoTerminalInputUnsupported)
 	}
 	instanceName := sp.InstanceSnapshotLocked().Name
 	sp.Mu.Unlock()
-	return writeDaemonInstanceStdin(instanceName, data)
+	return writeDaemonInstanceInputFastPath(instanceName, data)
 }
 
 func (sp *InstanceProcess) ResizeTerminal(cols uint16, rows uint16) error {
@@ -1413,7 +1455,10 @@ func (sp *InstanceProcess) ResizeTerminal(cols uint16, rows uint16) error {
 		return nil
 	}
 	if cols == 0 || rows == 0 {
-		return fmt.Errorf("invalid terminal size: cols=%d rows=%d", cols, rows)
+		return fmt.Errorf(msg.InvalidTerminalSizeFmt, cols, rows)
+	}
+	if cols > maxTerminalCols || rows > maxTerminalRows {
+		return fmt.Errorf(msg.TerminalSizeTooLargeFmt, maxTerminalCols, maxTerminalRows)
 	}
 	sp.Mu.Lock()
 	sp.Cols = cols
@@ -1425,7 +1470,7 @@ func (sp *InstanceProcess) ResizeTerminal(cols uint16, rows uint16) error {
 	instanceName := sp.InstanceSnapshotLocked().Name
 	sp.Mu.Unlock()
 	if err := resizeDaemonInstanceTerminal(instanceName, cols, rows); err != nil {
-		return fmt.Errorf("resize instance terminal: %w", err)
+		return fmt.Errorf(msg.ResizeInstanceTerminalFailedFmt, err)
 	}
 	return nil
 }

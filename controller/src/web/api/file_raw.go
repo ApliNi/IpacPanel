@@ -1,8 +1,9 @@
-﻿package api
+package api
 
 import (
 	"IpacPanel/controller/src/msg"
 	web "IpacPanel/controller/src/web"
+	"IpacPanel/controller/src/web/authz"
 
 	"errors"
 	"fmt"
@@ -13,15 +14,15 @@ import (
 )
 
 func HandleApiFileRaw(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:       true,
-		Methods:           []string{http.MethodGet},
-		InstanceFromQuery: true,
-	})
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
+	if !ok {
+		web.WriteUnauthorized(w)
+		return
+	}
+	sp, _, ok := web.RequireInstanceProcessFromQuery(w, r, authedUser)
 	if !ok {
 		return
 	}
-	sp := guard.Instance
 
 	rootPath, relativePath, err := resolveInstanceFilePath(sp, r.URL.Query().Get("path"))
 	if err != nil {

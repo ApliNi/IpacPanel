@@ -68,7 +68,7 @@ const getMonacoNlsModuleLanguage = (language) => language ? `${language}.js` : '
 
 const getGlobalWindow = () => {
 	if (typeof window === 'undefined') {
-		throw new Error('Browser runtime is unavailable');
+		throw new Error('浏览器运行时不可用');
 	}
 	return window;
 };
@@ -211,7 +211,7 @@ const ensureMonacoRuntime = (() => {
 		monacoLoadPromise = new Promise((resolve, reject) => {
 			const amdRequire = getMonacoAmdLoader();
 			if (!amdRequire) {
-				reject(new Error('Monaco AMD loader is unavailable'));
+				reject(new Error('Monaco AMD 加载器不可用'));
 				return;
 			}
 			configureMonacoEnvironment();
@@ -232,9 +232,9 @@ const ensureMonacoRuntime = (() => {
 					resolve(monaco);
 					return;
 				}
-				reject(new Error('Monaco loaded but runtime is unavailable'));
+				reject(new Error('Monaco 已加载, 但运行时不可用'));
 			}, (err) => {
-				reject(err || new Error('Failed to load Monaco runtime'));
+				reject(err || new Error('加载 Monaco 运行时失败'));
 			});
 		});
 		try {
@@ -379,7 +379,7 @@ fileEditorForm.append(
 );
 fileEditorCard.append(buildModalHeaderNode({ title: 'EDIT FILE', closeId: 'fileEditorClose', titleId: 'fileEditorTitle' }), fileEditorForm);
 fileEditorModal.appendChild(fileEditorCard);
-mainModalOverlay?.appendChild(fileEditorModal);
+mainModalOverlay.appendChild(fileEditorModal);
 
 const dom = {
 	fileEditorModal: document.getElementById('fileEditorModal'),
@@ -540,7 +540,7 @@ const showFileEditorSaveSuccess = () => {
 };
 
 const setFileEditorMode = () => {
-    dom.fileEditorMonaco?.classList.remove('hidden');
+    dom.fileEditorMonaco.classList.remove('hidden');
 };
 
 const disposeMonacoEditor = () => {

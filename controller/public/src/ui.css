@@ -16,7 +16,7 @@
 ::selection { background: #34beff33; }
 
 /* 滚动条 */
-::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar { width: 7px; }
 ::-webkit-scrollbar-thumb { background: var(--border-color); }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb:hover { background: #555; cursor: default; }
@@ -446,10 +446,11 @@ input[type="password"] {
 	width: min(100%, 1385px);
 	margin-left: auto;
 	margin-right: auto;
+	padding: 25px 25px;
+	padding-bottom: 340px;
 }
 
-/* 服务列表布局 */
-.section-header {
+.section > .section-header {
     padding: 25px 25px 0px;
 }
 
@@ -632,7 +633,6 @@ input[type="password"] {
 }
 
 .dashboard-content {
-	padding: 20px 25px 25px;
 	display: flex;
 	flex-direction: column;
 	gap: 16px;
@@ -979,11 +979,8 @@ input[type="password"] {
 .status-restart { color: var(--blue); }
 .status-offline { color: var(--text-faint-color); }
 
-/* 终端界面布局与卡片 */
 .console-content {
     flex: 1;
-    padding: 25px 20px;
-	padding-bottom: 340px;
     display: flex;
     flex-direction: column;
     gap: 20px;
@@ -2410,7 +2407,7 @@ table > thead > tr > th {
 	height: 100%;
 	overflow: hidden;
     background: var(--terminal-bg-color);
-    padding: 10px 0px 10px 10px;
+    padding: 7px 0px 7px 8px;
 	overscroll-behavior: contain;
 	border-bottom: 1px solid var(--border-color);
 }
@@ -2467,7 +2464,8 @@ table > thead > tr > th {
 	}
 
 	#listContainer,
-	.console-content {
+	.console-content,
+	.dashboard-content {
 		padding: 16px;
 		padding-bottom: 340px;
 	}
@@ -2495,7 +2493,8 @@ table > thead > tr > th {
 	}
 
 	#listContainer,
-	.console-content {
+	.console-content,
+	.dashboard-content {
 		padding: 12px;
 		padding-bottom: 340px;
 	}

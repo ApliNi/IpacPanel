@@ -4,7 +4,7 @@ export const fetchAdminUser = async (username) => {
 	return await withApiResult(async () => {
 		const u = String(username || '').trim();
 		if (!u) {
-			throw new Error('missing user');
+			throw new Error('缺少用户');
 		}
 		const res = await authedFetch(`/api/admin/get?user=${encodeURIComponent(u)}`);
 		return await parseJsonData(res);
@@ -41,7 +41,7 @@ export const deleteAdminUser = async (username) => {
 	return await withApiResult(async () => {
 		const user = String(username || '').trim();
 		if (!user) {
-			throw new Error('missing user');
+			throw new Error('缺少用户');
 		}
 		const res = await authedFetch('/api/admin/delete', {
 			method: 'POST',
@@ -83,7 +83,7 @@ export const resolveBootAuthState = async () => {
 		}
 		const user = await parseJsonData(res);
 		if (!user) {
-			throw new Error('Current user payload is empty');
+			throw new Error('当前用户载荷为空');
 		}
 		return {
 			status: 'authenticated',

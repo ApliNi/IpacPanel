@@ -3,10 +3,11 @@ package api
 import (
 	cfg "IpacPanel/controller/src/config"
 	"IpacPanel/controller/src/metrics"
+	"IpacPanel/controller/src/msg"
 	web "IpacPanel/controller/src/web"
+	"IpacPanel/controller/src/web/authz"
 	"math"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -36,6 +37,12 @@ type dashboardSnapshotResponse struct {
 type dashboardStreamFilter struct {
 	NIC  string `json:"nic"`
 	Disk string `json:"disk"`
+}
+
+type dashboardRequest struct {
+	Minutes int    `json:"minutes"`
+	NIC     string `json:"nic"`
+	Disk    string `json:"disk"`
 }
 
 type dashboardFullEvent struct {
@@ -132,20 +139,20 @@ func isPublicDashboardEnabled() bool {
 }
 
 func resolveDashboardRequestUser(w http.ResponseWriter, r *http.Request) (*cfg.AuthUser, bool) {
-	authedUser, authed := web.GetAuthedUserFromRequest(r)
+	authedUser, authed := authz.DefaultRuntime.CurrentAuthUser(r)
 	if authed {
-		web.MarkRequestUser(w, authedUser.User)
 		return authedUser, true
 	}
 	if isPublicDashboardEnabled() {
 		return nil, true
 	}
-	web.WriteAPIError(w, http.StatusUnauthorized, "未授权", nil)
+	web.WriteAPIError(w, http.StatusUnauthorized, msg.Unauthorized, nil)
 	return nil, false
 }
 
 func HandleApiDashboardSnapshot(w http.ResponseWriter, r *http.Request) {
-	if !web.RequireMethod(w, r, http.MethodGet) {
+	var req dashboardRequest
+	if !web.DecodeJSONBody(w, r, &req) {
 		return
 	}
 	authedUser, ok := resolveDashboardRequestUser(w, r)
@@ -153,19 +160,19 @@ func HandleApiDashboardSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if dashboardCollector == nil {
-		web.WriteAPIError(w, http.StatusServiceUnavailable, "仪表板统计未初始化", nil)
+		web.WriteAPIError(w, http.StatusServiceUnavailable, msg.DashboardMetricsNotInitialized, nil)
 		return
 	}
 	isAdmin := isDashboardAdmin(authedUser)
-	minutes, ok := parseDashboardMinutes(w, r, isAdmin)
+	minutes, ok := parseDashboardMinutes(w, req.Minutes, isAdmin)
 	if !ok {
 		return
 	}
 	nic := ""
 	disk := ""
 	if isAdmin {
-		nic = strings.TrimSpace(r.URL.Query().Get("nic"))
-		disk = strings.TrimSpace(r.URL.Query().Get("disk"))
+		nic = strings.TrimSpace(req.NIC)
+		disk = strings.TrimSpace(req.Disk)
 	}
 	snapshot := dashboardCollector.Snapshot(minutes, nic, disk, dashboardMaxPoints)
 	web.WriteOK(w, dashboardSnapshotResponse{
@@ -180,44 +187,37 @@ func HandleApiDashboardSnapshot(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleApiDashboardEvents(w http.ResponseWriter, r *http.Request) {
-	web.MarkRequestRouteKind(w, "sse")
-	if !web.RequireMethod(w, r, http.MethodGet) {
+	var req dashboardRequest
+	if !web.DecodeJSONBody(w, r, &req) {
+		return
+	}
+	// Guard owns optional authentication for dashboard events: invalid auth
+	// cookies are rejected before this handler, valid users are written to request
+	// context, and missing cookies may use the public-dashboard fallback.
+	authedUser, authed := authz.DefaultRuntime.CurrentAuthUser(r)
+	if !authed && !isPublicDashboardEnabled() {
+		web.WriteAPIError(w, http.StatusUnauthorized, msg.Unauthorized, nil)
 		return
 	}
 	sse, ok := web.BeginSSE(w)
 	if !ok {
 		return
 	}
-	authedUser, authed := web.GetAuthedUserFromRequest(r)
-	if authed {
-		web.MarkRequestUser(w, authedUser.User)
-		if !web.ValidateCSRFFromQuery(r) {
-			web.MarkAPIError(w, http.StatusForbidden, "CSRF 验证失败", nil)
-			_ = sse.SendEvent("auth_required", map[string]bool{"auth_required": true})
-			web.LogWebAccess(w, r, http.StatusOK)
-			return
-		}
-	} else if !isPublicDashboardEnabled() {
-		web.MarkAPIError(w, http.StatusUnauthorized, "未授权", nil)
-		_ = sse.SendEvent("auth_required", map[string]bool{"auth_required": true})
-		web.LogWebAccess(w, r, http.StatusOK)
-		return
-	}
 	web.LogWebAccess(w, r, http.StatusOK)
 	if dashboardCollector == nil {
-		_ = sse.SendEvent("dashboard_error", dashboardErrorEvent{Message: "仪表板统计未初始化."})
+		_ = sse.SendEvent("dashboard_error", dashboardErrorEvent{Message: msg.DashboardMetricsNotInitialized})
 		return
 	}
 	isAdmin := isDashboardAdmin(authedUser)
-	minutes, ok := parseDashboardStreamMinutes(sse, r, isAdmin)
+	minutes, ok := parseDashboardStreamMinutes(sse, req.Minutes, isAdmin)
 	if !ok {
 		return
 	}
 	nic := ""
 	disk := ""
 	if isAdmin {
-		nic = strings.TrimSpace(r.URL.Query().Get("nic"))
-		disk = strings.TrimSpace(r.URL.Query().Get("disk"))
+		nic = strings.TrimSpace(req.NIC)
+		disk = strings.TrimSpace(req.Disk)
 	}
 	var lastSeq int64
 	var lastBaseTS int64
@@ -313,18 +313,12 @@ func HandleApiDashboardEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func parseDashboardMinutes(w http.ResponseWriter, r *http.Request, isAdmin bool) (int, bool) {
-	minutesText := strings.TrimSpace(r.URL.Query().Get("minutes"))
-	if minutesText == "" {
+func parseDashboardMinutes(w http.ResponseWriter, minutes int, isAdmin bool) (int, bool) {
+	if minutes == 0 {
 		return 30, true
 	}
-	minutes, err := strconv.Atoi(minutesText)
-	if err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, "minutes 必须是整数", err)
-		return 0, false
-	}
 	if minutes <= 0 {
-		web.WriteAPIError(w, http.StatusBadRequest, "minutes 必须大于 0", nil)
+		web.WriteAPIError(w, http.StatusBadRequest, msg.DashboardMinutesMustBePositive, nil)
 		return 0, false
 	}
 	if !isAdmin && minutes > dashboardPublicMaxMinutes {
@@ -333,14 +327,12 @@ func parseDashboardMinutes(w http.ResponseWriter, r *http.Request, isAdmin bool)
 	return minutes, true
 }
 
-func parseDashboardStreamMinutes(sse *web.SSEWriter, r *http.Request, isAdmin bool) (int, bool) {
-	minutesText := strings.TrimSpace(r.URL.Query().Get("minutes"))
-	if minutesText == "" {
+func parseDashboardStreamMinutes(sse *web.SSEWriter, minutes int, isAdmin bool) (int, bool) {
+	if minutes == 0 {
 		return 30, true
 	}
-	minutes, err := strconv.Atoi(minutesText)
-	if err != nil || minutes <= 0 {
-		_ = sse.SendEvent("dashboard_error", dashboardErrorEvent{Message: "minutes 必须是大于 0 的整数."})
+	if minutes <= 0 {
+		_ = sse.SendEvent("dashboard_error", dashboardErrorEvent{Message: msg.DashboardMinutesMustBePositiveInteger})
 		return 0, false
 	}
 	if !isAdmin && minutes > dashboardPublicMaxMinutes {

@@ -106,10 +106,8 @@ const RECENT_FILE_NAMES_KEY = 'IpacPanel.recentCreatedFileNames';
 const RECENT_DIR_NAMES_KEY = 'IpacPanel.recentCreatedDirNames';
 
 const truncateInputValue = (input, maxLength) => {
-	const value = InputValidation.truncateText(input?.value || '', maxLength);
-	if (input) {
-		input.value = value;
-	}
+	const value = InputValidation.truncateText(input.value || '', maxLength);
+	input.value = value;
 	return value;
 };
 
@@ -365,12 +363,12 @@ const renderFileCreateTargetDir = () => {
 
 const renderFileCreatePage = () => {
     const type = modalState.currentFileCreateType || 'file';
-    dom.fileCreateTypeFile?.classList.toggle('active', type === 'file');
-    dom.fileCreateTypeDir?.classList.toggle('active', type === 'dir');
-    dom.fileCreateTypeUpload?.classList.toggle('active', type === 'upload');
-    dom.fileCreatePageFile?.classList.toggle('active', type === 'file');
-    dom.fileCreatePageDir?.classList.toggle('active', type === 'dir');
-    dom.fileCreatePageUpload?.classList.toggle('active', type === 'upload');
+    dom.fileCreateTypeFile.classList.toggle('active', type === 'file');
+    dom.fileCreateTypeDir.classList.toggle('active', type === 'dir');
+    dom.fileCreateTypeUpload.classList.toggle('active', type === 'upload');
+    dom.fileCreatePageFile.classList.toggle('active', type === 'file');
+    dom.fileCreatePageDir.classList.toggle('active', type === 'dir');
+    dom.fileCreatePageUpload.classList.toggle('active', type === 'upload');
     if (dom.fileCreateSubmit) {
         if (type === 'upload') {
             dom.fileCreateSubmit.innerText = modalState.fileUploadAwaitConfirm ? 'CONFIRM' : 'UPLOAD';
@@ -396,7 +394,7 @@ const renderFileUploadSummary = () => {
         const total = Math.max(0, Number(modalState.fileUploadStats.total || 0)) || leafItems.length;
         const summaryText = renderFileUploadSummaryText({ success: successCount, total, failed: failedCount });
         dom.fileUploadSummary.innerText = summaryText;
-        dom.fileUploadSummary.parentElement?.classList.toggle('hidden', !summaryText);
+        dom.fileUploadSummary.parentElement.classList.toggle('hidden', !summaryText);
     }
     renderFileUploadSpeed();
 };
@@ -474,7 +472,7 @@ const renderFileUploadList = () => {
 	const allItemRows = dom.fileUploadList.querySelectorAll('.file-upload-item, .file-upload-folder-group');
 	for (let i = 0; i < allItemRows.length; i += 1) {
 		const row = allItemRows[i];
-		const id = String(row?.dataset?.id || '');
+		const id = String(row.dataset.id || '');
 		if (id) {
 			modalState.fileUploadRowById.set(id, row);
 		}
@@ -491,10 +489,10 @@ const pruneFileUploadListIfEmpty = () => {
 };
 
 const updateFileUploadDropzoneState = () => {
-    dom.fileUploadDropzone?.classList.toggle('dragover', !!modalState.fileUploadDropzoneActive);
-    dom.fileUploadDropzone?.classList.toggle('compact', modalState.fileUploadItems.length > 0);
-    dom.fileUploadDropzone?.classList.toggle('locked', !!modalState.fileUploadLocked);
-    dom.fileUploadOverwrite?.closest?.('.file-upload-overwrite')?.classList.toggle('locked', !!modalState.fileUploadLocked);
+    dom.fileUploadDropzone.classList.toggle('dragover', !!modalState.fileUploadDropzoneActive);
+    dom.fileUploadDropzone.classList.toggle('compact', modalState.fileUploadItems.length > 0);
+    dom.fileUploadDropzone.classList.toggle('locked', !!modalState.fileUploadLocked);
+    dom.fileUploadOverwrite.closest('.file-upload-overwrite').classList.toggle('locked', !!modalState.fileUploadLocked);
     if (dom.fileUploadDropzone) {
         dom.fileUploadDropzone.disabled = !!modalState.fileUploadLocked;
     }
@@ -553,7 +551,7 @@ const findFileUploadItemRow = (id) => {
     const rows = dom.fileUploadList.querySelectorAll('.file-upload-item');
     for (let i = 0; i < rows.length; i += 1) {
         const row = rows[i];
-        if ((row?.dataset?.id || '') === targetId) {
+        if ((row.dataset.id || '') === targetId) {
             modalState.fileUploadRowById.set(targetId, row);
             return row;
         }
@@ -571,7 +569,10 @@ const removeFileUploadItemRow = (id) => {
 		modalState.fileUploadRowById.delete(String(id || ''));
         return true;
     }
-    row.parentNode?.removeChild?.(row);
+	if (!row.parentNode) {
+		throw new Error('文件上传行父元素缺失');
+	}
+    row.parentNode.removeChild(row);
 	modalState.fileUploadRowById.delete(String(id || ''));
     return true;
 };
@@ -1469,7 +1470,7 @@ const uploadFileChunkWithRetry = async (instanceName, uploadId, index, chunk, on
         }
     }
 
-    throw lastError || new Error(`Chunk ${index} upload failed`);
+    throw lastError || new Error(`分块 ${index} 上传失败`);
 };
 
 const initFileUploadContext = async (instanceName, currentPath, item, overwrite, options = {}) => {
@@ -1537,7 +1538,7 @@ const initFileUploadContext = async (instanceName, currentPath, item, overwrite,
 		const chunkFile = ctx.file;
 		const localIndex = index;
 		if (!chunkFile) {
-			throw new Error(`Chunk ${index} source missing`);
+			throw new Error(`分块 ${index} 源缺失`);
 		}
 		const start = localIndex * ctx.chunkSize;
 		const end = Math.min(chunkFile.size, start + ctx.chunkSize);
@@ -2171,8 +2172,8 @@ const getFileCreateFormValue = () => {
         name: type === 'dir' ? dirName : fileName,
 		content,
 		overwrite: type === 'upload'
-			? !!dom.fileUploadOverwrite?.checked
-			: !!dom.fileCreateOverwrite?.checked,
+			? !!dom.fileUploadOverwrite.checked
+			: !!dom.fileCreateOverwrite.checked,
     };
 };
 
@@ -2205,9 +2206,9 @@ const handleFileCreateSubmit = async (event) => {
 		if (!name) {
 			await showAlert('名称不能为空', { title: 'INPUT' });
 			if (type === 'dir') {
-				dom.fileCreateDirName?.focus();
+				dom.fileCreateDirName.focus();
 			} else {
-				dom.fileCreateName?.focus();
+				dom.fileCreateName.focus();
 			}
 			return;
 		}
@@ -2267,7 +2268,7 @@ const tryCloseWithConfirm = async () => {
 const open = (options = {}) => {
     if (!dom.fileCreateModal || !dom.fileCreateName || !dom.fileCreateTypeFile) return;
     modalState.fileCreateModalCloseTimer = clearTimer(modalState.fileCreateModalCloseTimer);
-	dom.fileCreateForm?.reset?.();
+	dom.fileCreateForm.reset();
     if (dom.fileCreateContent) {
         dom.fileCreateContent.value = '';
     }
@@ -2283,7 +2284,7 @@ const open = (options = {}) => {
 	renderFileCreatePage();
 	openAnimatedModal(dom.fileCreateModal);
 	if (initialType === 'upload') {
-		dom.fileUploadDropzone?.focus?.();
+		dom.fileUploadDropzone.focus();
 	} else {
 		dom.fileCreateName.focus();
 	}
@@ -2360,10 +2361,10 @@ const bindEvents = () => {
                 return;
             }
 			if (event?.shiftKey) {
-				dom.fileUploadDirectoryInput?.click?.();
+				dom.fileUploadDirectoryInput.click();
 				return;
 			}
-			dom.fileUploadInput?.click?.();
+			dom.fileUploadInput.click();
         };
         dom.fileUploadDropzone.ondragenter = (event) => {
             event.preventDefault();

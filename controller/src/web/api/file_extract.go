@@ -2,6 +2,7 @@ package api
 
 import (
 	"IpacPanel/controller/src/msg"
+	"IpacPanel/controller/src/web/authz"
 
 	web "IpacPanel/controller/src/web"
 
@@ -159,22 +160,26 @@ var extractCopyBufferPool = sync.Pool{
 var errExtractInvalidPath = errors.New(msg.ArchiveContainsInvalidPath)
 
 type mkdirCache struct {
-	dirs map[string]struct{}
+	rootPath string
+	dirs     map[string]struct{}
 }
 
-func newMkdirCache() *mkdirCache {
-	return &mkdirCache{dirs: make(map[string]struct{})}
+func newMkdirCache(rootPath string) *mkdirCache {
+	return &mkdirCache{rootPath: rootPath, dirs: make(map[string]struct{})}
 }
 
 func (c *mkdirCache) ensure(dir string) error {
 	if c == nil {
-		return os.MkdirAll(dir, 0755)
+		return errors.New(msg.EmptyDest)
+	}
+	if strings.TrimSpace(c.rootPath) == "" {
+		return errors.New(msg.EmptyDest)
 	}
 	clean := filepath.Clean(dir)
 	if _, ok := c.dirs[clean]; ok {
-		return nil
+		return ensurePathComponentsWithinRoot(c.rootPath, clean, true)
 	}
-	if err := os.MkdirAll(clean, 0755); err != nil {
+	if err := ensureDirectoryWithinRoot(c.rootPath, clean); err != nil {
 		return err
 	}
 	c.dirs[clean] = struct{}{}
@@ -276,7 +281,10 @@ func resolveExtractOutputPath(baseDir string, entryName string) (string, error) 
 	return cleanDest, nil
 }
 
-func writeExtractedFile(ctx context.Context, baseDir string, dst string, mode os.FileMode, src io.Reader, dirCache *mkdirCache, overwrite bool) (int64, error) {
+func writeExtractedFile(ctx context.Context, rootPath string, baseDir string, dst string, mode os.FileMode, src io.Reader, dirCache *mkdirCache, overwrite bool) (int64, error) {
+	if err := ensurePathComponentsWithinRoot(rootPath, dst, false); err != nil {
+		return 0, errExtractInvalidPath
+	}
 	if err := ensurePathComponentsWithinRoot(baseDir, dst, false); err != nil {
 		return 0, errExtractInvalidPath
 	}
@@ -293,7 +301,7 @@ func writeExtractedFile(ctx context.Context, baseDir string, dst string, mode os
 		return 0, ctx.Err()
 	default:
 	}
-	temp, tempPath, err := openAtomicTempFileWithinRoot(baseDir, dst, mode)
+	temp, tempPath, err := openAtomicTempFileWithinRoot(rootPath, dst, mode)
 	if err != nil {
 		if err.Error() == msg.PathOutsideInstanceRoot {
 			return 0, errExtractInvalidPath
@@ -356,7 +364,10 @@ func writeExtractedFile(ctx context.Context, baseDir string, dst string, mode os
 	if err := temp.Close(); err != nil {
 		return totalWritten, err
 	}
-	if err := commitAtomicTempFileWithinRoot(baseDir, tempPath, dst, overwrite); err != nil {
+	if err := ensurePathComponentsWithinRoot(baseDir, dst, false); err != nil {
+		return totalWritten, errExtractInvalidPath
+	}
+	if err := commitAtomicTempFileWithinRoot(rootPath, tempPath, dst, overwrite); err != nil {
 		if err.Error() == msg.PathOutsideInstanceRoot {
 			return totalWritten, errExtractInvalidPath
 		}
@@ -414,7 +425,7 @@ func (r *extractReadCloser) Close() error {
 	return firstErr
 }
 
-func extractArchiveWithFormat(ctx context.Context, format archives.Format, archivePath string, targetAbs string, extractHere bool, overwrite bool, sse *web.SSEWriter) (*extractResult, error) {
+func extractArchiveWithFormat(ctx context.Context, format archives.Format, archivePath string, rootPath string, targetAbs string, extractHere bool, overwrite bool, sse *web.SSEWriter) (*extractResult, error) {
 	archiveReader, err := openArchiveReader(format, archivePath)
 	if err != nil {
 		return nil, err
@@ -427,11 +438,14 @@ func extractArchiveWithFormat(ctx context.Context, format archives.Format, archi
 	}
 
 	baseDir := targetAbs
-	dirCache := newMkdirCache()
+	dirCache := newMkdirCache(rootPath)
 	result := &extractResult{}
 	if !extractHere {
 		if err := dirCache.ensure(baseDir); err != nil {
 			return nil, err
+		}
+		if err := ensurePathComponentsWithinRoot(rootPath, baseDir, true); err != nil {
+			return nil, errExtractInvalidPath
 		}
 	}
 	progress := newExtractProgressReporter(sse, 0)
@@ -455,11 +469,17 @@ func extractArchiveWithFormat(ctx context.Context, format archives.Format, archi
 			return progress.advance(0)
 		}
 		if isDir {
+			if err := ensurePathComponentsWithinRoot(rootPath, cleanDest, false); err != nil {
+				return errExtractInvalidPath
+			}
 			if err := ensurePathComponentsWithinRoot(baseDir, cleanDest, true); err != nil {
 				return errExtractInvalidPath
 			}
 			if err := dirCache.ensure(cleanDest); err != nil {
 				return err
+			}
+			if err := ensurePathComponentsWithinRoot(rootPath, cleanDest, true); err != nil {
+				return errExtractInvalidPath
 			}
 			if err := ensurePathComponentsWithinRoot(baseDir, cleanDest, true); err != nil {
 				return errExtractInvalidPath
@@ -477,7 +497,7 @@ func extractArchiveWithFormat(ctx context.Context, format archives.Format, archi
 		if info.FileInfo != nil {
 			mode = info.Mode()
 		}
-		writtenBytes, writeErr := writeExtractedFile(ctx, baseDir, cleanDest, mode, f, dirCache, overwrite)
+		writtenBytes, writeErr := writeExtractedFile(ctx, rootPath, baseDir, cleanDest, mode, f, dirCache, overwrite)
 		closeErr := f.Close()
 		if writeErr != nil {
 			if errors.Is(writeErr, os.ErrExist) {
@@ -504,19 +524,17 @@ func extractArchiveWithFormat(ctx context.Context, format archives.Format, archi
 }
 
 func HandleApiFileExtract(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:       true,
-		Methods:           []string{http.MethodPost},
-		CSRFFromRequest:   true,
-		InstanceFromQuery: true,
-	})
-	if !ok {
-		return
-	}
-	sp := guard.Instance
-
 	var req fileExtractRequest
 	if !web.DecodeJSONBody(w, r, &req) {
+		return
+	}
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
+	if !ok {
+		web.WriteUnauthorized(w)
+		return
+	}
+	sp, ok := web.RequireInstanceProcessByName(w, authedUser, req.Instance)
+	if !ok {
 		return
 	}
 
@@ -583,7 +601,12 @@ func HandleApiFileExtract(w http.ResponseWriter, r *http.Request) {
 	} else {
 		if req.Overwrite {
 			if err := ensureResolvedPathWithinInstanceRoot(sp, targetAbs); err != nil {
-				if !errors.Is(err, os.ErrNotExist) {
+				if errors.Is(err, os.ErrNotExist) {
+					if err := ensureNewPathWithinInstanceRoot(sp, targetAbs); err != nil {
+						web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
+						return
+					}
+				} else {
 					web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 					return
 				}
@@ -626,7 +649,6 @@ func HandleApiFileExtract(w http.ResponseWriter, r *http.Request) {
 		defaultDirName = archiveName
 	}
 
-	web.MarkRequestRouteKind(w, "sse")
 	sse, ok := web.BeginSSE(w)
 	if !ok {
 		return
@@ -664,7 +686,7 @@ func HandleApiFileExtract(w http.ResponseWriter, r *http.Request) {
 		sendFileExtractFailure(sse, message)
 		return
 	}
-	result, err := extractArchiveWithFormat(r.Context(), format, archivePath, targetAbs, req.ExtractHere, req.Overwrite, sse)
+	result, err := extractArchiveWithFormat(r.Context(), format, archivePath, rootPath, targetAbs, req.ExtractHere, req.Overwrite, sse)
 	if err != nil {
 		message := extractArchiveErrorMessage(err)
 		web.MarkAPIError(w, http.StatusBadRequest, message, err)

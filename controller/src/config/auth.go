@@ -90,11 +90,11 @@ func NormalizeAuthUserPasswords(users []AuthUser) (bool, error) {
 	for i := range users {
 		pass := strings.TrimSpace(users[i].Pass)
 		if pass == "" {
-			log.Printf("用户 %s 密码为空, 已禁止登录", strings.TrimSpace(users[i].User))
+			log.Printf(msg.UserEmptyPasswordLoginDisabledLogFmt, strings.TrimSpace(users[i].User))
 			continue
 		}
 		if !strings.HasPrefix(pass, storedHashPrefix) && !IsBcryptHash(pass) && len([]rune(pass)) > MaxUserPasswordLen {
-			log.Printf("用户 %s 明文密码超过长度限制, 已清空并禁止登录", strings.TrimSpace(users[i].User))
+			log.Printf(msg.UserPlainPasswordTooLongLoginDisabledLogFmt, strings.TrimSpace(users[i].User))
 			users[i].Pass = ""
 			changed = true
 			continue

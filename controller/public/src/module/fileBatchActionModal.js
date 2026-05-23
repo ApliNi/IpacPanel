@@ -1,5 +1,6 @@
 import { mainModalOverlay, state } from "../ui.js";
 import { clearTimer, withActionsDisabled } from '../utils/utils.js';
+import { parseSSEJsonData, readSSEStream } from '../api/core.js';
 import { streamFileBatchAction } from '../api/file.js';
 import { showAlert } from './dialog.js';
 import { InputValidation } from '../utils/inputValidation.js';
@@ -123,12 +124,12 @@ const getCurrentDir = () => {
 
 const applyPage = (page) => {
 	modalState.page = page;
-	dom.tabCopy?.classList.toggle('active', page === 'copy');
-	dom.tabMove?.classList.toggle('active', page === 'move');
-	dom.tabDelete?.classList.toggle('active', page === 'delete');
-	dom.pageCopy?.classList.toggle('active', page === 'copy');
-	dom.pageMove?.classList.toggle('active', page === 'move');
-	dom.pageDelete?.classList.toggle('active', page === 'delete');
+	dom.tabCopy.classList.toggle('active', page === 'copy');
+	dom.tabMove.classList.toggle('active', page === 'move');
+	dom.tabDelete.classList.toggle('active', page === 'delete');
+	dom.pageCopy.classList.toggle('active', page === 'copy');
+	dom.pageMove.classList.toggle('active', page === 'move');
+	dom.pageDelete.classList.toggle('active', page === 'delete');
 	if (page === 'copy' && dom.copyOverwrite) {
 		dom.copyOverwrite.checked = false;
 	}
@@ -298,62 +299,25 @@ const clearSelectionAfterRun = () => {
 };
 
 const decodeSse = async (res, handlers) => {
-	const reader = res.body?.getReader?.();
-	if (!reader) {
-		throw new Error('stream not supported');
-	}
-	const decoder = new TextDecoder('utf-8');
-	let buf = '';
-	let eventName = '';
-	let dataBuf = '';
+	await readSSEStream(res, {
+		message: (event) => emitDecodedSseEvent(event, handlers),
+		progress: (event) => emitDecodedSseEvent(event, handlers),
+		fail: (event) => emitDecodedSseEvent(event, handlers),
+		end: (event) => emitDecodedSseEvent(event, handlers),
+	});
+};
 
-	const emit = () => {
-		const name = String(eventName || 'message');
-		const raw = String(dataBuf || '').trim();
-		if (!raw) {
-			eventName = '';
-			dataBuf = '';
-			return;
-		}
-		let obj = null;
-		try {
-			obj = JSON.parse(raw);
-		} catch (_) {
-			obj = { raw };
-		}
-		if (typeof handlers?.onEvent === 'function') {
-			handlers.onEvent(name, obj);
-		}
-		eventName = '';
-		dataBuf = '';
-	};
-
-	while (true) {
-		const { value, done } = await reader.read();
-		if (done) break;
-		buf += decoder.decode(value, { stream: true });
-		let idx;
-		while ((idx = buf.indexOf('\n')) >= 0) {
-			let line = buf.slice(0, idx);
-			buf = buf.slice(idx + 1);
-			if (line.endsWith('\r')) line = line.slice(0, -1);
-			if (!line) {
-				emit();
-				continue;
-			}
-			if (line.startsWith('event:')) {
-				eventName = line.slice(6).trim();
-				continue;
-			}
-			if (line.startsWith('data:')) {
-				const chunk = line.slice(5).trim();
-				dataBuf = dataBuf ? `${dataBuf}\n${chunk}` : chunk;
-				continue;
-			}
-		}
+const emitDecodedSseEvent = (event, handlers) => {
+	if (typeof handlers?.onEvent !== 'function') {
+		return;
 	}
-	// Flush any pending event on EOF.
-	emit();
+	let payload = null;
+	try {
+		payload = parseSSEJsonData(event, '文件批量操作事件解析失败');
+	} catch {
+		payload = { raw: String(event.data || '').trim() };
+	}
+	handlers.onEvent(String(event.type || 'message'), payload);
 };
 
 const runBatch = async ({ action, overwrite }) => {
@@ -388,7 +352,7 @@ const runBatch = async ({ action, overwrite }) => {
 		action,
 		dest_dir: getCurrentDir(),
 		overwrite: !!overwrite,
-		copy_duplicate: action === 'copy' && !!dom.copyDuplicate?.checked,
+		copy_duplicate: action === 'copy' && !!dom.copyDuplicate.checked,
 		include,
 		exclude,
 	});
@@ -429,27 +393,27 @@ const bindEvents = () => {
 	if (modalState.isBound) return;
 	modalState.isBound = true;
 
-	dom.close?.addEventListener('click', () => close());
-	dom.cancel?.addEventListener('click', () => close());
+	dom.close.addEventListener('click', () => close());
+	dom.cancel.addEventListener('click', () => close());
 
-	dom.tabCopy?.addEventListener('click', () => applyPage('copy'));
-	dom.tabMove?.addEventListener('click', () => applyPage('move'));
-	dom.tabDelete?.addEventListener('click', () => applyPage('delete'));
+	dom.tabCopy.addEventListener('click', () => applyPage('copy'));
+	dom.tabMove.addEventListener('click', () => applyPage('move'));
+	dom.tabDelete.addEventListener('click', () => applyPage('delete'));
 	[dom.copyRules, dom.moveRules, dom.deleteRules].forEach((box) => {
-		box?.addEventListener('blur', () => truncateRuleBox(box));
+		box.addEventListener('blur', () => truncateRuleBox(box));
 	});
-	dom.copyDuplicate?.addEventListener('change', () => {
-		if (dom.copyDuplicate?.checked && dom.copyOverwrite) {
+	dom.copyDuplicate.addEventListener('change', () => {
+		if (dom.copyDuplicate.checked && dom.copyOverwrite) {
 			dom.copyOverwrite.checked = false;
 		}
 	});
-	dom.copyOverwrite?.addEventListener('change', () => {
-		if (dom.copyOverwrite?.checked && dom.copyDuplicate) {
+	dom.copyOverwrite.addEventListener('change', () => {
+		if (dom.copyOverwrite.checked && dom.copyDuplicate) {
 			dom.copyDuplicate.checked = false;
 		}
 	});
 
-	dom.submit?.addEventListener('click', async () => {
+	dom.submit.addEventListener('click', async () => {
 		[dom.copyRules, dom.moveRules, dom.deleteRules].forEach(truncateRuleBox);
 		if (modalState.submitMode === 'select_failed') {
 			selectAllFailedFilesAndClose();
@@ -457,7 +421,7 @@ const bindEvents = () => {
 		}
 		const page = modalState.page || 'copy';
 		const action = page === 'move' ? 'move' : (page === 'delete' ? 'delete' : 'copy');
-		const overwrite = action === 'delete' ? false : (action === 'move' ? !!dom.moveOverwrite?.checked : !!dom.copyOverwrite?.checked);
+		const overwrite = action === 'delete' ? false : (action === 'move' ? !!dom.moveOverwrite.checked : !!dom.copyOverwrite.checked);
 		await withActionsDisabled(dom.actions, () => runBatch({ action, overwrite }));
 	});
 };

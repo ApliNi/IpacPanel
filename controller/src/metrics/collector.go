@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"IpacPanel/controller/src/msg"
 	"context"
 	"database/sql"
 	"fmt"
@@ -403,17 +404,17 @@ func (c *Collector) collect() {
 	if err == nil && len(percentValues) > 0 {
 		cpuPercent = percentValues[0]
 	} else if err != nil {
-		log.Printf("collect dashboard cpu metrics failed: %v", err)
+		log.Printf(msg.DashboardCollectCPUMetricsFailedLogFmt, err)
 	}
 
 	virtualMemory, err := mem.VirtualMemory()
 	if err != nil {
-		log.Printf("collect dashboard memory metrics failed: %v", err)
+		log.Printf(msg.DashboardCollectMemoryMetricsFailedLogFmt, err)
 		virtualMemory = &mem.VirtualMemoryStat{}
 	}
 	swapMemory, err := mem.SwapMemory()
 	if err != nil {
-		log.Printf("collect dashboard swap metrics failed: %v", err)
+		log.Printf(msg.DashboardCollectSwapMetricsFailedLogFmt, err)
 		swapMemory = &mem.SwapMemoryStat{}
 	}
 	interfaces, networkCounters := readNetworkCounters()
@@ -494,7 +495,7 @@ func (c *Collector) writeSQLiteSamplesToCurrentPath(path string, generation uint
 		return
 	}
 	if err := c.ensureSQLite(path, generation); err != nil {
-		log.Printf("dashboard sqlite warning: 初始化数据库失败: %v", err)
+		log.Printf(msg.DashboardSQLiteInitFailedWarningLogFmt, err)
 		return
 	}
 	c.sqliteMu.Lock()
@@ -507,7 +508,7 @@ func (c *Collector) writeSQLiteSamplesToCurrentPath(path string, generation uint
 	err := writeSQLiteSamples(db, samples)
 	c.sqliteMu.Unlock()
 	if err != nil {
-		log.Printf("dashboard sqlite warning: 写入仪表板数据失败: %v", err)
+		log.Printf(msg.DashboardSQLiteWriteDataFailedWarningLogFmt, err)
 	}
 }
 
@@ -517,28 +518,28 @@ func (c *Collector) writeSQLiteSamplesToStandalonePath(path string, samples []Sa
 	}
 	path = normalizeSQLitePath(path)
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		log.Printf("dashboard sqlite warning: 创建仪表板数据库目录失败: %v", err)
+		log.Printf(msg.DashboardSQLiteCreateDirFailedWarningLogFmt, err)
 		return
 	}
 	db, err := openSQLite(path)
 	if err != nil {
-		log.Printf("dashboard sqlite warning: 初始化数据库失败: %v", err)
+		log.Printf(msg.DashboardSQLiteInitFailedWarningLogFmt, err)
 		return
 	}
 	defer func() {
 		if err := db.Close(); err != nil {
-			log.Printf("dashboard sqlite warning: 关闭数据库失败: %v", err)
+			log.Printf(msg.DashboardSQLiteCloseFailedWarningLogFmt, err)
 		}
 	}()
 	if err := writeSQLiteSamples(db, samples); err != nil {
-		log.Printf("dashboard sqlite warning: 写入仪表板数据失败: %v", err)
+		log.Printf(msg.DashboardSQLiteWriteDataFailedWarningLogFmt, err)
 	}
 }
 
 func (c *Collector) startSQLiteMaintenance(path string, maxDay int, compactAfterDay int, generation uint64) {
 	go func() {
 		if err := c.ensureSQLite(path, generation); err != nil {
-			log.Printf("dashboard sqlite warning: 初始化数据库失败: %v", err)
+			log.Printf(msg.DashboardSQLiteInitFailedWarningLogFmt, err)
 			return
 		}
 		if !c.sqliteStateMatches(path, generation) {
@@ -579,14 +580,14 @@ func (c *Collector) ensureSQLite(path string, generation uint64) error {
 	c.mu.Unlock()
 	if oldDB != nil {
 		if err := oldDB.Close(); err != nil {
-			log.Printf("dashboard sqlite warning: 关闭旧数据库失败: %v", err)
+			log.Printf(msg.DashboardSQLiteCloseOldFailedWarningLogFmt, err)
 		}
 	}
 	if generation != 0 && !c.sqliteStateMatches(path, generation) {
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("创建仪表板数据库目录失败: %w", err)
+		return fmt.Errorf(msg.DashboardSQLiteCreateDirFailedFmt, err)
 	}
 	db, err := openSQLite(path)
 	if err != nil {
@@ -596,7 +597,7 @@ func (c *Collector) ensureSQLite(path string, generation uint64) error {
 	if generation != 0 && (!c.enabled || c.storageMode != storageModeSQLite || c.sqlitePath != path || c.sqliteGeneration != generation) {
 		c.mu.Unlock()
 		if err := db.Close(); err != nil {
-			log.Printf("dashboard sqlite warning: 关闭过期数据库失败: %v", err)
+			log.Printf(msg.DashboardSQLiteCloseExpiredFailedWarningLogFmt, err)
 		}
 		return nil
 	}
@@ -616,7 +617,7 @@ func (c *Collector) closeSQLite() {
 	c.mu.Unlock()
 	if db != nil {
 		if err := db.Close(); err != nil {
-			log.Printf("dashboard sqlite warning: 关闭数据库失败: %v", err)
+			log.Printf(msg.DashboardSQLiteCloseFailedWarningLogFmt, err)
 		}
 	}
 }
@@ -638,7 +639,7 @@ func openSQLite(path string) (*sql.DB, error) {
 	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)", filepath.ToSlash(path), sqliteBusyTimeoutMS)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("打开数据库失败: %w", err)
+		return nil, fmt.Errorf(msg.DashboardSQLiteOpenFailedFmt, err)
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
@@ -646,7 +647,7 @@ func openSQLite(path string) (*sql.DB, error) {
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("连接数据库失败: %w", err)
+		return nil, fmt.Errorf(msg.DashboardSQLiteConnectFailedFmt, err)
 	}
 	if err := initSQLiteSchema(ctx, db); err != nil {
 		_ = db.Close()
@@ -730,7 +731,7 @@ func initSQLiteSchema(ctx context.Context, db *sql.DB) error {
 	}
 	for _, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("初始化仪表板数据库失败: %w", err)
+			return fmt.Errorf(msg.DashboardSQLiteInitSchemaFailedFmt, err)
 		}
 	}
 	if err := migrateLegacySQLiteSchema(ctx, db); err != nil {
@@ -749,7 +750,7 @@ func initSQLiteSchema(ctx context.Context, db *sql.DB) error {
 	}
 	for _, statement := range cleanupStatements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("清理旧仪表板数据库结构失败: %w", err)
+			return fmt.Errorf(msg.DashboardSQLiteCleanupLegacySchemaFailedFmt, err)
 		}
 	}
 	return nil
@@ -853,7 +854,7 @@ WHERE ds.kind IN ('nic', 'disk')`)
 	}
 	for _, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("迁移旧仪表板数据库失败: %w", err)
+			return fmt.Errorf(msg.DashboardSQLiteMigrateLegacyFailedFmt, err)
 		}
 	}
 	return nil
@@ -862,7 +863,7 @@ WHERE ds.kind IN ('nic', 'disk')`)
 func sqliteTableExists(ctx context.Context, db *sql.DB, name string) (bool, error) {
 	var count int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&count); err != nil {
-		return false, fmt.Errorf("检查仪表板数据库表失败: %w", err)
+		return false, fmt.Errorf(msg.DashboardSQLiteCheckTableFailedFmt, err)
 	}
 	return count > 0, nil
 }
@@ -875,7 +876,7 @@ func writeSQLiteSamples(db *sql.DB, samples []Sample) error {
 	defer cancel()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("开始事务失败: %w", err)
+		return fmt.Errorf(msg.DashboardSQLiteBeginTxFailedFmt, err)
 	}
 	committed := false
 	defer func() {
@@ -912,7 +913,7 @@ ON CONFLICT(ts, seq) DO UPDATE SET
 	tcp_connection_count = excluded.tcp_connection_count,
 	udp_connection_count = excluded.udp_connection_count`)
 	if err != nil {
-		return fmt.Errorf("准备样本写入失败: %w", err)
+		return fmt.Errorf(msg.DashboardSQLitePrepareSampleWriteFailedFmt, err)
 	}
 	defer sampleStmt.Close()
 	deviceStmt, err := tx.PrepareContext(ctx, `INSERT INTO dashboard_devices (
@@ -927,7 +928,7 @@ ON CONFLICT(kind, name) DO UPDATE SET
 	last_seen_ts = MAX(last_seen_ts, excluded.last_seen_ts)
 RETURNING id`)
 	if err != nil {
-		return fmt.Errorf("准备设备信息写入失败: %w", err)
+		return fmt.Errorf(msg.DashboardSQLitePrepareDeviceWriteFailedFmt, err)
 	}
 	defer deviceStmt.Close()
 	deviceMetricStmt, err := tx.PrepareContext(ctx, `INSERT INTO dashboard_device_samples_1s (
@@ -942,36 +943,36 @@ ON CONFLICT(device_id, ts, seq) DO UPDATE SET
 	read_bps = excluded.read_bps,
 	write_bps = excluded.write_bps`)
 	if err != nil {
-		return fmt.Errorf("准备设备样本写入失败: %w", err)
+		return fmt.Errorf(msg.DashboardSQLitePrepareDeviceSampleWriteFailedFmt, err)
 	}
 	defer deviceMetricStmt.Close()
 	for i := range samples {
 		sample := samples[i]
 		ts := sample.Time.Unix()
 		if _, err := sampleStmt.ExecContext(ctx, ts, sample.Seq, normalizedFloat(sample.CPUPercent), sample.MemoryUsedBytes, sample.MemoryTotalBytes, sample.SwapUsedBytes, sample.SwapTotalBytes, sample.NetworkRxBPS, sample.NetworkTxBPS, sample.DiskReadBPS, sample.DiskWriteBPS, sample.TCPConnectionCount, sample.UDPConnectionCount); err != nil {
-			return fmt.Errorf("写入样本失败: %w", err)
+			return fmt.Errorf(msg.DashboardSQLiteWriteSampleFailedFmt, err)
 		}
 		for name, counter := range sample.interfaceCounters {
 			var deviceID int64
 			if err := deviceStmt.QueryRowContext(ctx, dashboardDeviceKindNIC, name, ts, ts).Scan(&deviceID); err != nil {
-				return fmt.Errorf("写入设备信息失败: %w", err)
+				return fmt.Errorf(msg.DashboardSQLiteWriteDeviceFailedFmt, err)
 			}
 			if _, err := deviceMetricStmt.ExecContext(ctx, ts, sample.Seq, deviceID, counter.rxBytes, counter.txBytes); err != nil {
-				return fmt.Errorf("写入设备样本失败: %w", err)
+				return fmt.Errorf(msg.DashboardSQLiteWriteDeviceSampleFailedFmt, err)
 			}
 		}
 		for name, counter := range sample.diskCounters {
 			var deviceID int64
 			if err := deviceStmt.QueryRowContext(ctx, dashboardDeviceKindDisk, name, ts, ts).Scan(&deviceID); err != nil {
-				return fmt.Errorf("写入设备信息失败: %w", err)
+				return fmt.Errorf(msg.DashboardSQLiteWriteDeviceFailedFmt, err)
 			}
 			if _, err := deviceMetricStmt.ExecContext(ctx, ts, sample.Seq, deviceID, counter.readBytes, counter.writeBytes); err != nil {
-				return fmt.Errorf("写入设备样本失败: %w", err)
+				return fmt.Errorf(msg.DashboardSQLiteWriteDeviceSampleFailedFmt, err)
 			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("提交事务失败: %w", err)
+		return fmt.Errorf(msg.DashboardSQLiteCommitTxFailedFmt, err)
 	}
 	committed = true
 	return nil
@@ -1219,7 +1220,7 @@ FROM bucketed
 ORDER BY bucket_ts ASC
 LIMIT ?`, fromUnix, toUnix, from1mBucket, to1mBucket, fromUnix, fromUnix, bucketSeconds, bucketSeconds, maxPoints)
 	if err != nil {
-		log.Printf("dashboard sqlite warning: 查询仪表板聚合样本失败: %v", err)
+		log.Printf(msg.DashboardSQLiteQueryAggregateSamplesFailedWarningLogFmt, err)
 		return nil
 	}
 	defer rows.Close()
@@ -1228,14 +1229,14 @@ LIMIT ?`, fromUnix, toUnix, from1mBucket, to1mBucket, fromUnix, fromUnix, bucket
 		var sample Sample
 		var ts int64
 		if err := rows.Scan(&ts, &sample.Seq, &sample.CPUPercent, &sample.MemoryUsedBytes, &sample.MemoryTotalBytes, &sample.SwapUsedBytes, &sample.SwapTotalBytes, &sample.NetworkRxBPS, &sample.NetworkTxBPS, &sample.DiskReadBPS, &sample.DiskWriteBPS, &sample.TCPConnectionCount, &sample.UDPConnectionCount); err != nil {
-			log.Printf("dashboard sqlite warning: 解析仪表板聚合样本失败: %v", err)
+			log.Printf(msg.DashboardSQLiteParseAggregateSamplesFailedWarningLogFmt, err)
 			return samples
 		}
 		sample.Time = time.Unix(ts, 0)
 		samples = append(samples, sample)
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("dashboard sqlite warning: 扫描仪表板聚合样本失败: %v", err)
+		log.Printf(msg.DashboardSQLiteScanAggregateSamplesFailedWarningLogFmt, err)
 	}
 	return samples
 }
@@ -1247,7 +1248,7 @@ func (c *Collector) querySQLiteHardware(path string, generation uint64) ([]strin
 	}
 	rows, err := db.Query(`SELECT kind, name FROM dashboard_devices ORDER BY kind ASC, name ASC`)
 	if err != nil {
-		log.Printf("dashboard sqlite warning: 查询硬件信息失败: %v", err)
+		log.Printf(msg.DashboardSQLiteQueryHardwareFailedWarningLogFmt, err)
 		return nil, nil
 	}
 	defer rows.Close()
@@ -1257,7 +1258,7 @@ func (c *Collector) querySQLiteHardware(path string, generation uint64) ([]strin
 		var kind int64
 		var name string
 		if err := rows.Scan(&kind, &name); err != nil {
-			log.Printf("dashboard sqlite warning: 解析硬件信息失败: %v", err)
+			log.Printf(msg.DashboardSQLiteParseHardwareFailedWarningLogFmt, err)
 			return interfaces, disks
 		}
 		if kind == dashboardDeviceKindNIC {
@@ -1267,7 +1268,7 @@ func (c *Collector) querySQLiteHardware(path string, generation uint64) ([]strin
 		}
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("dashboard sqlite warning: 扫描硬件信息失败: %v", err)
+		log.Printf(msg.DashboardSQLiteScanHardwareFailedWarningLogFmt, err)
 	}
 	return interfaces, disks
 }
@@ -1357,7 +1358,7 @@ SELECT
 FROM bucketed
 ORDER BY bucket_ts ASC`, deviceKind, name, fromUnix, toUnix, deviceKind, name, from1mBucket, to1mBucket, fromUnix, fromUnix, bucketSeconds, bucketSeconds)
 	if err != nil {
-		log.Printf("dashboard sqlite warning: 查询设备聚合样本失败: %v", err)
+		log.Printf(msg.DashboardSQLiteQueryDeviceAggregateSamplesFailedWarningLogFmt, err)
 		return
 	}
 	defer rows.Close()
@@ -1369,7 +1370,7 @@ ORDER BY bucket_ts ASC`, deviceKind, name, fromUnix, toUnix, deviceKind, name, f
 		var ts int64
 		var read, write uint64
 		if err := rows.Scan(&ts, &read, &write); err != nil {
-			log.Printf("dashboard sqlite warning: 解析设备聚合样本失败: %v", err)
+			log.Printf(msg.DashboardSQLiteParseDeviceAggregateSamplesFailedWarningLogFmt, err)
 			return
 		}
 		index, ok := indexes[ts]
@@ -1398,29 +1399,29 @@ func (c *Collector) cleanupSQLiteDB(db *sql.DB, maxDay int, compactAfterDay int)
 		return
 	}
 	if err := compactSQLite1sSamples(db, compactAfterDay); err != nil {
-		log.Printf("dashboard sqlite warning: 压缩旧仪表板秒级样本失败: %v", err)
+		log.Printf(msg.DashboardSQLiteCompactOldSecondSamplesFailedWarningLogFmt, err)
 	}
 	cutoff := beginningOfLocalDay(time.Now()).AddDate(0, 0, -maxDay+1).Unix()
 	if _, err := db.Exec(`DELETE FROM dashboard_device_samples_1s WHERE ts < ?`, cutoff); err != nil {
-		log.Printf("dashboard sqlite warning: 清理旧秒级设备样本失败: %v", err)
+		log.Printf(msg.DashboardSQLiteCleanupOldSecondDeviceSamplesFailedWarningLogFmt, err)
 	}
 	if _, err := db.Exec(`DELETE FROM dashboard_samples_1s WHERE ts < ?`, cutoff); err != nil {
-		log.Printf("dashboard sqlite warning: 清理旧秒级仪表板样本失败: %v", err)
+		log.Printf(msg.DashboardSQLiteCleanupOldSecondSamplesFailedWarningLogFmt, err)
 	}
 	if _, err := db.Exec(`DELETE FROM dashboard_device_samples_1m WHERE bucket_ts < ?`, cutoff); err != nil {
-		log.Printf("dashboard sqlite warning: 清理旧设备样本失败: %v", err)
+		log.Printf(msg.DashboardSQLiteCleanupOldDeviceSamplesFailedWarningLogFmt, err)
 	}
 	if _, err := db.Exec(`DELETE FROM dashboard_samples_1m WHERE bucket_ts < ?`, cutoff); err != nil {
-		log.Printf("dashboard sqlite warning: 清理旧仪表板样本失败: %v", err)
+		log.Printf(msg.DashboardSQLiteCleanupOldSamplesFailedWarningLogFmt, err)
 	}
 	if _, err := db.Exec(`DELETE FROM dashboard_devices WHERE last_seen_ts < ?`, cutoff); err != nil {
-		log.Printf("dashboard sqlite warning: 清理旧硬件信息失败: %v", err)
+		log.Printf(msg.DashboardSQLiteCleanupOldHardwareFailedWarningLogFmt, err)
 	}
 	if _, err := db.Exec(`PRAGMA incremental_vacuum`); err != nil {
-		log.Printf("dashboard sqlite warning: 回收仪表板数据库空间失败: %v", err)
+		log.Printf(msg.DashboardSQLiteVacuumFailedWarningLogFmt, err)
 	}
 	if _, err := db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
-		log.Printf("dashboard sqlite warning: 截断仪表板 WAL 失败: %v", err)
+		log.Printf(msg.DashboardSQLiteTruncateWALFailedWarningLogFmt, err)
 	}
 }
 
@@ -1433,7 +1434,7 @@ func compactSQLite1sSamples(db *sql.DB, compactAfterDay int) error {
 	defer cancel()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("开始压缩事务失败: %w", err)
+		return fmt.Errorf(msg.DashboardSQLiteBeginCompactTxFailedFmt, err)
 	}
 	committed := false
 	defer func() {
@@ -1545,11 +1546,11 @@ ON CONFLICT(device_id, bucket_ts) DO UPDATE SET
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement, cutoff); err != nil {
-			return fmt.Errorf("执行秒级样本压缩失败: %w", err)
+			return fmt.Errorf(msg.DashboardSQLiteExecCompactFailedFmt, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("提交压缩事务失败: %w", err)
+		return fmt.Errorf(msg.DashboardSQLiteCommitCompactTxFailedFmt, err)
 	}
 	committed = true
 	return nil
@@ -1696,7 +1697,7 @@ func readNetworkCounters() (map[string]struct{}, map[string]networkCounter) {
 	counters := make(map[string]networkCounter)
 	stats, err := net.IOCounters(true)
 	if err != nil {
-		log.Printf("collect dashboard network metrics failed: %v", err)
+		log.Printf(msg.DashboardCollectNetworkMetricsFailedLogFmt, err)
 		return interfaces, counters
 	}
 	for i := range stats {
@@ -1714,7 +1715,7 @@ func readDiskCounters() (map[string]struct{}, map[string]diskCounter) {
 	counters := make(map[string]diskCounter)
 	stats, err := disk.IOCounters()
 	if err != nil {
-		log.Printf("collect dashboard disk metrics failed: %v", err)
+		log.Printf(msg.DashboardCollectDiskMetricsFailedLogFmt, err)
 		return disks, counters
 	}
 	for name, stat := range stats {
@@ -1733,11 +1734,11 @@ func readDiskCounters() (map[string]struct{}, map[string]diskCounter) {
 func readConnectionCounts() (uint64, uint64) {
 	tcpConnections, err := net.Connections("tcp")
 	if err != nil {
-		log.Printf("collect dashboard tcp connection metrics failed: %v", err)
+		log.Printf(msg.DashboardCollectTCPConnectionMetricsFailedLogFmt, err)
 	}
 	udpConnections, err := net.Connections("udp")
 	if err != nil {
-		log.Printf("collect dashboard udp connection metrics failed: %v", err)
+		log.Printf(msg.DashboardCollectUDPConnectionMetricsFailedLogFmt, err)
 	}
 	return uint64(len(tcpConnections)), uint64(len(udpConnections))
 }

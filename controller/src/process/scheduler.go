@@ -257,7 +257,7 @@ func rebuildInstanceTasks(instanceName string) error {
 					errs = append(errs, fmt.Sprintf(msg.ParseScheduledTaskFailedFmt, name, err))
 					limit := cfg.GetHistoryLimit() * 1024
 					sp.Mu.Lock()
-					msg := buildTerminalMessage("\x1b[31m", fmt.Sprintf(msg.ParseScheduledTaskFailedFmt, name, err))
+					msg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.ParseScheduledTaskFailedFmt, name, err))
 					sp.appendAndBroadcastLocked(websocket.BinaryMessage, msg, limit)
 					sp.Mu.Unlock()
 					continue
@@ -287,7 +287,7 @@ func rebuildInstanceTasks(instanceName string) error {
 					errs = append(errs, fmt.Sprintf(msg.RegisterScheduledTaskFailedFmt, name, err))
 					limit := cfg.GetHistoryLimit() * 1024
 					sp.Mu.Lock()
-					msg := buildTerminalMessage("\x1b[31m", fmt.Sprintf(msg.RegisterScheduledTaskFailedFmt, name, err))
+					msg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.RegisterScheduledTaskFailedFmt, name, err))
 					sp.appendAndBroadcastLocked(websocket.BinaryMessage, msg, limit)
 					sp.Mu.Unlock()
 					continue
@@ -328,12 +328,12 @@ func executeTask(sp *InstanceProcess, taskName string, action string, command st
 	limit := cfg.GetHistoryLimit() * 1024
 	sp.Mu.Lock()
 	if sp.Updating {
-		terminalMsg := buildTerminalMessage("\x1b[33m", fmt.Sprintf(msg.ScheduledTaskSkippedUpdatingFmt, taskName))
+		terminalMsg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.ScheduledTaskSkippedUpdatingFmt, taskName))
 		sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
 		sp.Mu.Unlock()
 		return
 	}
-	terminalMsg := buildTerminalMessage("\x1b[34m", fmt.Sprintf(msg.ScheduledTaskTriggeredFmt, taskName, action))
+	terminalMsg := BuildNormalTerminalSystemMessage(fmt.Sprintf(msg.ScheduledTaskTriggeredFmt, taskName, action))
 	sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
 	sp.Mu.Unlock()
 
@@ -341,7 +341,7 @@ func executeTask(sp *InstanceProcess, taskName string, action string, command st
 	case "start":
 		if err := sp.Start(); err != nil {
 			sp.Mu.Lock()
-			terminalMsg := buildTerminalMessage("\x1b[31m", fmt.Sprintf(msg.ScheduledTaskStartFailedFmt, taskName, err))
+			terminalMsg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.ScheduledTaskStartFailedFmt, taskName, err))
 			sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
 			sp.Mu.Unlock()
 		}
@@ -356,14 +356,14 @@ func executeTask(sp *InstanceProcess, taskName string, action string, command st
 	case "command":
 		if err := sp.SendCommand(command); err != nil {
 			sp.Mu.Lock()
-			terminalMsg := buildTerminalMessage("\x1b[31m", fmt.Sprintf(msg.ScheduledTaskSendCommandFailedFmt, taskName, err))
+			terminalMsg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.ScheduledTaskSendCommandFailedFmt, taskName, err))
 			sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
 			sp.Mu.Unlock()
 		}
 	default:
 		log.Printf(msg.UnknownScheduledTaskActionLogFmt, instanceName, taskName, action)
 		sp.Mu.Lock()
-		terminalMsg := buildTerminalMessage("\x1b[31m", fmt.Sprintf(msg.ScheduledTaskActionInvalidFmt, taskName, action))
+		terminalMsg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.ScheduledTaskActionInvalidFmt, taskName, action))
 		sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
 		sp.Mu.Unlock()
 	}
@@ -373,7 +373,6 @@ func writeStrictRestartTaskResult(sp *InstanceProcess, taskName string, result R
 	if result.IsAccepted() {
 		return
 	}
-	colorCode := "\x1b[33m"
 	text := ""
 	switch result {
 	case RestartRequestNoopStarting:
@@ -383,14 +382,12 @@ func writeStrictRestartTaskResult(sp *InstanceProcess, taskName string, result R
 	case RestartRequestSkippedStopped:
 		text = fmt.Sprintf(msg.ScheduledTaskStrictRestartSkippedStoppedFmt, taskName)
 	case RestartRequestRejectedDeleting:
-		colorCode = "\x1b[31m"
 		text = fmt.Sprintf(msg.ScheduledTaskStrictRestartRejectedDeletingFmt, taskName)
 	default:
-		colorCode = "\x1b[31m"
 		text = fmt.Sprintf(msg.ScheduledTaskActionInvalidFmt, taskName, "restart")
 	}
 	sp.Mu.Lock()
-	terminalMsg := buildTerminalMessage(colorCode, text)
+	terminalMsg := BuildWarningTerminalSystemMessage(text)
 	sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
 	sp.Mu.Unlock()
 }
@@ -404,7 +401,7 @@ func writeRestartTaskResult(sp *InstanceProcess, taskName string, result Restart
 		text = fmt.Sprintf(msg.ScheduledTaskRestartRejectedDeletingFmt, taskName)
 	}
 	sp.Mu.Lock()
-	terminalMsg := buildTerminalMessage("\x1b[31m", text)
+	terminalMsg := BuildWarningTerminalSystemMessage(text)
 	sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
 	sp.Mu.Unlock()
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	backend "IpacPanel/controller/src"
+	"IpacPanel/controller/src/msg"
 	"IpacPanel/daemon/version"
 	"bytes"
 	"embed"
@@ -37,20 +38,20 @@ func PrintVersion() {
 	enc := yaml.NewEncoder(&out)
 	enc.SetIndent(2)
 	if err := enc.Encode(map[string]versionInfo{"version": info}); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to marshal version: %v\n", err)
+		fmt.Fprintf(os.Stderr, msg.ControllerVersionMarshalFailedFmt, err)
 		os.Exit(1)
 	}
 	if err := enc.Close(); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to close version encoder: %v\n", err)
+		fmt.Fprintf(os.Stderr, msg.ControllerVersionEncoderCloseFailedFmt, err)
 		os.Exit(1)
 	}
 	fmt.Print(out.String())
 }
 
 func main() {
-	versionFlag := flag.Bool("version", false, "print version and exit")
-	daemonStdio := flag.Bool("daemon-stdio", false, "use stdin/stdout daemon IPC")
-	daemonFirstStart := flag.Bool("daemon-first-start", false, "whether this controller is the first daemon-managed start")
+	versionFlag := flag.Bool("version", false, msg.ControllerVersionFlagHelp)
+	daemonStdio := flag.Bool("daemon-stdio", false, msg.ControllerDaemonStdioFlagHelp)
+	daemonFirstStart := flag.Bool("daemon-first-start", false, msg.ControllerDaemonFirstStartFlagHelp)
 	flag.Parse()
 
 	if *versionFlag {
@@ -65,7 +66,7 @@ func main() {
 	}
 
 	if !*daemonStdio {
-		fmt.Fprintln(os.Stderr, "controller must be started by daemon")
+		fmt.Fprintln(os.Stderr, msg.ControllerMustStartByDaemon)
 		os.Exit(2)
 	}
 

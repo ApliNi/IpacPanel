@@ -313,27 +313,35 @@ const markAccessLinkCopied = (instanceName, linkName) => {
 	const timer = setTimeout(() => {
 		copiedAccessLinks.delete(key);
 		const card = findInstanceCard(instanceName);
-		const link = card?.querySelector(`.instance-access-link[data-link-name="${escapeAttrSelectorValue(linkName)}"]`);
-		link?.classList.remove('is-copied');
+		if (!card) return;
+		const link = card.querySelector(`.instance-access-link[data-link-name="${escapeAttrSelectorValue(linkName)}"]`);
+		if (!link) return;
+		link.classList.remove('is-copied');
 	}, ACCESS_LINK_SUCCESS_MS);
 	copiedAccessLinks.set(key, timer);
 	const card = findInstanceCard(instanceName);
-	const link = card?.querySelector(`.instance-access-link[data-link-name="${escapeAttrSelectorValue(linkName)}"]`);
-	link?.classList.add('is-copied');
+	if (!card) return;
+	const link = card.querySelector(`.instance-access-link[data-link-name="${escapeAttrSelectorValue(linkName)}"]`);
+	if (!link) return;
+	link.classList.add('is-copied');
 };
 
 const handleInstanceAccessLinkClick = async (link) => {
-	if (link?.dataset?.linkAction === 'open') {
+	if (!link) return;
+	if (link.dataset.linkAction === 'open') {
+		const card = link.closest('.instance-item');
+		if (!card) return;
 		markAccessLinkCopied(
-			String(link.closest('.instance-item')?.dataset?.name || '').trim(),
+			String(card.dataset.name || '').trim(),
 			String(link.dataset.linkName || '').trim(),
 		);
 		return;
 	}
-	const card = link?.closest('.instance-item');
-	const instanceName = String(card?.dataset?.name || '').trim();
-	const linkName = String(link?.dataset?.linkName || '').trim();
-	const linkURL = String(link?.dataset?.linkUrl || '').trim();
+	const card = link.closest('.instance-item');
+	if (!card) return;
+	const instanceName = String(card.dataset.name || '').trim();
+	const linkName = String(link.dataset.linkName || '').trim();
+	const linkURL = String(link.dataset.linkUrl || '').trim();
 	if (!instanceName || !linkName || !linkURL) {
 		return;
 	}
@@ -659,7 +667,7 @@ export const bindInstanceListEvents = ({ onCreateInstance, onOpenInstance, onApp
 		const accessLink = event.target.closest('.instance-access-link');
 		if (accessLink) {
 			event.stopPropagation();
-			if (accessLink.dataset?.linkAction !== 'open') {
+			if (accessLink.dataset.linkAction !== 'open') {
 				event.preventDefault();
 			}
 			void handleInstanceAccessLinkClick(accessLink);

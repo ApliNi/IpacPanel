@@ -1,4 +1,4 @@
-﻿package api
+package api
 
 import (
 	"IpacPanel/controller/src/msg"
@@ -21,17 +21,6 @@ type groupUpdateRequest struct {
 }
 
 func HandleApiGroupUpdate(w http.ResponseWriter, r *http.Request) {
-	_, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:      true,
-		Methods:          []string{http.MethodPost},
-		CSRFFromRequest:  true,
-		RequireAdmin:     true,
-		ForbiddenMessage: msg.PermissionDenied,
-	})
-	if !ok {
-		return
-	}
-
 	var req groupUpdateRequest
 	if !web.DecodeJSONBody(w, r, &req) {
 		return
@@ -44,7 +33,7 @@ func HandleApiGroupUpdate(w http.ResponseWriter, r *http.Request) {
 	to := cfg.NormalizeGroupNameForStorage(toRaw)
 
 	if from == "" && !isFromUngrouped {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.FromGroupMissing, nil)
+		web.WriteAPIError(w, http.StatusBadRequest, msg.FromGroupNameInvalid, nil)
 		return
 	}
 	if !isFromUngrouped {
@@ -63,16 +52,16 @@ func HandleApiGroupUpdate(w http.ResponseWriter, r *http.Request) {
 	if err := cfg.ValidateGroupName(to); err != nil {
 		switch err.Error() {
 		case msg.GroupNameTooLong:
-			web.WriteAPIError(w, http.StatusBadRequest, "分组名称最多包含 32 个字符", nil)
+			web.WriteAPIError(w, http.StatusBadRequest, msg.GroupNameTooLong, nil)
 		case msg.GroupNameInvalidChars:
-			web.WriteAPIError(w, http.StatusBadRequest, "分组名称包含非法字符", nil)
+			web.WriteAPIError(w, http.StatusBadRequest, msg.GroupNameInvalidChars, nil)
 		default:
 			web.WriteAPIError(w, http.StatusBadRequest, msg.GroupNameInvalid, nil)
 		}
 		return
 	}
 	if to == "" && !isUngroupedLabel(toRaw) {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.GroupNameRequired, nil)
+		web.WriteAPIError(w, http.StatusBadRequest, msg.GroupNameInvalid, nil)
 		return
 	}
 	// `from` can be UNGROUPED (stored as empty string).

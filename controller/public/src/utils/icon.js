@@ -122,7 +122,7 @@ const dirNameMap = {};
 for (const iconName in icons) {
 	const iconConfig = icons[iconName];
 	if (!iconConfig.icon) {
-		throw new Error(`Icon "${iconName}" is missing svg source`);
+		throw new Error(`图标 "${iconName}" 缺少 svg`);
 	}
 	for (const ext of iconConfig.type || []) {
 		fileTypeMap[String(ext).toLowerCase()] = iconName;
@@ -160,9 +160,6 @@ const iconParser = new DOMParser();
 
 export const cloneIconNode = (name) => {
 	const iconConfig = icons[name] || icons.file;
-	if (!iconConfig) {
-		throw new Error(`Icon "${name}" is not registered and fallback icon is missing`);
-	}
 	const source = iconConfig.icon;
 	const doc = iconParser.parseFromString(source, 'image/svg+xml');
 	const node = doc.documentElement;

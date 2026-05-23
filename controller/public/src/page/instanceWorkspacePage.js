@@ -499,7 +499,7 @@ const openInstanceModal = () => {
 
 const focusInstanceNameInput = () => {
 	requestAnimationFrame(() => {
-		dom.instanceModalName?.focus();
+		dom.instanceModalName.focus();
 	});
 };
 
@@ -516,7 +516,7 @@ const setInstanceModalLoading = (loading) => {
 };
 
 const clearInstanceModalForLoad = () => {
-	dom.instanceModalForm?.reset?.();
+	dom.instanceModalForm.reset();
 	if (dom.instanceModalName) dom.instanceModalName.value = '';
 	if (dom.instanceModalGroupSelect) dom.instanceModalGroupSelect.replaceChildren();
 	if (dom.instanceModalGroupNew) {
@@ -551,7 +551,7 @@ const bindGroupSelectEvents = () => {
 		const v = dom.instanceModalGroupSelect.value;
 		toggleNewGroupInput(dom.instanceModalGroupNew, v === NEW_GROUP_VALUE);
 		if (v === NEW_GROUP_VALUE) {
-			dom.instanceModalGroupNew?.focus();
+			dom.instanceModalGroupNew.focus();
 		}
 	};
 
@@ -648,12 +648,12 @@ export const setInstanceEditorValue = (type, value) => {
 
 export const openTerminalPage = async (svc, historySize, options = {}) => {
 	if (!svc?.name) {
-		throw new Error('missing instance name');
+		throw new Error('缺少实例名称');
 	}
 	const sessionId = Number(options.sessionId) || state.instanceSessionSeq;
 	const detailResult = await fetchInstance(svc.name);
 	if (!detailResult.ok || !detailResult.data) {
-		throw new Error(detailResult.error || `load instance failed: ${svc.name}`);
+		throw new Error(detailResult.error || `加载实例失败: ${svc.name}`);
 	}
 	const detail = detailResult.data;
 	if (sessionId !== state.instanceSessionSeq) {
@@ -842,14 +842,14 @@ const handleInstanceModalSubmit = async (event) => {
 			await showAlert('没有可删除的实例', { title: 'NOTICE' });
 			return;
 		}
-		const typed = String(dom.instanceDeleteName?.value || '').trim();
+		const typed = String(dom.instanceDeleteName.value || '').trim();
 		if (typed !== editingName) {
 			await showAlert('实例名称不匹配', { title: 'NOTICE' });
-			dom.instanceDeleteName?.focus();
+			dom.instanceDeleteName.focus();
 			return;
 		}
 		const deleteResult = await deleteInstance(editingName, {
-			deleteFiles: dom.instanceDeleteFiles?.checked === true,
+			deleteFiles: dom.instanceDeleteFiles.checked === true,
 		});
 		if (!deleteResult.ok && deleteResult.confirmRequired) {
 			const ok = await showConfirm('还有其他未运行实例也在使用这个目录, 是否继续删除?', {
@@ -861,7 +861,7 @@ const handleInstanceModalSubmit = async (event) => {
 				return;
 			}
 			const confirmedDeleteResult = await deleteInstance(editingName, {
-				deleteFiles: dom.instanceDeleteFiles?.checked === true,
+				deleteFiles: dom.instanceDeleteFiles.checked === true,
 				confirmSharedDelete: true,
 			});
 			if (!confirmedDeleteResult.ok) {
@@ -895,14 +895,14 @@ const handleInstanceModalSubmit = async (event) => {
 	const restartIntervalResult = controller.parseOptionalIntegerInRange(dom.instanceModalRestartInterval, '重启延迟', 0, 86400000);
 	if (restartIntervalResult.error) {
 		await showAlert(restartIntervalResult.error, { title: 'INPUT' });
-		restartIntervalResult.input?.focus();
+		restartIntervalResult.input.focus();
 		return;
 	}
 
 	const startPriorityResult = controller.parseOptionalIntegerInRange(dom.instanceModalStartPriority, '启动优先级', -99999999, 99999999);
 	if (startPriorityResult.error) {
 		await showAlert(startPriorityResult.error, { title: 'INPUT' });
-		startPriorityResult.input?.focus();
+		startPriorityResult.input.focus();
 		return;
 	}
 	const payload = {
@@ -911,9 +911,9 @@ const handleInstanceModalSubmit = async (event) => {
 		path,
 		command,
 		access_links: '',
-		terminal: normalizeTerminalMode(dom.instanceModalTerminal?.value),
-		input_encoding: normalizeEncodingValue(dom.instanceModalInputEncoding?.value),
-		output_encoding: normalizeEncodingValue(dom.instanceModalOutputEncoding?.value),
+		terminal: normalizeTerminalMode(dom.instanceModalTerminal.value),
+		input_encoding: normalizeEncodingValue(dom.instanceModalInputEncoding.value),
+		output_encoding: normalizeEncodingValue(dom.instanceModalOutputEncoding.value),
 		stop_command: stopCommand,
 		cleanup_command: cleanupCommand,
 		auto_start: dom.instanceModalAutostart.checked,
@@ -925,11 +925,11 @@ const handleInstanceModalSubmit = async (event) => {
 	if (dom.instanceModalGroupSelect) {
 		const groupSelect = String(dom.instanceModalGroupSelect.value || '').trim();
 		if (groupSelect === NEW_GROUP_VALUE) {
-			const newGroup = InputValidation.truncateText(dom.instanceModalGroupNew?.value || '', InputValidation.limits.groupName).trim();
+			const newGroup = InputValidation.truncateText(dom.instanceModalGroupNew.value || '', InputValidation.limits.groupName).trim();
 			if (!newGroup) {
 				await showAlert('分组名称不能为空', { title: 'INPUT' });
 				toggleNewGroupInput(dom.instanceModalGroupNew, true);
-				dom.instanceModalGroupNew?.focus();
+				dom.instanceModalGroupNew.focus();
 				return;
 			}
 			payload.group = newGroup;
@@ -956,11 +956,11 @@ const handleInstanceModalSubmit = async (event) => {
 		switchInstanceModalPage('tasks');
 		return;
 	}
-	const accessLinksResult = InputValidation.instance.parseAccessLinksText(dom.instanceModalAccessLinks?.value || '');
+	const accessLinksResult = InputValidation.instance.parseAccessLinksText(dom.instanceModalAccessLinks.value || '');
 	if (accessLinksResult.error) {
 		await showAlert(accessLinksResult.error, { title: 'INPUT' });
 		switchInstanceModalPage('advanced');
-		dom.instanceModalAccessLinks?.focus();
+		dom.instanceModalAccessLinks.focus();
 		return;
 	}
 	payload.access_links = accessLinksResult.accessLinks;
@@ -1001,7 +1001,7 @@ const handleInstanceModalSubmit = async (event) => {
 		}
 		patchCurrentTerminalInstance(updated);
 		if (pathChanged) {
-			await fileManager?.loadFiles('', '', {
+			await fileManager?.loadFiles('', 1, {
 				instanceName: updated.name,
 				instanceUpdateStagingDirName: pageState.currentInstanceUpdateStagingDirName,
 			});
@@ -1064,11 +1064,11 @@ const hidePage = () => {
 };
 
 const scrollTerminalPageToTop = () => {
-	dom.section?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+	dom.section.scrollIntoView({ behavior: 'smooth', block: 'start' });
 };
 
 const scrollTerminalPageToFiles = () => {
-	document.querySelector('#terminalSection .file-panel-card')?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+	document.querySelector('#terminalSection .file-panel-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
 };
 
 const bindTerminalEvents = () => {

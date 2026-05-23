@@ -25,11 +25,11 @@ func BeginSSE(w http.ResponseWriter) (*SSEWriter, bool) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	sse, ok := NewSSEWriter(w)
 	if !ok {
-		WriteAPIError(w, http.StatusInternalServerError, msg.StreamingUnsupported, nil)
+		WriteAPIError(w, http.StatusInternalServerError, msg.StreamingUnsupported, fmt.Errorf("response writer does not implement http.Flusher"))
 		return nil, false
 	}
 	if err := sse.SendComment(); err != nil {
-		MarkAPIError(w, http.StatusInternalServerError, "SSE 写入失败", err)
+		MarkAPIError(w, http.StatusInternalServerError, msg.SSEWriteFailed, err)
 		return nil, false
 	}
 	return sse, true

@@ -168,7 +168,7 @@ body.append(renameForm, deleteForm);
 formWrap.append(tabs, body);
 card.append(header, formWrap);
 modal.appendChild(card);
-mainModalOverlay?.appendChild(modal);
+mainModalOverlay.appendChild(modal);
 
 const dom = {
     modal: document.getElementById('instanceGroupModal'),
@@ -232,10 +232,10 @@ const setDeleteStatus = (text, options = {}) => {
 const applyPage = (page) => {
     const p = page === 'delete' ? 'delete' : 'rename';
     modalState.currentPage = p;
-    dom.tabRename?.classList.toggle('active', p === 'rename');
-    dom.tabDelete?.classList.toggle('active', p === 'delete');
-    dom.pageRename?.classList.toggle('active', p === 'rename');
-    dom.pageDelete?.classList.toggle('active', p === 'delete');
+    dom.tabRename.classList.toggle('active', p === 'rename');
+    dom.tabDelete.classList.toggle('active', p === 'delete');
+    dom.pageRename.classList.toggle('active', p === 'rename');
+    dom.pageDelete.classList.toggle('active', p === 'delete');
 };
 
 const close = () => {
@@ -269,15 +269,15 @@ const openCreateInstanceForGroup = async () => {
 };
 
 const submitRename = async () => {
-	const newName = String(dom.nameInput?.value || '').trim();
+	const newName = String(dom.nameInput.value || '').trim();
 	if (!newName) {
 		await showAlert('组名是必须项', { title: 'INPUT' });
-		dom.nameInput?.focus();
+		dom.nameInput.focus();
 		return;
 	}
 	if (newName.length > 32) {
 		await showAlert('组名不得超过32个字符', { title: 'INPUT' });
-		dom.nameInput?.focus();
+		dom.nameInput.focus();
 		return;
 	}
 	if (newName === modalState.groupName) {
@@ -293,7 +293,7 @@ const submitRename = async () => {
 			tone: 'warning',
 		});
 		if (!ok) {
-			dom.nameInput?.focus();
+			dom.nameInput.focus();
 			return;
 		}
 	}
@@ -366,8 +366,8 @@ const open = ({ groupName, createGroupName, instances, existingGroups }) => {
     dom.modal.classList.remove('closing');
     requestAnimationFrame(() => {
         dom.modal.classList.add('visible');
-        dom.nameInput?.focus?.();
-        if (dom.nameInput?.setSelectionRange) {
+        dom.nameInput.focus();
+        if (dom.nameInput.setSelectionRange) {
             const len = dom.nameInput.value.length;
             dom.nameInput.setSelectionRange(len, len);
         }
@@ -378,18 +378,18 @@ const bindEvents = () => {
     if (modalState.isBound) return;
     modalState.isBound = true;
 
-    dom.close?.addEventListener('click', () => close());
-    dom.cancel?.addEventListener('click', () => close());
-    dom.deleteCancel?.addEventListener('click', () => close());
-    dom.createInstance?.addEventListener('click', () => void openCreateInstanceForGroup());
-    dom.tabRename?.addEventListener('click', () => applyPage('rename'));
-    dom.tabDelete?.addEventListener('click', () => applyPage('delete'));
+    dom.close.addEventListener('click', () => close());
+    dom.cancel.addEventListener('click', () => close());
+    dom.deleteCancel.addEventListener('click', () => close());
+    dom.createInstance.addEventListener('click', () => void openCreateInstanceForGroup());
+    dom.tabRename.addEventListener('click', () => applyPage('rename'));
+    dom.tabDelete.addEventListener('click', () => applyPage('delete'));
 
-    dom.pageRename?.addEventListener('submit', async (event) => {
+    dom.pageRename.addEventListener('submit', async (event) => {
         event.preventDefault();
         await withActionsDisabled(dom.renameActions, submitRename);
     });
-    dom.pageDelete?.addEventListener('submit', async (event) => {
+    dom.pageDelete.addEventListener('submit', async (event) => {
         event.preventDefault();
         await withActionsDisabled(dom.deleteActions, submitDelete);
     });

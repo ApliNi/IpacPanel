@@ -3,6 +3,7 @@ package api
 import (
 	"IpacPanel/controller/src/atomic/file"
 	"IpacPanel/controller/src/msg"
+	"IpacPanel/controller/src/web/authz"
 
 	web "IpacPanel/controller/src/web"
 
@@ -64,6 +65,9 @@ const (
 	maxUploadChunkSize     = 10 * 1024 * 1024
 	maxUploadChunkCount    = 4096
 	uploadChunkLockStripes = 64
+	uploadIDHeaderName     = "X-Ipac-Upload-Id"
+	uploadChunkHeaderName  = "X-Ipac-Chunk-Index"
+	uploadInstanceHeader   = "X-Ipac-Instance"
 )
 
 type uploadSessionStatus string
@@ -89,6 +93,7 @@ type uploadChunkPlan struct {
 }
 
 type fileUploadInitRequest struct {
+	Instance   string `json:"instance"`
 	Path       string `json:"path"`
 	Name       string `json:"name"`
 	Size       int64  `json:"size"`
@@ -102,10 +107,12 @@ type fileUploadInitResponse struct {
 }
 
 type fileUploadCompleteRequest struct {
+	Instance string `json:"instance"`
 	UploadID string `json:"upload_id"`
 }
 
 type fileUploadAbortRequest struct {
+	Instance string `json:"instance"`
 	UploadID string `json:"upload_id"`
 }
 
@@ -697,7 +704,7 @@ func writeUploadCompleteSuccess(w http.ResponseWriter, sp *process.InstanceProce
 	if w == nil || sp == nil || session == nil {
 		return
 	}
-	resp, err := buildFileListResponse(sp, session.DirPath, "", "")
+	resp, err := buildFileListResponse(sp, session.DirPath, 1, "")
 	if err == nil {
 		web.WriteOK(w, resp)
 		return
@@ -801,19 +808,24 @@ func planSingleFileUploadChunkWrite(session *fileUploadSession, index int) (uplo
 }
 
 func HandleApiFileUploadInit(w http.ResponseWriter, r *http.Request) {
-	authedUser, sp, name, ok := web.RequireAuthedAccessibleInstanceProcess(w, r, http.MethodPost)
-	if !ok {
-		return
-	}
-
 	var req fileUploadInitRequest
 	if !web.DecodeJSONBody(w, r, &req) {
+		return
+	}
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
+	if !ok {
+		web.WriteUnauthorized(w)
+		return
+	}
+	name := strings.TrimSpace(req.Instance)
+	sp, ok := web.RequireInstanceProcessByName(w, authedUser, name)
+	if !ok {
 		return
 	}
 
 	fileName, err := ensureFileName(req.Name)
 	if err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), nil)
+		writeFileNameValidationError(w, err)
 		return
 	}
 
@@ -940,20 +952,25 @@ func HandleApiFileUploadInit(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleApiFileUploadChunk(w http.ResponseWriter, r *http.Request) {
-	authedUser, name, ok := web.RequireAuthedAccessibleInstanceName(w, r, http.MethodPost)
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
+	if !ok {
+		web.WriteUnauthorized(w)
+		return
+	}
+	name, ok := web.RequireAccessibleInstanceNameByName(w, authedUser, r.Header.Get(uploadInstanceHeader))
 	if !ok {
 		return
 	}
 
-	uploadID := strings.TrimSpace(r.URL.Query().Get("upload_id"))
+	uploadID := strings.TrimSpace(r.Header.Get(uploadIDHeaderName))
 	if uploadID == "" {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.UploadIDRequired, nil)
 		return
 	}
 
-	index, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("index")))
+	index, err := strconv.Atoi(strings.TrimSpace(r.Header.Get(uploadChunkHeaderName)))
 	if err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, "分片索引无效", err)
+		web.WriteAPIError(w, http.StatusBadRequest, msg.InvalidChunkIndex, err)
 		return
 	}
 
@@ -990,7 +1007,7 @@ func HandleApiFileUploadChunk(w http.ResponseWriter, r *http.Request) {
 
 	chunkLock := getUploadChunkLock(session, index)
 	if chunkLock == nil {
-		web.WriteAPIError(w, http.StatusInternalServerError, msg.UploadSessionInvalid, nil)
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.UploadSessionInvalid, errors.New("upload chunk lock is nil"))
 		return
 	}
 	chunkLock.Lock()
@@ -1040,13 +1057,18 @@ func HandleApiFileUploadChunk(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleApiFileUploadComplete(w http.ResponseWriter, r *http.Request) {
-	authedUser, sp, name, ok := web.RequireAuthedAccessibleInstanceProcess(w, r, http.MethodPost)
-	if !ok {
-		return
-	}
-
 	var req fileUploadCompleteRequest
 	if !web.DecodeJSONBody(w, r, &req) {
+		return
+	}
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
+	if !ok {
+		web.WriteUnauthorized(w)
+		return
+	}
+	name := strings.TrimSpace(req.Instance)
+	sp, ok := web.RequireInstanceProcessByName(w, authedUser, name)
+	if !ok {
 		return
 	}
 	req.UploadID = strings.TrimSpace(req.UploadID)
@@ -1254,13 +1276,17 @@ func HandleApiFileUploadComplete(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleApiFileUploadAbort(w http.ResponseWriter, r *http.Request) {
-	authedUser, name, ok := web.RequireAuthedAccessibleInstanceName(w, r, http.MethodPost)
-	if !ok {
-		return
-	}
-
 	var req fileUploadAbortRequest
 	if !web.DecodeJSONBody(w, r, &req) {
+		return
+	}
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
+	if !ok {
+		web.WriteUnauthorized(w)
+		return
+	}
+	name, ok := web.RequireAccessibleInstanceNameByName(w, authedUser, req.Instance)
+	if !ok {
 		return
 	}
 	req.UploadID = strings.TrimSpace(req.UploadID)

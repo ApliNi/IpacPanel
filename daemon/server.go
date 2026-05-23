@@ -17,14 +17,16 @@ const (
 )
 
 type IPCServer struct {
-	Conn      *IPCConn
-	Instances *InstanceManager
-	outputCh  chan IPCResponse
-	done      chan struct{}
-	closeOnce sync.Once
-	serveDone chan struct{}
-	readyCh   chan struct{}
-	connMu    sync.Mutex
+	Conn            *IPCConn
+	Instances       *InstanceManager
+	outputCh        chan IPCResponse
+	done            chan struct{}
+	closeOnce       sync.Once
+	serveDone       chan struct{}
+	readyCh         chan struct{}
+	connMu          sync.Mutex
+	inputErrMu      sync.Mutex
+	lastInputErrLog time.Time
 }
 
 func NewIPCServer(instances *InstanceManager) (*IPCServer, error) {
@@ -177,7 +179,7 @@ func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, c
 		return true
 	}
 	queueOutput := func(resp IPCResponse) {
-		if resp.Type != ipcFrameTypeInstanceOutput || resp.Instance == "" || len(resp.Body) == 0 {
+		if resp.Type != "o" || resp.Instance == "" || len(resp.Body) == 0 {
 			resp.Release()
 			return
 		}
@@ -229,7 +231,7 @@ func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, c
 				return
 			}
 		case resp := <-s.outputCh:
-			if resp.Type != ipcFrameTypeInstanceOutput {
+			if resp.Type != "o" {
 				if !flushPending(conn) {
 					resp.Release()
 					return
@@ -295,6 +297,8 @@ func (s *IPCServer) dispatch(req *IPCRequest) *IPCResponse {
 		return s.handleStopInstance(req)
 	case "kill_instance":
 		return s.handleKillInstance(req)
+	case ipcRequestInputStdin:
+		return s.handleInputStdin(req)
 	case "write_stdin":
 		return s.handleWriteStdin(req)
 	case "resize_terminal":
@@ -478,6 +482,34 @@ func (s *IPCServer) handleWriteStdin(req *IPCRequest) *IPCResponse {
 	}
 	resp := NewIPCResponse("ok", req.Instance, nil, "")
 	return &resp
+}
+
+func (s *IPCServer) handleInputStdin(req *IPCRequest) *IPCResponse {
+	if req.BodyLen == 0 {
+		return nil
+	}
+	ins, ok := s.Instances.Get(req.Instance)
+	if !ok {
+		s.logInputStdinError(req.Instance, "instance not found")
+		return nil
+	}
+	if err := ins.WriteStdin(req.Data); err != nil {
+		s.logInputStdinError(req.Instance, err.Error())
+		return nil
+	}
+	return nil
+}
+
+func (s *IPCServer) logInputStdinError(instance string, errMsg string) {
+	const minInterval = time.Second
+	now := time.Now()
+	s.inputErrMu.Lock()
+	defer s.inputErrMu.Unlock()
+	if !s.lastInputErrLog.IsZero() && now.Sub(s.lastInputErrLog) < minInterval {
+		return
+	}
+	s.lastInputErrLog = now
+	log.Printf("write instance %s stdin failed: %s", instance, errMsg)
 }
 
 func (s *IPCServer) handleResizeTerminal(req *IPCRequest) *IPCResponse {

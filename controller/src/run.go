@@ -22,8 +22,6 @@ import (
 	process "IpacPanel/controller/src/process"
 	web "IpacPanel/controller/src/web"
 	api "IpacPanel/controller/src/web/api"
-
-	"github.com/gorilla/websocket"
 )
 
 var versionedPublicPathPattern = regexp.MustCompile(`^/v\d+(?:\.\d+)*(?:/.*)?$`)
@@ -134,7 +132,7 @@ func loadWebTLSConfig(webConfig cfg.WebConfig) (*tls.Config, error) {
 	keyPath := cfg.ResolveWebCertificatePath(webConfig.PrivateKeyPath)
 	certificate, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
-		return nil, fmt.Errorf("加载 HTTPS 证书失败, public=%s, private=%s: %w", certPath, keyPath, err)
+		return nil, fmt.Errorf(msg.LoadHTTPSCertificateFailedFmt, certPath, keyPath, err)
 	}
 	return &tls.Config{
 		MinVersion:   tls.VersionTLS12,
@@ -162,7 +160,7 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 		return err
 	}
 	if !opts.DaemonStdio {
-		return fmt.Errorf("controller must be started with daemon stdio IPC")
+		return errors.New(msg.ControllerStdioIPCRequired)
 	}
 	if err := process.ConnectDaemonStdio(); err != nil {
 		return err
@@ -173,10 +171,10 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 		return err
 	}
 	if daemonProtocol != version.DaemonProtocol {
-		return fmt.Errorf("daemon protocol mismatch: controller=%d daemon=%d", version.DaemonProtocol, daemonProtocol)
+		return fmt.Errorf(msg.DaemonProtocolMismatchFmt, version.DaemonProtocol, daemonProtocol)
 	}
 	if err := process.SetDaemonDebug(cfg.GetDebug()); err != nil {
-		return fmt.Errorf("sync debug mode to daemon: %w", err)
+		return fmt.Errorf(msg.SyncDebugModeToDaemonFailedFmt, err)
 	}
 	runtimeStates, err := process.ListDaemonRuntime()
 	if err != nil {
@@ -219,68 +217,7 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 		return err
 	}
 
-	// Admin
-	mux.HandleFunc("/api/admin/get", api.HandleApiAdminGet)
-	mux.HandleFunc("/api/admin/create", api.HandleApiAdminCreate)
-	mux.HandleFunc("/api/admin/update", api.HandleApiAdminUpdate)
-	mux.HandleFunc("/api/admin/delete", api.HandleApiAdminDelete)
-
-	// Group
-	mux.HandleFunc("/api/group/update", api.HandleApiGroupUpdate)
-
-	// Settings
-	mux.HandleFunc("/api/settings/public", api.HandleApiSettingsPublic)
-	mux.HandleFunc("/api/settings/get", api.HandleApiSettingsGet)
-	mux.HandleFunc("/api/settings/update", api.HandleApiSettingsUpdate)
-	mux.HandleFunc("/api/settings/restart-controller", api.HandleApiSettingsRestartController)
-
-	// Dashboard
-	mux.HandleFunc("/api/dashboard/events", api.HandleApiDashboardEvents)
-	mux.HandleFunc("/api/dashboard/snapshot", api.HandleApiDashboardSnapshot)
-
-	// Auth
-	mux.HandleFunc("/api/auth/pow", api.HandleApiAuthPow)
-	mux.HandleFunc("/api/auth/login", api.HandleApiAuthLogin)
-	mux.HandleFunc("/api/auth/logout", api.HandleApiAuthLogout)
-	mux.HandleFunc("/api/auth/reset", api.HandleApiAuthReset)
-
-	// File
-	mux.HandleFunc("/api/file/list", api.HandleApiFileList)
-	mux.HandleFunc("/api/file/read", api.HandleApiFileRead)
-	mux.HandleFunc("/api/file/raw", api.HandleApiFileRaw)
-	mux.HandleFunc("/api/file/save", api.HandleApiFileSave)
-	mux.HandleFunc("/api/file/create/file", api.HandleApiFileCreateFile)
-	mux.HandleFunc("/api/file/create/dir", api.HandleApiFileCreateDir)
-	mux.HandleFunc("/api/file/rename", api.HandleApiFileRename)
-	mux.HandleFunc("/api/file/delete", api.HandleApiFileDelete)
-	mux.HandleFunc("/api/file/upload/init", api.HandleApiFileUploadInit)
-	mux.HandleFunc("/api/file/upload/chunk", api.HandleApiFileUploadChunk)
-	mux.HandleFunc("/api/file/upload/abort", api.HandleApiFileUploadAbort)
-	mux.HandleFunc("/api/file/upload/complete", api.HandleApiFileUploadComplete)
-	mux.HandleFunc("/api/file/batch", api.HandleApiFileBatch)
-	mux.HandleFunc("/api/file/extract", api.HandleApiFileExtract)
-
-	// Controller update
-	mux.HandleFunc("/api/controller/update/status", api.HandleApiControllerUpdateStatus)
-	mux.HandleFunc("/api/controller/update/upload/init", api.HandleApiControllerUpdateUploadInit)
-	mux.HandleFunc("/api/controller/update/upload/chunk", api.HandleApiControllerUpdateUploadChunk)
-	mux.HandleFunc("/api/controller/update/upload/abort", api.HandleApiControllerUpdateUploadAbort)
-	mux.HandleFunc("/api/controller/update/upload/complete", api.HandleApiControllerUpdateUploadComplete)
-	mux.HandleFunc("/api/controller/update/apply", api.HandleApiControllerUpdateApply)
-
-	// Instance
-	mux.HandleFunc("/api/instance/events", api.HandleApiInstanceEvents)
-	mux.HandleFunc("/api/instance/get", api.HandleApiInstanceGet)
-	mux.HandleFunc("/api/instance/create", api.HandleApiInstanceCreate)
-	mux.HandleFunc("/api/instance/update", api.HandleApiInstanceUpdate)
-	mux.HandleFunc("/api/instance/delete", api.HandleApiInstanceDelete)
-	mux.HandleFunc("/api/instance/control", api.HandleApiInstanceControl)
-	mux.HandleFunc("/api/instance/ws", api.HandleApiInstanceWs)
-
-	// User
-	mux.HandleFunc("/api/user/get", api.HandleApiUserGet)
-	mux.HandleFunc("/api/user/list", api.HandleApiUserList)
-	mux.HandleFunc("/api/user/update", api.HandleApiUserUpdate)
+	api.RegisterRoutes(mux)
 
 	// Public
 	mux.Handle("/", createPublicHandler(publicFS))
@@ -327,13 +264,13 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 	case <-time.After(200 * time.Millisecond):
 	}
 	if err := process.NotifyControllerReady(); err != nil {
-		return fmt.Errorf("notify daemon controller ready: %w", err)
+		return fmt.Errorf(msg.NotifyDaemonControllerReadyFailedFmt, err)
 	}
 
 	process.RestoreDaemonAutoRestarts(runtimeStates)
 
 	if !opts.AutoStartInstances {
-		log.Println("Auto-start skipped: controller restarted by daemon")
+		log.Println(msg.ControllerRestartedAutoStartSkipped)
 	} else {
 		log.Println(msg.AutoStartInstancesHeader)
 		for _, sp := range process.GetAutoStartProcesses() {
@@ -345,16 +282,15 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 			ins := sp.InstanceSnapshot()
 			priorityText := ""
 			if ins.StartPriority == nil {
-				priorityText = "Empty"
+				priorityText = msg.AutoStartPriorityEmpty
 			} else {
 				priorityText = strconv.Itoa(*ins.StartPriority)
 			}
-			log.Printf("  - PRY[%s]: %s", priorityText, ins.Name)
+			log.Printf(msg.AutoStartInstanceLogFmt, priorityText, ins.Name)
 			if err := sp.Start(); err != nil {
 				limit := cfg.GetHistoryLimit() * 1024
 				sp.Mu.Lock()
-				msg := []byte(fmt.Sprintf("\r\n\r\n\x1b[31m\x1b[1m[IpacPanel] %s\x1b[0m\r\n\r\n", err.Error()))
-				sp.AppendAndBroadcastLocked(websocket.BinaryMessage, msg, limit)
+				sp.AppendAndBroadcastWarningSystemMessageLocked(fmt.Sprintf("%s: %s", msg.StartInstanceFailed, err.Error()), limit)
 				sp.Mu.Unlock()
 			}
 			interval := cfg.GetAutoStartInterval()

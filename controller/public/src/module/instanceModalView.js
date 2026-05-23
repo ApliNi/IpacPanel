@@ -8,10 +8,10 @@ export const applyInstanceModalPageState = ({ dom, pageState, modalState, page }
 	const isDelete = page === 'delete';
 	const editingName = modalState?.editingInstanceName || '';
 
-	dom.instanceModalPageBasic?.classList.toggle('active', isBasic);
-	dom.instanceModalPageAdvanced?.classList.toggle('active', isAdvanced);
-	dom.instanceModalPageTasks?.classList.toggle('active', isTasks);
-	dom.instanceModalPageDelete?.classList.toggle('active', isDelete);
+	dom.instanceModalPageBasic.classList.toggle('active', isBasic);
+	dom.instanceModalPageAdvanced.classList.toggle('active', isAdvanced);
+	dom.instanceModalPageTasks.classList.toggle('active', isTasks);
+	dom.instanceModalPageDelete.classList.toggle('active', isDelete);
 
 	if (dom.instanceDeleteName) {
 		dom.instanceDeleteName.disabled = !isDelete;
@@ -37,7 +37,7 @@ export const applyInstanceModalPageState = ({ dom, pageState, modalState, page }
 };
 
 export const bindInstanceModalViewEvents = ({ dom, onSwitchPage, onOpenHelp }) => {
-	if (dom.instanceModalTabs?.length) {
+	if (dom.instanceModalTabs.length) {
 		dom.instanceModalTabs.forEach((btn) => {
 			btn.onclick = () => onSwitchPage?.(btn.dataset.page);
 		});

@@ -17,14 +17,23 @@ export const controlInstance = async (name, action) => {
 			headers: {
 				'Content-Type': 'application/json'
 			},
-			body: JSON.stringify({ name, action })
+			body: JSON.stringify({ instance: name, action })
 		});
 		const payload = await parseJsonPayload(res);
 		if (payload && payload.ok === false) {
-			throw new Error(payload.message || `instance ${action} failed`);
+			throw new Error(payload.message || `实例 ${action} 失败`);
 		}
 		return payload?.data || { ok: true };
 	}, { logMessage: `[API] 对实例 ${name} 执行 ${action} 操作失败:` });
+};
+
+const toInstanceConfigPayload = (payload = {}) => {
+	const config = Object.assign({}, payload || {});
+	if (Object.prototype.hasOwnProperty.call(config, 'name')) {
+		config.instance = config.name;
+		delete config.name;
+	}
+	return config;
 };
 
 export const createInstance = async (payload) => {
@@ -34,7 +43,7 @@ export const createInstance = async (payload) => {
 			headers: {
 				'Content-Type': 'application/json'
 			},
-			body: JSON.stringify(payload)
+			body: JSON.stringify(toInstanceConfigPayload(payload))
 		});
 		return await parseJsonData(res);
 	}, {
@@ -44,23 +53,29 @@ export const createInstance = async (payload) => {
 
 export const fetchInstance = async (name) => {
 	return await withApiResult(async () => {
-		const instanceName = String(name || '').trim();
+		const instanceName = String(name || '');
 		if (!instanceName) {
-			throw new Error('missing instance name');
+			throw new Error('缺少实例名称');
 		}
-		const res = await authedFetch(`/api/instance/get?name=${encodeURIComponent(instanceName)}`);
+		const res = await authedFetch('/api/instance/get', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json'
+			},
+			body: JSON.stringify({ instance: instanceName })
+		});
 		return await parseJsonData(res);
 	}, { logMessage: `[API] 获取实例 ${name} 详情失败:` });
 };
 
 export const updateInstance = async (name, payload) => {
 	return await withApiResult(async () => {
-		const res = await authedFetch(`/api/instance/update?name=${encodeURIComponent(name)}`, {
+		const res = await authedFetch('/api/instance/update', {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json'
 			},
-			body: JSON.stringify(payload)
+			body: JSON.stringify({ instance: name, config: toInstanceConfigPayload(payload) })
 		});
 		return await parseJsonData(res);
 	}, {
@@ -76,7 +91,7 @@ export const deleteInstance = async (name, options = {}) => {
 				'Content-Type': 'application/json'
 			},
 			body: JSON.stringify({
-				name,
+				instance: name,
 				delete_files: options.deleteFiles === true,
 				confirm_shared_delete: options.confirmSharedDelete === true,
 			}),
@@ -117,15 +132,48 @@ export const updateGroup = async (from, to) => {
 	});
 };
 
+const encodeTerminalProtocolPayload = (payload) => {
+	try {
+		const json = JSON.stringify(payload);
+		if (typeof json !== 'string') {
+			throw new Error('终端连接参数序列化失败');
+		}
+
+		const bytes = new TextEncoder().encode(json);
+		let binary = '';
+		for (const byte of bytes) {
+			binary += String.fromCharCode(byte);
+		}
+
+		return btoa(binary)
+			.replace(/\+/g, '-')
+			.replace(/\//g, '_')
+			.replace(/=+$/g, '');
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(`终端连接参数编码失败: ${message}`);
+	}
+};
+
+const createTerminalProtocol = (name) => {
+	const instance = String(name || '');
+	if (!instance) {
+		throw new Error('缺少实例名称');
+	}
+
+	const csrf = getCSRFToken();
+	if (!csrf) {
+		throw new Error('缺少 CSRF Token');
+	}
+
+	return encodeTerminalProtocolPayload({ instance, csrf });
+};
+
 export const createWebSocket = (name, { onOpen, onMessage, onClose }) => {
 	const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-	const query = new URLSearchParams({ name });
-	const csrfToken = getCSRFToken();
-	if (csrfToken) {
-		query.set('csrf', csrfToken);
-	}
-	const wsUrl = `${protocol}//${window.location.host}/api/instance/ws?${query.toString()}`;
-	const socket = new WebSocket(wsUrl);
+	const terminalProtocol = createTerminalProtocol(name);
+	const wsUrl = `${protocol}//${window.location.host}/api/instance/ws`;
+	const socket = new WebSocket(wsUrl, terminalProtocol);
 	socket.binaryType = 'arraybuffer';
 
 	socket.onopen = onOpen;

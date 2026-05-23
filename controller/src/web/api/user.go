@@ -3,6 +3,7 @@ package api
 import (
 	"IpacPanel/controller/src/msg"
 	web "IpacPanel/controller/src/web"
+	"IpacPanel/controller/src/web/authz"
 
 	cfg "IpacPanel/controller/src/config"
 
@@ -11,19 +12,16 @@ import (
 )
 
 func HandleApiUserGet(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth: true,
-		Methods:     []string{http.MethodGet},
-	})
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
 	if !ok {
+		web.WriteUnauthorized(w)
 		return
 	}
-	authedUser := guard.User
 
 	username := authedUser.User
 
 	cfg.ManagerMu.RLock()
-	u, ok := web.FindAuthUserLocked(username)
+	u, ok := authz.FindAuthUserLocked(username)
 	if !ok || u == nil || u.Perm == 0 {
 		cfg.ManagerMu.RUnlock()
 		web.WriteAPIError(w, http.StatusUnauthorized, msg.Unauthorized, nil)
@@ -63,12 +61,9 @@ func findAuthUserIndex(users []cfg.AuthUser, username string) int {
 }
 
 func HandleApiUserUpdate(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:     true,
-		Methods:         []string{http.MethodPost},
-		CSRFFromRequest: true,
-	})
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
 	if !ok {
+		web.WriteUnauthorized(w)
 		return
 	}
 
@@ -80,7 +75,7 @@ func HandleApiUserUpdate(w http.ResponseWriter, r *http.Request) {
 	newNameRaw := strings.TrimSpace(req.Name)
 	newPass := strings.TrimSpace(req.Pass)
 	if err := cfg.ValidateUserPassword(newPass); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), nil)
+		writeUserPasswordValidationError(w, err)
 		return
 	}
 	if newNameRaw == "" && newPass == "" {
@@ -90,13 +85,13 @@ func HandleApiUserUpdate(w http.ResponseWriter, r *http.Request) {
 
 	newName := ""
 	if newNameRaw != "" {
-		newName = web.NormalizeUsername(newNameRaw)
+		newName = authz.NormalizeUsername(newNameRaw)
 		if newName == "" {
 			web.WriteAPIError(w, http.StatusBadRequest, msg.UsernameInvalid, nil)
 			return
 		}
 		if err := cfg.ValidateUserName(newName); err != nil {
-			web.WriteAPIError(w, http.StatusBadRequest, err.Error(), nil)
+			writeUserNameValidationError(w, err)
 			return
 		}
 	}
@@ -111,7 +106,6 @@ func HandleApiUserUpdate(w http.ResponseWriter, r *http.Request) {
 		newPassHash = stored
 	}
 
-	authedUser := guard.User
 	username := authedUser.User
 
 	cfg.ConfigTxnMu.Lock()
@@ -155,20 +149,20 @@ func HandleApiUserUpdate(w http.ResponseWriter, r *http.Request) {
 			cfg.CurrentConfig = savedCfg
 			cfg.ManagerMu.Unlock()
 		}
-		plan.AddPostCommit("sync auth session state", func() error {
+		plan.AddPostCommit(msg.SyncAuthSessionState, func() error {
 			if passwordChanged {
-				web.RemoveUserToken(oldName)
+				authz.DefaultRuntime.Sessions.RemoveUserToken(oldName)
 				if newName != "" && newName != oldName {
-					web.RemoveUserToken(newName)
+					authz.DefaultRuntime.Sessions.RemoveUserToken(newName)
 				}
-				web.ClearAuthCookie(w, r)
-				web.ClearCSRFCookie(w, r)
-				web.DisconnectUserWs(oldName)
+				authz.DefaultRuntime.Cookies.ClearAuthCookie(w, r)
+				authz.DefaultRuntime.Cookies.ClearCSRFCookie(w, r)
+				disconnectUserWS(oldName)
 				if newName != "" && newName != oldName {
-					web.DisconnectUserWs(newName)
+					disconnectUserWS(newName)
 				}
 			} else if newName != "" && newName != oldName {
-				web.RenameUserTokenOwner(oldName, newName)
+				authz.DefaultRuntime.Sessions.RenameUserTokenOwner(oldName, newName)
 			}
 			return nil
 		})
@@ -200,20 +194,6 @@ func HandleApiUserUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleApiUserList(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth: true,
-		Methods:     []string{http.MethodGet},
-	})
-	if !ok {
-		return
-	}
-	authedUser := guard.User
-
-	if authedUser.Perm != 7 {
-		web.WriteAPIError(w, http.StatusForbidden, msg.Forbidden, nil)
-		return
-	}
-
 	type userItem struct {
 		User              string `json:"user"`
 		Perm              int    `json:"perm"`

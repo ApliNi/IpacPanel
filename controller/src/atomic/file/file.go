@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"IpacPanel/controller/src/compat"
+	"IpacPanel/controller/src/msg"
 
 	"gopkg.in/yaml.v3"
 )
@@ -62,7 +63,7 @@ func CreateTempDir(parent string, mode os.FileMode) (string, error) {
 	configured := registryPath != ""
 	registryMu.Unlock()
 	if !configured {
-		return "", errors.New("atomic temp directory registry path is not set")
+		return "", errors.New(msg.AtomicTempRegistryPathNotSet)
 	}
 	if err := os.MkdirAll(parent, 0755); err != nil {
 		return "", err
@@ -86,7 +87,7 @@ func CreateTempDir(parent string, mode os.FileMode) (string, error) {
 func RegisterTempDir(path string) error {
 	path = cleanRegistryPath(path)
 	if path == "" {
-		return errors.New("temp directory path is empty")
+		return errors.New(msg.TempDirectoryPathEmpty)
 	}
 	registryMu.Lock()
 	defer registryMu.Unlock()
@@ -110,7 +111,7 @@ func RegisterTempDir(path string) error {
 func UnregisterTempDir(path string) error {
 	path = cleanRegistryPath(path)
 	if path == "" {
-		return errors.New("temp directory path is empty")
+		return errors.New(msg.TempDirectoryPathEmpty)
 	}
 	registryMu.Lock()
 	defer registryMu.Unlock()
@@ -129,7 +130,7 @@ func UnregisterTempDir(path string) error {
 func RemoveRegisteredTempDir(path string) error {
 	path = cleanRegistryPath(path)
 	if path == "" {
-		return errors.New("temp directory path is empty")
+		return errors.New(msg.TempDirectoryPathEmpty)
 	}
 	if err := os.RemoveAll(path); err != nil {
 		return err
@@ -169,7 +170,7 @@ func CleanupRegisteredAtomicTempDirs() error {
 func OpenTempForTarget(targetPath string, mode os.FileMode) (*os.File, string, error) {
 	targetPath = strings.TrimSpace(targetPath)
 	if targetPath == "" {
-		return nil, "", errors.New("target path is empty")
+		return nil, "", errors.New(msg.TargetPathEmpty)
 	}
 	dir := filepath.Dir(targetPath)
 	if dir == "" {
@@ -193,7 +194,7 @@ func CommitTemp(tempPath string, targetPath string, overwrite bool, syncDir bool
 	tempPath = strings.TrimSpace(tempPath)
 	targetPath = strings.TrimSpace(targetPath)
 	if tempPath == "" || targetPath == "" {
-		return errors.New("temp path and target path are required")
+		return errors.New(msg.TempPathAndTargetPathRequired)
 	}
 	if overwrite {
 		if err := compat.ReplaceFileAtomic(tempPath, targetPath); err != nil {
@@ -220,7 +221,7 @@ func CommitTempDir(tempDir string, targetPath string, options DirOptions) error 
 	tempDir = strings.TrimSpace(tempDir)
 	targetPath = strings.TrimSpace(targetPath)
 	if tempDir == "" || targetPath == "" {
-		return errors.New("temp directory and target path are required")
+		return errors.New(msg.TempDirectoryAndTargetPathRequired)
 	}
 	parent := filepath.Dir(targetPath)
 	if parent == "" {
@@ -363,7 +364,7 @@ func effectiveDirMode(mode os.FileMode) os.FileMode {
 
 func requireRegistryPathLocked() (string, error) {
 	if registryPath == "" {
-		return "", errors.New("atomic temp directory registry path is not set")
+		return "", errors.New(msg.AtomicTempRegistryPathNotSet)
 	}
 	return registryPath, nil
 }

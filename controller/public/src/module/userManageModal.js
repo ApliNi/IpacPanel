@@ -178,12 +178,12 @@ const setMeStatus = (text, options = {}) => {
 const applyPage = (page) => {
 	const p = page === 'users' ? 'users' : (page === 'edit' ? 'edit' : 'me');
 	modalState.currentPage = p;
-	dom.tabMe?.classList.toggle('active', p === 'me');
-	dom.tabUsers?.classList.toggle('active', p === 'users');
-	dom.tabEdit?.classList.toggle('active', p === 'edit');
-	dom.pageMe?.classList.toggle('active', p === 'me');
-	dom.pageUsers?.classList.toggle('active', p === 'users');
-	dom.pageEdit?.classList.toggle('active', p === 'edit');
+	dom.tabMe.classList.toggle('active', p === 'me');
+	dom.tabUsers.classList.toggle('active', p === 'users');
+	dom.tabEdit.classList.toggle('active', p === 'edit');
+	dom.pageMe.classList.toggle('active', p === 'me');
+	dom.pageUsers.classList.toggle('active', p === 'users');
+	dom.pageEdit.classList.toggle('active', p === 'edit');
 };
 
 const applyMeData = (me) => {
@@ -212,16 +212,16 @@ const applyMeData = (me) => {
 const updatePassConfirmVisibility = () => {
 	const pass = dom.mePass ? String(dom.mePass.value || '') : '';
 	const shouldShow = !!pass.trim();
-	dom.pageMe?.classList.toggle('show-pass-confirm', shouldShow);
+	dom.pageMe.classList.toggle('show-pass-confirm', shouldShow);
 	if (!shouldShow && dom.mePass2) {
 		dom.mePass2.value = '';
 	}
 };
 
 const syncPageLoading = () => {
-	dom.pageMe?.classList.toggle('modal-card-loading', modalState.meLoading);
-	dom.pageEdit?.classList.toggle('modal-card-loading', modalState.editLoading);
-	dom.pageUsers?.classList.toggle('modal-card-loading', modalState.usersLoading);
+	dom.pageMe.classList.toggle('modal-card-loading', modalState.meLoading);
+	dom.pageEdit.classList.toggle('modal-card-loading', modalState.editLoading);
+	dom.pageUsers.classList.toggle('modal-card-loading', modalState.usersLoading);
 };
 
 const setEditLoading = (loading) => {
@@ -328,7 +328,7 @@ const openEditPageWithSelection = async (selectionValue) => {
 		dom.editSelect.value = selected === SEP_VALUE ? CREATE_USER_VALUE : selected;
 	}
 	applyEditModeUI();
-	const loaded = await loadEditUser(dom.editSelect?.value);
+	const loaded = await loadEditUser(dom.editSelect.value);
 	setEditLoading(!loaded);
 };
 
@@ -351,10 +351,8 @@ const normalizeScopeLines = (text, maxLength) => {
 };
 
 const normalizeScopeTextarea = (textarea, maxLength) => {
-	const value = normalizeScopeLines(textarea?.value || '', maxLength).join('\n');
-	if (textarea) {
-		textarea.value = value;
-	}
+	const value = normalizeScopeLines(textarea.value || '', maxLength).join('\n');
+	textarea.value = value;
 	return value;
 };
 
@@ -392,7 +390,7 @@ const loadEditOptions = async () => {
 			if (prev === SEP_VALUE) {
 				return;
 			}
-			const hasPrev = Array.from(dom.editSelect.options || []).some((opt) => opt?.value === prev);
+			const hasPrev = Array.from(dom.editSelect.options || []).some((opt) => opt.value === prev);
 			if (hasPrev) {
 				dom.editSelect.value = prev;
 			}
@@ -491,7 +489,7 @@ const saveEditUser = async () => {
 	}
 	if (!newUser) {
 		await showAlert('名称不能为空', { title: 'INPUT' });
-		dom.editName?.focus();
+		dom.editName.focus();
 		return;
 	}
 	const perm = parseInt(permRaw, 10);
@@ -501,13 +499,13 @@ const saveEditUser = async () => {
 	}
 	normalizeScopeTextarea(dom.editGroups, USER_NAME_MAX_LENGTH);
 	normalizeScopeTextarea(dom.editInstances, USER_NAME_MAX_LENGTH);
-	const allow_groups = normalizeScopeLines(dom.editGroups?.value || '', USER_NAME_MAX_LENGTH);
-	const allow_instances = normalizeScopeLines(dom.editInstances?.value || '', USER_NAME_MAX_LENGTH);
+	const allow_groups = normalizeScopeLines(dom.editGroups.value || '', USER_NAME_MAX_LENGTH);
+	const allow_instances = normalizeScopeLines(dom.editInstances.value || '', USER_NAME_MAX_LENGTH);
 
 	if (selected === CREATE_USER_VALUE) {
 		if (!hasPass) {
 			await showAlert('密码不能为空', { title: 'INPUT' });
-			dom.editPass?.focus();
+			dom.editPass.focus();
 			return;
 		}
 		setEditStatus('正在创建...');
@@ -529,7 +527,7 @@ const saveEditUser = async () => {
 			await loadEditOptions();
 			if (dom.editSelect) dom.editSelect.value = String(data.user || newUser);
 			applyEditModeUI();
-			await loadEditUser(dom.editSelect?.value);
+			await loadEditUser(dom.editSelect.value);
 		});
 		return;
 	}
@@ -553,7 +551,7 @@ const saveEditUser = async () => {
 		await loadEditOptions();
 		if (dom.editSelect) dom.editSelect.value = String(data.user || newUser);
 		applyEditModeUI();
-		await loadEditUser(dom.editSelect?.value);
+		await loadEditUser(dom.editSelect.value);
 		flashEditStatus('保存完成', 1000);
 	});
 };
@@ -585,7 +583,7 @@ const deleteEditUser = async () => {
 			dom.editSelect.value = CREATE_USER_VALUE;
 		}
 		applyEditModeUI();
-		await loadEditUser(dom.editSelect?.value);
+		await loadEditUser(dom.editSelect.value);
 	});
 };
 
@@ -701,12 +699,12 @@ const saveMe = async () => {
 
 	if (!name) {
 		await showAlert('名称不能为空', { title: 'INPUT' });
-		dom.meName?.focus();
+		dom.meName.focus();
 		return;
 	}
 	if (hasPass && pass !== pass2) {
 		await showAlert('两次密码不一致', { title: 'INPUT' });
-		dom.mePass2?.focus();
+		dom.mePass2.focus();
 		return;
 	}
 	if (name === (modalState.meUser || '') && !hasPass) {
@@ -735,7 +733,7 @@ const focusMeNameAfterLoad = () => {
 	}
 	requestAnimationFrame(() => {
 		if (modalState.currentPage === 'me' && !modalState.meLoading) {
-			dom.meName?.focus();
+			dom.meName.focus();
 		}
 	});
 };
@@ -799,7 +797,7 @@ const bindEvents = () => {
 			if (!modalState.isAdmin) {
 				return;
 			}
-			await openEditPageWithSelection(dom.editSelect?.value);
+			await openEditPageWithSelection(dom.editSelect.value);
 		};
 	}
 	if (dom.pageMe) {
@@ -866,13 +864,19 @@ const bindEvents = () => {
 			if (!modalState.isAdmin) {
 				return;
 			}
-			const th = event.target?.closest?.('thead');
+			if (!(event.target instanceof Element)) {
+				return;
+			}
+			const th = event.target.closest('thead');
 			if (th) {
 				openEditPageWithSelection(CREATE_USER_VALUE);
 				return;
 			}
-			const tr = event.target?.closest?.('tbody tr[data-user]');
-			const user = tr?.getAttribute?.('data-user') || '';
+			const tr = event.target.closest('tbody tr[data-user]');
+			if (!tr) {
+				return;
+			}
+			const user = tr.getAttribute('data-user') || '';
 			if (!user) {
 				return;
 			}

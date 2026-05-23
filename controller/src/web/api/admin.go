@@ -3,6 +3,7 @@ package api
 import (
 	"IpacPanel/controller/src/msg"
 	web "IpacPanel/controller/src/web"
+	"IpacPanel/controller/src/web/authz"
 
 	cfg "IpacPanel/controller/src/config"
 
@@ -11,16 +12,6 @@ import (
 )
 
 func HandleApiAdminGet(w http.ResponseWriter, r *http.Request) {
-	_, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:      true,
-		Methods:          []string{http.MethodGet},
-		RequireAdmin:     true,
-		ForbiddenMessage: msg.Forbidden,
-	})
-	if !ok {
-		return
-	}
-
 	username := strings.TrimSpace(r.URL.Query().Get("user"))
 	if username == "" {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.UserParamMissing, nil)
@@ -28,7 +19,7 @@ func HandleApiAdminGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg.ManagerMu.RLock()
-	u, ok := web.FindAuthUserLocked(username)
+	u, ok := authz.FindAuthUserLocked(username)
 	if !ok || u == nil {
 		cfg.ManagerMu.RUnlock()
 		web.WriteAPIError(w, http.StatusNotFound, msg.UserNotFound, nil)
@@ -118,17 +109,11 @@ func filterExistingGroups(values []string, allowSet map[string]struct{}) []strin
 }
 
 func HandleApiAdminUpdate(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:      true,
-		Methods:          []string{http.MethodPost},
-		CSRFFromRequest:  true,
-		RequireAdmin:     true,
-		ForbiddenMessage: msg.Forbidden,
-	})
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
 	if !ok {
+		web.WriteUnauthorized(w)
 		return
 	}
-	authedUser := guard.User
 	web.MarkRequestUser(w, authedUser.User)
 
 	var req adminUserUpdateRequest
@@ -143,19 +128,19 @@ func HandleApiAdminUpdate(w http.ResponseWriter, r *http.Request) {
 
 	newName := ""
 	if strings.TrimSpace(req.NewUser) != "" {
-		newName = web.NormalizeUsername(req.NewUser)
+		newName = authz.NormalizeUsername(req.NewUser)
 		if newName == "" {
 			web.WriteAPIError(w, http.StatusBadRequest, msg.UsernameInvalid, nil)
 			return
 		}
 		if err := cfg.ValidateUserName(newName); err != nil {
-			web.WriteAPIError(w, http.StatusBadRequest, err.Error(), nil)
+			writeUserNameValidationError(w, err)
 			return
 		}
 	}
 	newPass := strings.TrimSpace(req.Pass)
 	if err := cfg.ValidateUserPassword(newPass); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), nil)
+		writeUserPasswordValidationError(w, err)
 		return
 	}
 	newPerm := req.Perm
@@ -240,20 +225,20 @@ func HandleApiAdminUpdate(w http.ResponseWriter, r *http.Request) {
 			cfg.CurrentConfig = savedCfg
 			cfg.ManagerMu.Unlock()
 		}
-		plan.AddPostCommit("sync user runtime state", func() error {
-			web.DisconnectUserWs(oldName)
+		plan.AddPostCommit(msg.SyncUserRuntimeState, func() error {
+			disconnectUserWS(oldName)
 			if passwordChanged {
-				web.RemoveUserToken(oldName)
+				authz.DefaultRuntime.Sessions.RemoveUserToken(oldName)
 				if finalName != oldName {
-					web.RemoveUserToken(finalName)
-					web.DisconnectUserWs(finalName)
+					authz.DefaultRuntime.Sessions.RemoveUserToken(finalName)
+					disconnectUserWS(finalName)
 				}
 				if authedUser.User == oldName || authedUser.User == finalName {
-					web.ClearAuthCookie(w, r)
-					web.ClearCSRFCookie(w, r)
+					authz.DefaultRuntime.Cookies.ClearAuthCookie(w, r)
+					authz.DefaultRuntime.Cookies.ClearCSRFCookie(w, r)
 				}
 			} else if finalName != oldName {
-				web.RenameUserTokenOwner(oldName, finalName)
+				authz.DefaultRuntime.Sessions.RenameUserTokenOwner(oldName, finalName)
 			}
 			return nil
 		})
@@ -292,17 +277,11 @@ type adminUserCreateRequest struct {
 }
 
 func HandleApiAdminCreate(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:      true,
-		Methods:          []string{http.MethodPost},
-		CSRFFromRequest:  true,
-		RequireAdmin:     true,
-		ForbiddenMessage: msg.Forbidden,
-	})
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
 	if !ok {
+		web.WriteUnauthorized(w)
 		return
 	}
-	authedUser := guard.User
 	web.MarkRequestUser(w, authedUser.User)
 
 	var req adminUserCreateRequest
@@ -310,13 +289,13 @@ func HandleApiAdminCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	username := web.NormalizeUsername(req.User)
+	username := authz.NormalizeUsername(req.User)
 	if username == "" {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.UsernameInvalid, nil)
 		return
 	}
 	if err := cfg.ValidateUserName(username); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), nil)
+		writeUserNameValidationError(w, err)
 		return
 	}
 	pass := strings.TrimSpace(req.Pass)
@@ -325,7 +304,7 @@ func HandleApiAdminCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := cfg.ValidateUserPassword(pass); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), nil)
+		writeUserPasswordValidationError(w, err)
 		return
 	}
 	perm := req.Perm
@@ -379,17 +358,11 @@ type adminUserDeleteRequest struct {
 }
 
 func HandleApiAdminDelete(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:      true,
-		Methods:          []string{http.MethodPost},
-		CSRFFromRequest:  true,
-		RequireAdmin:     true,
-		ForbiddenMessage: msg.Forbidden,
-	})
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
 	if !ok {
+		web.WriteUnauthorized(w)
 		return
 	}
-	authedUser := guard.User
 
 	var req adminUserDeleteRequest
 	if !web.DecodeJSONBody(w, r, &req) {
@@ -434,13 +407,13 @@ func HandleApiAdminDelete(w http.ResponseWriter, r *http.Request) {
 		cfg.CurrentConfig = savedCfg
 		cfg.ManagerMu.Unlock()
 	}
-	plan.AddPostCommit("cleanup deleted user sessions", func() error {
-		web.RemoveUserToken(username)
+	plan.AddPostCommit(msg.CleanupDeletedUserSessions, func() error {
+		authz.DefaultRuntime.Sessions.RemoveUserToken(username)
 		if authedUser.User == username {
-			web.ClearAuthCookie(w, r)
-			web.ClearCSRFCookie(w, r)
+			authz.DefaultRuntime.Cookies.ClearAuthCookie(w, r)
+			authz.DefaultRuntime.Cookies.ClearCSRFCookie(w, r)
 		}
-		web.DisconnectUserWs(username)
+		disconnectUserWS(username)
 		return nil
 	})
 	if err := cfg.CommitMutationPlan(plan); err != nil {

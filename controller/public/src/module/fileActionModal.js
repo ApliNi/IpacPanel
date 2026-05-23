@@ -1,5 +1,5 @@
 import { mainModalOverlay, state } from "../ui.js";
-import { buildAuthedFileRawUrl } from '../api/core.js';
+import { buildAuthedFileRawUrl, parseSSEJsonData, readSSEStream } from '../api/core.js';
 import { clearTimer, formatFileSize, withActionsDisabled } from '../utils/utils.js';
 import { deleteFile, renameFile, streamFileExtractAction } from '../api/file.js';
 import { showAlert, showConfirm } from './dialog.js';
@@ -178,9 +178,9 @@ const getCurrentDir = () => {
 
 const applyFileActionPage = (page) => {
     modalState.currentFileActionPage = page;
-    dom.fileActionTabInfo?.classList.toggle('active', page === 'info');
-    dom.fileActionTabExtract?.classList.toggle('active', page === 'extract');
-    dom.fileActionTabDelete?.classList.toggle('active', page === 'delete');
+    dom.fileActionTabInfo.classList.toggle('active', page === 'info');
+    dom.fileActionTabExtract.classList.toggle('active', page === 'extract');
+    dom.fileActionTabDelete.classList.toggle('active', page === 'delete');
     if (dom.fileActionPageInfo) {
         dom.fileActionPageInfo.classList.toggle('active', page === 'info');
     }
@@ -255,10 +255,10 @@ const stripArchiveExtension = (name) => {
 const getExtractTargetPath = () => {
 	const entry = modalState.currentFileActionEntry;
 	const parentDir = getEntryParentDirPath(entry);
-	if (!dom.fileExtractModeCustom?.checked) {
+	if (!dom.fileExtractModeCustom.checked) {
 		return parentDir || getCurrentDir();
 	}
-	const dirName = InputValidation.truncateText(dom.fileExtractDirName?.value || '', InputValidation.limits.fileName).trim();
+	const dirName = InputValidation.truncateText(dom.fileExtractDirName.value || '', InputValidation.limits.fileName).trim();
 	if (!dirName) {
 		return parentDir || getCurrentDir();
 	}
@@ -270,7 +270,7 @@ const getExtractTargetPath = () => {
 };
 
 const truncateTextInputValue = (input, maxLength) => {
-	const value = InputValidation.truncateText(input?.value || '', maxLength);
+	const value = InputValidation.truncateText(input.value || '', maxLength);
 	if (input) {
 		input.value = value;
 	}
@@ -347,11 +347,11 @@ const isCurrentExtractTask = (abortController, runId) => {
 
 const updateExtractTargetMode = () => {
 	if (dom.fileExtractDirGroup) {
-		dom.fileExtractDirGroup.classList.toggle('hidden', !dom.fileExtractModeCustom?.checked);
+		dom.fileExtractDirGroup.classList.toggle('hidden', !dom.fileExtractModeCustom.checked);
 	}
 	if (dom.fileExtractDirName) {
-		dom.fileExtractDirName.disabled = !dom.fileExtractModeCustom?.checked;
-		dom.fileExtractDirName.required = !!dom.fileExtractModeCustom?.checked;
+		dom.fileExtractDirName.disabled = !dom.fileExtractModeCustom.checked;
+		dom.fileExtractDirName.required = !!dom.fileExtractModeCustom.checked;
 	}
 };
 
@@ -409,58 +409,27 @@ const requestClose = async () => {
 };
 
 const decodeSse = async (res, handlers) => {
-	const reader = res.body?.getReader?.();
-	if (!reader) {
-		throw new Error('stream not supported');
-	}
-	const decoder = new TextDecoder('utf-8');
-	let buf = '';
-	let eventName = '';
-	let dataBuf = '';
+	await readSSEStream(res, {
+		message: (event) => emitDecodedSseEvent(event, handlers),
+		progress: (event) => emitDecodedSseEvent(event, handlers),
+		fail: (event) => emitDecodedSseEvent(event, handlers),
+		error: (event) => emitDecodedSseEvent(event, handlers),
+		end: (event) => emitDecodedSseEvent(event, handlers),
+		done: (event) => emitDecodedSseEvent(event, handlers),
+	});
+};
 
-	const emit = () => {
-		const name = String(eventName || 'message');
-		const raw = String(dataBuf || '').trim();
-		if (!raw) {
-			eventName = '';
-			dataBuf = '';
-			return;
-		}
-		let obj = null;
-		try {
-			obj = JSON.parse(raw);
-		} catch (_) {
-			obj = { raw };
-		}
-		handlers?.onEvent?.(name, obj);
-		eventName = '';
-		dataBuf = '';
-	};
-
-	while (true) {
-		const { value, done } = await reader.read();
-		if (done) break;
-		buf += decoder.decode(value, { stream: true });
-		let idx;
-		while ((idx = buf.indexOf('\n')) >= 0) {
-			let line = buf.slice(0, idx);
-			buf = buf.slice(idx + 1);
-			if (line.endsWith('\r')) line = line.slice(0, -1);
-			if (!line) {
-				emit();
-				continue;
-			}
-			if (line.startsWith('event:')) {
-				eventName = line.slice(6).trim();
-				continue;
-			}
-			if (line.startsWith('data:')) {
-				const chunk = line.slice(5).trim();
-				dataBuf = dataBuf ? `${dataBuf}\n${chunk}` : chunk;
-			}
-		}
+const emitDecodedSseEvent = (event, handlers) => {
+	if (typeof handlers?.onEvent !== 'function') {
+		return;
 	}
-	emit();
+	let payload = null;
+	try {
+		payload = parseSSEJsonData(event, '文件解压事件解析失败');
+	} catch {
+		payload = { raw: String(event.data || '').trim() };
+	}
+	handlers.onEvent(String(event.type || 'message'), payload);
 };
 
 const buildExtractDetailText = (payload) => {
@@ -506,11 +475,11 @@ const extractArchive = async () => {
 	if (modalState.extracting) {
 		return;
 	}
-	if (dom.fileExtractModeCustom?.checked) {
+	if (dom.fileExtractModeCustom.checked) {
 		const dirName = truncateTextInputValue(dom.fileExtractDirName, InputValidation.limits.fileName).trim();
 		if (!dirName) {
-			dom.fileExtractDirName?.reportValidity?.();
-			dom.fileExtractDirName?.focus();
+			dom.fileExtractDirName.reportValidity();
+			dom.fileExtractDirName.focus();
 			return;
 		}
 	}
@@ -527,8 +496,8 @@ const extractArchive = async () => {
 		const res = await streamFileExtractAction(instanceName, {
 			path: entry.path,
 			target_path: targetPath,
-			extract_here: !dom.fileExtractModeCustom?.checked,
-			overwrite: !!dom.fileExtractOverwrite?.checked,
+			extract_here: !dom.fileExtractModeCustom.checked,
+			overwrite: !!dom.fileExtractOverwrite.checked,
 		}, { signal: abortController.signal });
 		await decodeSse(res, {
 			onEvent: (name, payload) => {
@@ -747,8 +716,8 @@ const open = (entryOrOptions) => {
 		if (shouldFocusRename && modalState.currentFileActionPage === 'info') {
 			focusRenameInput();
 		}
-		if (modalState.currentFileActionPage === 'extract' && dom.fileExtractModeCustom?.checked) {
-			dom.fileExtractDirName?.focus();
+		if (modalState.currentFileActionPage === 'extract' && dom.fileExtractModeCustom.checked) {
+			dom.fileExtractDirName.focus();
 		}
     });
 };
@@ -763,7 +732,7 @@ const renameFileEntry = async () => {
 	const newName = truncateTextInputValue(dom.fileRenameName, InputValidation.limits.fileName).trim();
 	if (!newName) {
 		await showAlert('名称不能为空', { title: 'INPUT' });
-		dom.fileRenameName?.focus();
+		dom.fileRenameName.focus();
 		return;
 	}
 	if (newName === (entry.name || '')) {
@@ -837,8 +806,8 @@ const bindEvents = () => {
 				return;
 			}
 			applyFileActionPage('extract');
-			if (dom.fileExtractModeCustom?.checked) {
-				dom.fileExtractDirName?.focus();
+			if (dom.fileExtractModeCustom.checked) {
+				dom.fileExtractDirName.focus();
 			}
 		};
 	}
@@ -850,15 +819,15 @@ const bindEvents = () => {
 			applyFileActionPage('delete');
 		};
 	}
-	dom.fileExtractModeCurrent?.addEventListener('change', () => updateExtractTargetMode());
-	dom.fileExtractModeCustom?.addEventListener('change', () => {
+	dom.fileExtractModeCurrent.addEventListener('change', () => updateExtractTargetMode());
+	dom.fileExtractModeCustom.addEventListener('change', () => {
 		updateExtractTargetMode();
-		if (dom.fileExtractModeCustom?.checked) {
-			dom.fileExtractDirName?.focus();
+		if (dom.fileExtractModeCustom.checked) {
+			dom.fileExtractDirName.focus();
 		}
 	});
-	dom.fileRenameName?.addEventListener('blur', () => truncateTextInputValue(dom.fileRenameName, InputValidation.limits.fileName));
-	dom.fileExtractDirName?.addEventListener('blur', () => truncateTextInputValue(dom.fileExtractDirName, InputValidation.limits.fileName));
+	dom.fileRenameName.addEventListener('blur', () => truncateTextInputValue(dom.fileRenameName, InputValidation.limits.fileName));
+	dom.fileExtractDirName.addEventListener('blur', () => truncateTextInputValue(dom.fileExtractDirName, InputValidation.limits.fileName));
 	if (dom.fileExtractCancel) {
 		dom.fileExtractCancel.onclick = () => requestCancelExtract();
 	}

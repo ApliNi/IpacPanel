@@ -64,7 +64,7 @@ const computeLoginPow = async (user, pass, pow, seq) => {
 		};
 		worker.onmessage = (event) => {
 			if (seq !== submitSeq) {
-				finish(reject, new Error('PoW computation was superseded'));
+				finish(reject, new Error('PoW 计算被取代'));
 				return;
 			}
 			const { type, result, code, current, total } = event?.data || {};
@@ -152,7 +152,7 @@ const setError = (msg) => {
 		void dom.card.offsetWidth;
 		dom.card.classList.add('shake');
 		setTimeout(() => {
-			dom.card?.classList.remove('shake');
+			dom.card.classList.remove('shake');
 		}, 420);
 	}
 };
@@ -176,8 +176,8 @@ const hide = () => {
 const submit = async () => {
 	const seq = ++submitSeq;
 	resetPowWorker();
-	const user = normalizeUser(InputValidation.truncateText(dom.user?.value || '', InputValidation.limits.instanceName));
-	const pass = InputValidation.truncateText(dom.pass?.value || '', 4096);
+	const user = normalizeUser(InputValidation.truncateText(dom.user.value || '', InputValidation.limits.instanceName));
+	const pass = InputValidation.truncateText(dom.pass.value || '', 4096);
 	if (!user || !pass) {
 		setError('用户名和密码不能为空');
 		return;

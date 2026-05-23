@@ -8,6 +8,7 @@ import (
 
 	cfg "IpacPanel/controller/src/config"
 
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -105,45 +106,14 @@ type settingsRestartControllerResponse struct {
 }
 
 func HandleApiSettingsPublic(w http.ResponseWriter, r *http.Request) {
-	_, ok := web.GuardRequest(w, r, web.GuardOptions{
-		Methods: []string{http.MethodGet},
-	})
-	if !ok {
-		return
-	}
 	web.WriteOK(w, buildSettingsPublicResponse())
 }
 
 func HandleApiSettingsGet(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth: true,
-		Methods:     []string{http.MethodGet},
-	})
-	if !ok {
-		return
-	}
-	if guard.User.Perm != 7 {
-		web.WriteAPIError(w, http.StatusForbidden, msg.Forbidden, nil)
-		return
-	}
-
 	web.WriteOK(w, buildSettingsResponse())
 }
 
 func HandleApiSettingsUpdate(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:     true,
-		Methods:         []string{http.MethodPost},
-		CSRFFromRequest: true,
-	})
-	if !ok {
-		return
-	}
-	if guard.User.Perm != 7 {
-		web.WriteAPIError(w, http.StatusForbidden, msg.Forbidden, nil)
-		return
-	}
-
 	var req settingsUpdateRequest
 	if !web.DecodeJSONBody(w, r, &req) {
 		return
@@ -216,11 +186,11 @@ func HandleApiSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	savedCfg.Metrics = cfg.NormalizeMetricsConfig(savedCfg.Metrics)
 	if err := cfg.ValidateMetricsConfig(savedCfg.Metrics); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), err)
+		web.WriteAPIError(w, http.StatusBadRequest, msg.MetricsStorageModeInvalid, err)
 		return
 	}
 	if err := cfg.ValidateSettingsTextFields(savedCfg.WebTitle, savedCfg.Listen, savedCfg.Web, savedCfg.InstanceUpdateStagingDir, savedCfg.TrustedProxyIPs); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), nil)
+		web.WriteAPIError(w, http.StatusBadRequest, msg.InvalidRequestBody, err)
 		return
 	}
 	if req.Pow != nil {
@@ -239,17 +209,17 @@ func HandleApiSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	savedCfg.Pow = cfg.NormalizePowConfig(savedCfg.Pow)
 	if err := cfg.ValidatePowConfig(savedCfg.Pow); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), err)
+		web.WriteAPIError(w, http.StatusBadRequest, msg.PoWParamsInvalid, err)
 		return
 	}
 	debug := savedCfg.Debug
 	metricsConfig := savedCfg.Metrics
 
 	plan := cfg.MutationPlan{NextCfg: savedCfg}
-	plan.AddRequiredPostCommit("sync debug mode", func() error {
+	plan.AddRequiredPostCommit(msg.SyncDebugModePostCommit, func() error {
 		return process.SetDaemonDebug(debug)
 	})
-	plan.AddRequiredPostCommit("sync dashboard metrics", func() error {
+	plan.AddRequiredPostCommit(msg.SyncDashboardMetricsPostCommit, func() error {
 		if dashboardCollector == nil {
 			return nil
 		}
@@ -267,7 +237,7 @@ func HandleApiSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	result := cfg.RunMutationPostCommit(plan)
 	if err := result.Error(); err != nil {
-		writeMutationRuntimeSyncError(w, http.StatusInternalServerError, "settings saved, but runtime sync failed", result)
+		writeMutationRuntimeSyncError(w, http.StatusInternalServerError, msg.ConfigSavedRuntimeSyncFailed, result)
 		return
 	}
 
@@ -275,32 +245,50 @@ func HandleApiSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleApiSettingsRestartController(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:     true,
-		Methods:         []string{http.MethodPost},
-		CSRFFromRequest: true,
-	})
-	if !ok {
+	if !decodeOptionalJSONBody(w, r) {
 		return
-	}
-	if guard.User.Perm != 7 {
-		web.WriteAPIError(w, http.StatusForbidden, msg.Forbidden, nil)
-		return
-	}
-	if r.Body != nil {
-		defer r.Body.Close()
-		var req map[string]interface{}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			web.WriteAPIError(w, http.StatusBadRequest, msg.InvalidRequestBody, err)
-			return
-		}
 	}
 	if err := process.RestartController(); err != nil {
-		web.WriteAPIError(w, http.StatusInternalServerError, "restart controller failed", err)
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.RestartControllerFailed, err)
 		return
 	}
 	web.WriteOK(w, settingsRestartControllerResponse{Restarting: true})
 	requestControllerShutdown()
+}
+
+func decodeOptionalJSONBody(w http.ResponseWriter, r *http.Request) bool {
+	if r == nil || r.Body == nil {
+		return true
+	}
+	defer r.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20+1))
+	if err != nil {
+		web.WriteAPIError(w, http.StatusBadRequest, msg.InvalidRequestBody, err)
+		return false
+	}
+	if len(body) > 1<<20 {
+		web.WriteAPIError(w, http.StatusBadRequest, msg.RequestBodyTooLarge, errors.New("request body exceeds 1048576 bytes"))
+		return false
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return true
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	var req map[string]interface{}
+	if err := dec.Decode(&req); err != nil {
+		web.WriteAPIError(w, http.StatusBadRequest, msg.InvalidRequestBody, err)
+		return false
+	}
+	var extra struct{}
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("request body contains multiple JSON values")
+		}
+		web.WriteAPIError(w, http.StatusBadRequest, msg.InvalidRequestBody, err)
+		return false
+	}
+	return true
 }
 
 func buildSettingsResponse() settingsResponse {

@@ -2,6 +2,7 @@ package process
 
 import (
 	cfg "IpacPanel/controller/src/config"
+	"IpacPanel/controller/src/msg"
 	"bufio"
 	"bytes"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,15 +22,7 @@ import (
 
 const maxDaemonIPCHeaderSize = 64 * 1024
 const maxDaemonIPCBodySize = 16 * 1024 * 1024
-const daemonIPCFrameSeparator = ": "
-const daemonIPCFramePrefix byte = ':'
-const daemonHelloMsgPrefix = "shanghai_crab"
-
-const daemonIPCFrameTypeInstanceOutput = "o"
-const daemonIPCFrameTypeCleanupMessage = "cleanup_message"
-const daemonIPCFrameInstanceOutputPrefix = ":o:"
-
-const daemonOutputMaxBatchBytes = 512 * 1024
+const daemonOutputBufferPoolMaxBytes = 512 * 1024
 
 const (
 	RuntimeCodeUnknown        = 0
@@ -105,8 +99,6 @@ type daemonIPCClient struct {
 	done      chan struct{}
 }
 
-const daemonOutputBufferPoolMaxBytes = daemonOutputMaxBatchBytes
-
 var daemonOutputBufferPool = sync.Pool{
 	New: func() any {
 		buf := make([]byte, daemonOutputBufferPoolMaxBytes)
@@ -177,16 +169,16 @@ func DaemonDisconnected() <-chan struct{} {
 func decodeDaemonIPCFrame(line []byte, resp *daemonIPCResponse) error {
 	line = bytes.TrimSuffix(line, []byte{'\n'})
 	line = bytes.TrimSuffix(line, []byte{'\r'})
-	if len(line) == 0 || line[0] != daemonIPCFramePrefix {
-		return fmt.Errorf("invalid daemon IPC frame prefix")
+	if len(line) == 0 || line[0] != ':' {
+		return errors.New(msg.InvalidDaemonIPCFramePrefix)
 	}
 	line = line[1:]
-	sep := bytes.Index(line, []byte(daemonIPCFrameSeparator))
+	sep := bytes.Index(line, []byte(": "))
 	if sep <= 0 {
-		return fmt.Errorf("invalid daemon IPC frame header")
+		return errors.New(msg.InvalidDaemonIPCFrameHeader)
 	}
 	frameType := string(line[:sep])
-	if err := json.Unmarshal(line[sep+len(daemonIPCFrameSeparator):], resp); err != nil {
+	if err := json.Unmarshal(line[sep+len(": "):], resp); err != nil {
 		return err
 	}
 	resp.Type = frameType
@@ -195,16 +187,16 @@ func decodeDaemonIPCFrame(line []byte, resp *daemonIPCResponse) error {
 
 func encodeDaemonIPCFrame(frameType string, payload interface{}) ([]byte, error) {
 	if frameType == "" {
-		return nil, fmt.Errorf("daemon IPC frame type is required")
+		return nil, errors.New(msg.DaemonIPCFrameTypeRequired)
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	frame := make([]byte, 0, 1+len(frameType)+len(daemonIPCFrameSeparator)+len(data)+1)
-	frame = append(frame, daemonIPCFramePrefix)
+	frame := make([]byte, 0, 1+len(frameType)+len(": ")+len(data)+1)
+	frame = append(frame, ':')
 	frame = append(frame, frameType...)
-	frame = append(frame, daemonIPCFrameSeparator...)
+	frame = append(frame, ": "...)
 	frame = append(frame, data...)
 	frame = append(frame, '\n')
 	return frame, nil
@@ -216,7 +208,7 @@ func readDaemonIPCHeaderLine(reader *bufio.Reader) ([]byte, error) {
 		part, err := reader.ReadSlice('\n')
 		line = append(line, part...)
 		if len(line) > maxDaemonIPCHeaderSize {
-			return nil, fmt.Errorf("daemon IPC header too large: %d bytes", len(line))
+			return nil, fmt.Errorf(msg.DaemonIPCHeaderTooLargeFmt, len(line))
 		}
 		if err == nil {
 			return line, nil
@@ -230,26 +222,26 @@ func readDaemonIPCHeaderLine(reader *bufio.Reader) ([]byte, error) {
 
 func validateDaemonIPCBodyLen(bodyLen int) error {
 	if bodyLen < 0 {
-		return fmt.Errorf("daemon IPC body length is negative: %d", bodyLen)
+		return fmt.Errorf(msg.DaemonIPCBodyLengthNegativeFmt, bodyLen)
 	}
 	if bodyLen > maxDaemonIPCBodySize {
-		return fmt.Errorf("daemon IPC body too large: %d bytes", bodyLen)
+		return fmt.Errorf(msg.DaemonIPCBodyTooLargeFmt, bodyLen)
 	}
 	return nil
 }
 
 func parseDaemonIPCPositiveInt(data []byte) (int, error) {
 	if len(data) == 0 {
-		return 0, fmt.Errorf("empty integer")
+		return 0, errors.New(msg.EmptyInteger)
 	}
 	value := 0
 	for _, b := range data {
 		if b < '0' || b > '9' {
-			return 0, fmt.Errorf("invalid digit %q", b)
+			return 0, fmt.Errorf(msg.InvalidDigitFmt, b)
 		}
 		digit := int(b - '0')
 		if value > (maxDaemonIPCBodySize-digit)/10 {
-			return 0, fmt.Errorf("integer too large")
+			return 0, errors.New(msg.IntegerTooLarge)
 		}
 		value = value*10 + digit
 	}
@@ -259,48 +251,48 @@ func parseDaemonIPCPositiveInt(data []byte) (int, error) {
 func readDaemonIPCUntil(reader *bufio.Reader, delim byte, fieldName string) ([]byte, error) {
 	part, err := reader.ReadSlice(delim)
 	if err != nil {
-		return nil, fmt.Errorf("read daemon IPC %s: %w", fieldName, err)
+		return nil, fmt.Errorf(msg.ReadDaemonIPCFieldFailedFmt, fieldName, err)
 	}
 	if len(part) > maxDaemonIPCHeaderSize {
-		return nil, fmt.Errorf("daemon IPC %s too large: %d bytes", fieldName, len(part))
+		return nil, fmt.Errorf(msg.DaemonIPCFieldTooLargeFmt, fieldName, len(part))
 	}
 	return part[:len(part)-1], nil
 }
 
 func readDaemonInstanceOutputFrame(reader *bufio.Reader) (string, []byte, error) {
-	if _, err := reader.Discard(len(daemonIPCFrameInstanceOutputPrefix)); err != nil {
-		return "", nil, fmt.Errorf("read daemon instance output prefix: %w", err)
+	if _, err := reader.Discard(len(":o:")); err != nil {
+		return "", nil, fmt.Errorf(msg.ReadDaemonInstanceOutputPrefixFailedFmt, err)
 	}
-	instance, err := readDaemonIPCUntil(reader, ':', "instance output instance")
+	instance, err := readDaemonIPCUntil(reader, ':', msg.DaemonInstanceOutputInstanceField)
 	if err != nil {
 		return "", nil, err
 	}
 	if len(instance) == 0 {
-		return "", nil, fmt.Errorf("daemon instance output instance is empty")
+		return "", nil, errors.New(msg.DaemonInstanceOutputInstanceEmpty)
 	}
-	bodyLenText, err := readDaemonIPCUntil(reader, ':', "instance output body length")
+	bodyLenText, err := readDaemonIPCUntil(reader, ':', msg.DaemonInstanceOutputBodyLengthField)
 	if err != nil {
 		return "", nil, err
 	}
 	bodyLen, err := parseDaemonIPCPositiveInt(bodyLenText)
 	if err != nil {
-		return "", nil, fmt.Errorf("invalid daemon instance output body length: %w", err)
+		return "", nil, fmt.Errorf(msg.InvalidDaemonInstanceOutputBodyLengthFmt, err)
 	}
 	if err := validateDaemonIPCBodyLen(bodyLen); err != nil {
 		return "", nil, err
 	}
 	space, err := reader.ReadByte()
 	if err != nil {
-		return "", nil, fmt.Errorf("read daemon instance output body separator: %w", err)
+		return "", nil, fmt.Errorf(msg.ReadDaemonInstanceOutputBodySeparatorFailedFmt, err)
 	}
 	if space != ' ' {
-		return "", nil, fmt.Errorf("invalid daemon instance output body separator")
+		return "", nil, errors.New(msg.InvalidDaemonInstanceOutputBodySeparator)
 	}
 	body := getDaemonOutputBuffer(bodyLen)
 	if bodyLen > 0 {
 		if _, err := io.ReadFull(reader, body); err != nil {
 			putDaemonOutputBuffer(body)
-			return "", nil, fmt.Errorf("read daemon instance output body: %w", err)
+			return "", nil, fmt.Errorf(msg.ReadDaemonInstanceOutputBodyFailedFmt, err)
 		}
 	}
 	return string(instance), body, nil
@@ -334,7 +326,7 @@ func readDaemonIPCResponse(reader *bufio.Reader) (daemonIPCResponse, error) {
 func (c *daemonIPCClient) readLoop() {
 	defer c.closeWithPendingError()
 	for {
-		peek, err := c.reader.Peek(len(daemonIPCFrameInstanceOutputPrefix))
+		peek, err := c.reader.Peek(len(":o:"))
 		if err == nil && isDaemonInstanceOutputPrefix(peek) {
 			instance, body, err := readDaemonInstanceOutputFrame(c.reader)
 			if err != nil {
@@ -350,7 +342,7 @@ func (c *daemonIPCClient) readLoop() {
 		switch resp.Type {
 		case "instance_exited":
 			HandleDaemonInstanceExited(resp.State)
-		case daemonIPCFrameTypeCleanupMessage:
+		case "cleanup_message":
 			HandleDaemonCleanupMessage(resp.Instance, resp.Placeholder, resp.Args)
 		default:
 			c.deliverResponse(resp)
@@ -415,7 +407,7 @@ func queueDaemonInstanceOutput(instanceName string, data []byte) {
 func daemonRequest(req daemonIPCRequest) (daemonIPCResponse, error) {
 	client := daemonClient
 	if client == nil {
-		return daemonIPCResponse{}, fmt.Errorf("daemon IPC is not connected")
+		return daemonIPCResponse{}, errors.New(msg.DaemonIPCNotConnected)
 	}
 	req.ID = client.nextID.Add(1)
 	respCh := client.registerPending(req.ID)
@@ -427,7 +419,7 @@ func daemonRequest(req daemonIPCRequest) (daemonIPCResponse, error) {
 	}
 	data, err := encodeDaemonIPCFrame(req.Type, req)
 	if err != nil {
-		return daemonIPCResponse{}, fmt.Errorf("encode daemon IPC request: %w", err)
+		return daemonIPCResponse{}, fmt.Errorf(msg.EncodeDaemonIPCRequestFailedFmt, err)
 	}
 	client.writeMu.Lock()
 	_, err = client.writer.Write(data)
@@ -439,33 +431,33 @@ func daemonRequest(req daemonIPCRequest) (daemonIPCResponse, error) {
 	}
 	client.writeMu.Unlock()
 	if err != nil {
-		return daemonIPCResponse{}, fmt.Errorf("write daemon IPC request: %w", err)
+		return daemonIPCResponse{}, fmt.Errorf(msg.WriteDaemonIPCRequestFailedFmt, err)
 	}
 
 	select {
 	case resp, ok := <-respCh:
 		if !ok {
-			return daemonIPCResponse{}, fmt.Errorf("daemon IPC disconnected")
+			return daemonIPCResponse{}, errors.New(msg.DaemonIPCDisconnected)
 		}
 		if resp.Error != "" {
 			return resp, errors.New(resp.Error)
 		}
 		return resp, nil
 	case <-client.done:
-		return daemonIPCResponse{}, fmt.Errorf("daemon IPC disconnected")
+		return daemonIPCResponse{}, errors.New(msg.DaemonIPCDisconnected)
 	case <-time.After(30 * time.Second):
-		return daemonIPCResponse{}, fmt.Errorf("daemon IPC request timeout")
+		return daemonIPCResponse{}, errors.New(msg.DaemonIPCRequestTimeout)
 	}
 }
 
 func DaemonHello() (int, error) {
-	helloMsg := fmt.Sprintf("%s %d", daemonHelloMsgPrefix, time.Now().UnixNano())
+	helloMsg := fmt.Sprintf("%s %d", "shanghai_crab", time.Now().UnixNano())
 	resp, err := daemonRequest(daemonIPCRequest{Type: "hello", Msg: helloMsg})
 	if err != nil {
 		return 0, err
 	}
 	if resp.Msg != helloMsg {
-		return 0, fmt.Errorf("daemon hello msg mismatch: expected %q, got %q", helloMsg, resp.Msg)
+		return 0, fmt.Errorf(msg.DaemonHelloMessageMismatchFmt, helloMsg, resp.Msg)
 	}
 	return resp.DaemonProtocol, nil
 }
@@ -543,6 +535,46 @@ func writeDaemonInstanceStdin(insName string, data []byte) error {
 	return err
 }
 
+func writeDaemonInstanceInputFastPath(insName string, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	if insName == "" {
+		return errors.New(msg.DaemonInstanceInputInstanceEmpty)
+	}
+	if strings.Contains(insName, ":") {
+		return errors.New(msg.DaemonInstanceInputInstanceContainsSeparator)
+	}
+	if err := validateDaemonIPCBodyLen(len(data)); err != nil {
+		return err
+	}
+	client := daemonClient
+	if client == nil {
+		return errors.New(msg.DaemonIPCNotConnected)
+	}
+
+	header := make([]byte, 0, len(":i:")+len(insName)+1+20+len(": "))
+	header = append(header, ":i:"...)
+	header = append(header, insName...)
+	header = append(header, ':')
+	header = strconv.AppendInt(header, int64(len(data)), 10)
+	header = append(header, ": "...)
+
+	client.writeMu.Lock()
+	_, err := client.writer.Write(header)
+	if err == nil {
+		_, err = client.writer.Write(data)
+	}
+	if err == nil {
+		err = client.writer.Flush()
+	}
+	client.writeMu.Unlock()
+	if err != nil {
+		return fmt.Errorf(msg.WriteDaemonIPCRequestFailedFmt, err)
+	}
+	return nil
+}
+
 func resizeDaemonInstanceTerminal(insName string, cols uint16, rows uint16) error {
 	_, err := daemonRequest(daemonIPCRequest{Type: "resize_terminal", Instance: insName, Cols: cols, Rows: rows})
 	return err
@@ -603,12 +635,15 @@ func HandleDaemonCleanupMessage(instanceName string, placeholder string, args []
 	if !ok || sp == nil || placeholder == "" {
 		return
 	}
-	message, colorCode, ok := renderDaemonCleanupMessage(placeholder, args)
+	message, warning, ok := renderDaemonCleanupMessage(placeholder, args)
 	if !ok || message == "" {
-		log.Printf("invalid daemon cleanup message: instance=%s placeholder=%q args=%q", instanceName, placeholder, args)
+		log.Printf(msg.InvalidDaemonCleanupMessageLogFmt, instanceName, placeholder, args)
 		return
 	}
-	data := buildTerminalMessage(colorCode, message)
+	data := BuildNormalTerminalSystemMessage(message)
+	if warning {
+		data = BuildWarningTerminalSystemMessage(message)
+	}
 	limit := cfg.GetHistoryLimit() * 1024
 	sp.Mu.Lock()
 	sp.appendHistoryLocked(data, limit)
@@ -616,7 +651,7 @@ func HandleDaemonCleanupMessage(instanceName string, placeholder string, args []
 	sp.Mu.Unlock()
 }
 
-func renderDaemonCleanupMessage(placeholder string, args []string) (string, string, bool) {
+func renderDaemonCleanupMessage(placeholder string, args []string) (string, bool, bool) {
 	normalizedArgs := normalizeDaemonMessageArgs(args)
 	requireArgs := func(count int) bool {
 		if len(normalizedArgs) != count {
@@ -632,41 +667,41 @@ func renderDaemonCleanupMessage(placeholder string, args []string) (string, stri
 	switch placeholder {
 	case "cleanup_command.build_failed":
 		if !requireArgs(1) {
-			return "", "", false
+			return "", false, false
 		}
-		return fmt.Sprintf("清理命令构建失败: %s", normalizedArgs[0]), "\x1b[31m", true
+		return fmt.Sprintf(msg.CleanupCommandBuildFailedFmt, normalizedArgs[0]), true, true
 	case "cleanup_command.stdout_failed":
 		if !requireArgs(1) {
-			return "", "", false
+			return "", false, false
 		}
-		return fmt.Sprintf("清理命令输出读取失败: %s", normalizedArgs[0]), "\x1b[31m", true
+		return fmt.Sprintf(msg.CleanupCommandStdoutFailedFmt, normalizedArgs[0]), true, true
 	case "cleanup_command.stderr_failed":
 		if !requireArgs(1) {
-			return "", "", false
+			return "", false, false
 		}
-		return fmt.Sprintf("清理命令错误输出读取失败: %s", normalizedArgs[0]), "\x1b[31m", true
+		return fmt.Sprintf(msg.CleanupCommandStderrFailedFmt, normalizedArgs[0]), true, true
 	case "cleanup_command.start_failed":
 		if !requireArgs(1) {
-			return "", "", false
+			return "", false, false
 		}
-		return fmt.Sprintf("清理命令启动失败: %s", normalizedArgs[0]), "\x1b[31m", true
+		return fmt.Sprintf(msg.CleanupCommandStartFailedFmt, normalizedArgs[0]), true, true
 	case "cleanup_command.started":
 		if !requireArgs(0) {
-			return "", "", false
+			return "", false, false
 		}
-		return "清理命令开始.", "\x1b[34m", true
+		return msg.CleanupCommandStarted, false, true
 	case "cleanup_command.exited":
 		if !requireArgs(1) {
-			return "", "", false
+			return "", false, false
 		}
-		return fmt.Sprintf("清理命令退出: %s", normalizedArgs[0]), "\x1b[31m", true
+		return fmt.Sprintf(msg.CleanupCommandExitedFmt, normalizedArgs[0]), true, true
 	case "cleanup_command.completed":
 		if !requireArgs(0) {
-			return "", "", false
+			return "", false, false
 		}
-		return "清理命令完成.", "\x1b[34m", true
+		return msg.CleanupCommandCompleted, false, true
 	default:
-		return "", "", false
+		return "", false, false
 	}
 }
 

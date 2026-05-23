@@ -1,6 +1,7 @@
 package web
 
 import (
+	"IpacPanel/controller/src/msg"
 	"bufio"
 	"compress/gzip"
 	"errors"
@@ -117,11 +118,11 @@ func (w *compressionResponseWriter) Flush() {
 
 func (w *compressionResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if w.compressor != nil {
-		return nil, nil, errors.New("压缩响应已开始, 不支持劫持连接")
+		return nil, nil, errors.New(msg.CompressedResponseHijackUnsupported)
 	}
 	hijacker, ok := w.ResponseWriter.(http.Hijacker)
 	if !ok {
-		return nil, nil, fmt.Errorf("响应写入器不支持劫持连接")
+		return nil, nil, fmt.Errorf(msg.ResponseWriterHijackUnsupported)
 	}
 	return hijacker.Hijack()
 }
@@ -247,7 +248,7 @@ func copyWithoutReaderFrom(dst io.Writer, src io.Reader) (int64, error) {
 	}
 }
 
-var errInvalidWrite = errors.New("写入器返回了无效写入长度")
+var errInvalidWrite = errors.New(msg.WriterInvalidWriteLength)
 
 func addVaryHeader(header http.Header, value string) {
 	value = strings.TrimSpace(value)

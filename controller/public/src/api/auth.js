@@ -38,7 +38,7 @@ export const resetToken = async () => {
 		});
 		const payload = await parseJsonPayload(res);
 		if (payload && payload.ok === false) {
-			throw new Error(payload.message || 'reset token failed');
+			throw new Error(payload.message || '重置 Token 失败');
 		}
 		return { ok: true };
 	}, (e) => ({ ok: false, message: getErrorMessage(e) }));
@@ -52,7 +52,7 @@ export const logout = async () => {
 		});
 		const payload = await parseJsonPayload(res);
 		if (payload && payload.ok === false) {
-			throw new Error(payload.message || 'logout failed');
+			throw new Error(payload.message || '注销失败');
 		}
 		return { ok: true };
 	}, (e) => ({ ok: false, message: getErrorMessage(e) }));

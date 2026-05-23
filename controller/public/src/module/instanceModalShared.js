@@ -325,7 +325,7 @@ export const fillInstanceModalForm = ({
 	taskList,
 	accessLinksInput,
 }) => {
-	form?.reset?.();
+	form.reset();
 	if (nameInput) {
 		nameInput.value = ins.name || '';
 	}

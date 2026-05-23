@@ -16,12 +16,7 @@ import (
 
 const maxIPCHeaderSize = 64 * 1024
 const maxIPCBodySize = 16 * 1024 * 1024
-const ipcFrameSeparator = ": "
-const ipcFramePrefix byte = ':'
-
-const ipcFrameTypeInstanceOutput = "o"
-const ipcFrameTypeCleanupMessage = "cleanup_message"
-const ipcFrameInstanceOutputPrefix = ":o:"
+const ipcRequestInputStdin = "input_stdin"
 
 type IPCRequest struct {
 	Type           string `json:"-"`
@@ -103,16 +98,16 @@ func (c *IPCConn) SetDebug(debug bool) {
 func decodeIPCFrame(line []byte, target interface{ setType(string) }) error {
 	line = bytes.TrimSuffix(line, []byte{'\n'})
 	line = bytes.TrimSuffix(line, []byte{'\r'})
-	if len(line) == 0 || line[0] != ipcFramePrefix {
+	if len(line) == 0 || line[0] != ':' {
 		return fmt.Errorf("invalid IPC frame prefix")
 	}
 	line = line[1:]
-	sep := bytes.Index(line, []byte(ipcFrameSeparator))
+	sep := bytes.Index(line, []byte(": "))
 	if sep <= 0 {
 		return fmt.Errorf("invalid IPC frame header")
 	}
 	frameType := string(line[:sep])
-	if err := json.Unmarshal(line[sep+len(ipcFrameSeparator):], target); err != nil {
+	if err := json.Unmarshal(line[sep+len(": "):], target); err != nil {
 		return err
 	}
 	target.setType(frameType)
@@ -127,10 +122,10 @@ func encodeIPCFrame(frameType string, payload interface{}) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	frame := make([]byte, 0, 1+len(frameType)+len(ipcFrameSeparator)+len(data)+1)
-	frame = append(frame, ipcFramePrefix)
+	frame := make([]byte, 0, 1+len(frameType)+len(": ")+len(data)+1)
+	frame = append(frame, ':')
 	frame = append(frame, frameType...)
-	frame = append(frame, ipcFrameSeparator...)
+	frame = append(frame, ": "...)
 	frame = append(frame, data...)
 	frame = append(frame, '\n')
 	return frame, nil
@@ -152,6 +147,93 @@ func readIPCHeaderLine(reader *bufio.Reader) ([]byte, error) {
 		}
 		return nil, err
 	}
+}
+
+func readIPCInputToken(reader *bufio.Reader, delimiter byte, name string) ([]byte, error) {
+	var token []byte
+	for {
+		b, err := reader.ReadByte()
+		if err != nil {
+			return nil, fmt.Errorf("read IPC input %s: %w", name, err)
+		}
+		if b == delimiter {
+			if len(token) == 0 {
+				return nil, fmt.Errorf("IPC input %s is required", name)
+			}
+			return token, nil
+		}
+		token = append(token, b)
+		if len(token)+len(":i::") > maxIPCHeaderSize {
+			return nil, fmt.Errorf("IPC input header too large: %d bytes", len(token)+len(":i::"))
+		}
+	}
+}
+
+func parseIPCBodyLen(raw []byte) (int, error) {
+	if len(raw) == 0 {
+		return 0, fmt.Errorf("IPC body length is required")
+	}
+	value := 0
+	for _, b := range raw {
+		if b < '0' || b > '9' {
+			return 0, fmt.Errorf("IPC body length is not decimal")
+		}
+		digit := int(b - '0')
+		if value > (maxIPCBodySize-digit)/10 {
+			return 0, fmt.Errorf("IPC body too large")
+		}
+		value = value*10 + digit
+	}
+	if err := validateIPCBodyLen(value); err != nil {
+		return 0, err
+	}
+	return value, nil
+}
+
+func (c *IPCConn) readIPCInputRequest() (*IPCRequest, error) {
+	prefix, err := c.reader.Peek(len(":i:"))
+	if err != nil {
+		return nil, fmt.Errorf("read IPC input prefix: %w", err)
+	}
+	if !bytes.Equal(prefix, []byte(":i:")) {
+		return nil, fmt.Errorf("invalid IPC input prefix")
+	}
+	if _, err := c.reader.Discard(len(":i:")); err != nil {
+		return nil, fmt.Errorf("discard IPC input prefix: %w", err)
+	}
+
+	instance, err := readIPCInputToken(c.reader, ':', "instance")
+	if err != nil {
+		return nil, err
+	}
+	bodyLenRaw, err := readIPCInputToken(c.reader, ':', "body length")
+	if err != nil {
+		return nil, err
+	}
+	space, err := c.reader.ReadByte()
+	if err != nil {
+		return nil, fmt.Errorf("read IPC input header terminator: %w", err)
+	}
+	if space != ' ' {
+		return nil, fmt.Errorf("invalid IPC input header terminator")
+	}
+
+	bodyLen, err := parseIPCBodyLen(bodyLenRaw)
+	if err != nil {
+		return nil, err
+	}
+	req := IPCRequest{
+		Type:     ipcRequestInputStdin,
+		Instance: string(instance),
+		BodyLen:  bodyLen,
+	}
+	if bodyLen > 0 {
+		req.Data = make([]byte, bodyLen)
+		if _, err := io.ReadFull(c.reader, req.Data); err != nil {
+			return nil, fmt.Errorf("read IPC input body: %w", err)
+		}
+	}
+	return &req, nil
 }
 
 func validateIPCBodyLen(bodyLen int) error {
@@ -179,6 +261,13 @@ func (r *IPCRequest) setType(frameType string) {
 func (r IPCResponse) setType(frameType string) {}
 
 func (c *IPCConn) ReadRequest() (*IPCRequest, error) {
+	prefix, err := c.reader.Peek(len(":i:"))
+	if err == nil && bytes.Equal(prefix, []byte(":i:")) {
+		return c.readIPCInputRequest()
+	}
+	if err != nil && !errors.Is(err, bufio.ErrBufferFull) {
+		return nil, fmt.Errorf("read IPC message prefix: %w", err)
+	}
 	line, err := readIPCHeaderLine(c.reader)
 	if err != nil {
 		return nil, fmt.Errorf("read IPC message: %w", err)
@@ -203,7 +292,7 @@ func (c *IPCConn) ReadRequest() (*IPCRequest, error) {
 }
 
 func (c *IPCConn) WriteResponse(resp IPCResponse) error {
-	if resp.Type == ipcFrameTypeInstanceOutput {
+	if resp.Type == "o" {
 		return c.WriteInstanceOutputResponse(resp, true)
 	}
 	defer resp.Release()
@@ -248,12 +337,12 @@ func (c *IPCConn) WriteInstanceOutputResponse(resp IPCResponse, flush bool) erro
 	if strings.Contains(resp.Instance, ":") {
 		return fmt.Errorf("instance output instance contains reserved separator")
 	}
-	header := make([]byte, 0, len(ipcFrameInstanceOutputPrefix)+len(resp.Instance)+1+20+len(ipcFrameSeparator))
-	header = append(header, ipcFrameInstanceOutputPrefix...)
+	header := make([]byte, 0, len(":o:")+len(resp.Instance)+1+20+len(": "))
+	header = append(header, ":o:"...)
 	header = append(header, resp.Instance...)
 	header = append(header, ':')
 	header = strconv.AppendInt(header, int64(bodyLen), 10)
-	header = append(header, ipcFrameSeparator...)
+	header = append(header, ": "...)
 	if _, err := c.writer.Write(header); err != nil {
 		return fmt.Errorf("write IPC instance output header: %w", err)
 	}

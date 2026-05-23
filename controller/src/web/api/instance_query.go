@@ -2,22 +2,31 @@ package api
 
 import (
 	web "IpacPanel/controller/src/web"
+	"IpacPanel/controller/src/web/authz"
 
 	cfg "IpacPanel/controller/src/config"
 
 	"net/http"
 )
 
+type instanceGetRequest struct {
+	Instance string `json:"instance"`
+}
+
 func HandleApiInstanceGet(w http.ResponseWriter, r *http.Request) {
-	guard, ok := web.GuardRequest(w, r, web.GuardOptions{
-		RequireAuth:       true,
-		Methods:           []string{http.MethodGet},
-		InstanceFromQuery: true,
-	})
+	var req instanceGetRequest
+	if !web.DecodeJSONBody(w, r, &req) {
+		return
+	}
+	authedUser, ok := authz.DefaultRuntime.CurrentAuthUser(r)
+	if !ok {
+		web.WriteUnauthorized(w)
+		return
+	}
+	sp, ok := web.RequireInstanceProcessByName(w, authedUser, req.Instance)
 	if !ok {
 		return
 	}
-	sp := guard.Instance
 
 	status := sp.StatusSnapshot()
 	ins := sp.InstanceSnapshot()

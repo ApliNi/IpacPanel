@@ -77,7 +77,7 @@ export const applyFileUploadItemView = (row, item) => {
 	const percentEl = row.querySelector('.file-upload-item-percent');
 	const errEl = row.querySelector('.file-upload-error');
 	const progressEl = row.querySelector('.file-upload-progress');
-	const barEl = progressEl?.querySelector('span');
+	const barEl = progressEl.querySelector('span');
 
 	if (loadedEl) {
 		loadedEl.textContent = `${formatFileSize(item.loaded || 0)} / ${formatFileSize(item.size || 0)}`;
@@ -202,7 +202,7 @@ export const applyFileUploadFolderGroupView = (row, group) => {
 	const loadedEl = row.querySelector('.file-upload-folder-loaded');
 	const percentEl = row.querySelector('.file-upload-folder-percent');
 	const progressEl = row.querySelector('.file-upload-progress');
-	const barEl = progressEl?.querySelector('span');
+	const barEl = progressEl.querySelector('span');
 
 	const isScanning = group.scanState === 'scanning';
 	if (isScanning) {

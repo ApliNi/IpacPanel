@@ -8,8 +8,9 @@ console.log(String.raw`%c
     /\_____\\ \  __/\ \__/ \_\ \____\ \__/ \_\ \_\ \_\ \_\ \____/\ \_____\
     \/_____/ \ \ \/  \/__/\/_/\/____/\/__/\/_/\/_/\/_/\/_/\/___/  \/____ /
               \ \_\                                                       
-               \/_/                   %cIpacPanel                           
-`,'color:#008fff','color:#17d9ff');
+               \/_/                                                       
+`, 'color:#008fff');
+console.info('%c IpacPanel %c https://github.com/ApliNi/IpacPanel', 'margin: 2px 0 0 0; padding: 2px 6px; color: #fff; background: #f44b2b; font-weight: bold;', '');
 
 import { addAuthenticatedListener, UNAUTHORIZED_REASON_LOGOUT, UNAUTHORIZED_REASON_RUNTIME, addUnauthorizedListener, clearAllStoredData } from './api/core.js';
 import { fetchPublicSettings } from './api/settings.js';
@@ -132,12 +133,8 @@ const setDashboardNavigationVisible = (visible) => {
 	}
 };
 
-const setAuthenticatedNavigationVisible = (visible) => {
+const setApplicationNavigationVisible = (visible) => {
 	const navHome = document.getElementById('navHome');
-	const navSep = document.getElementById('navSep');
-	const navCurrent = document.getElementById('navCurrent');
-	const navFileSep = document.getElementById('navFileSep');
-	const navFiles = document.getElementById('navFiles');
 	if (navHome) {
 		navHome.classList.toggle('hidden', !visible);
 		const previousSeparator = navHome.previousElementSibling;
@@ -145,12 +142,29 @@ const setAuthenticatedNavigationVisible = (visible) => {
 			previousSeparator.classList.toggle('hidden', !visible);
 		}
 	}
+};
+
+const setWorkspaceNavigationVisible = (visible) => {
+	const navSep = document.getElementById('navSep');
+	const navCurrent = document.getElementById('navCurrent');
+	const navFileSep = document.getElementById('navFileSep');
+	const navFiles = document.getElementById('navFiles');
 	if (!visible) {
 		if (navSep) navSep.classList.add('hidden');
 		if (navCurrent) navCurrent.classList.add('hidden');
 		if (navFileSep) navFileSep.classList.add('hidden');
 		if (navFiles) navFiles.classList.add('hidden');
 	}
+};
+
+const setAuthenticatedNavigationVisible = (visible) => {
+	setApplicationNavigationVisible(visible);
+	setWorkspaceNavigationVisible(visible);
+};
+
+const setPublicDashboardNavigationVisible = () => {
+	setApplicationNavigationVisible(true);
+	setWorkspaceNavigationVisible(false);
 };
 
 const applyDashboardEnabled = async (enabled, options = {}) => {
@@ -187,7 +201,7 @@ const applyPublicRuntimeSettings = async (data = {}) => {
 const loadPublicRuntimeSettings = async () => {
 	const result = await fetchPublicSettings();
 	if (!result.ok) {
-		throw new Error(result.error || 'Failed to load settings');
+		throw new Error(result.error || '加载设置失败');
 	}
 	await applyPublicRuntimeSettings(result.data || {});
 	return result.data || {};
@@ -295,7 +309,7 @@ const ensureBootErrorRoot = () => {
 		</div>
 	`;
 	document.body.appendChild(bootErrorRoot);
-	bootErrorRoot.querySelector('#bootErrorRetry')?.addEventListener('click', () => {
+	bootErrorRoot.querySelector('#bootErrorRetry').addEventListener('click', () => {
 		window.location.reload();
 	});
 	return bootErrorRoot;
@@ -484,7 +498,7 @@ const bindHistoryNavigation = () => {
 const bindMainNavigation = () => {
 	const navHome = document.getElementById('navHome');
 	const navDashboard = document.getElementById('navDashboard');
-	navHome?.addEventListener('click', () => {
+	navHome.addEventListener('click', () => {
 		void leaveTerminalPage().then((closed) => {
 			if (closed !== false) {
 				setHomeRoute();
@@ -492,7 +506,7 @@ const bindMainNavigation = () => {
 			}
 		});
 	});
-	navDashboard?.addEventListener('click', () => {
+	navDashboard.addEventListener('click', () => {
 		void openDashboardPage();
 	});
 };
@@ -545,7 +559,7 @@ const bindAuthenticatedHandling = () => {
 const bootPublicDashboardPage = async (runtimeAtStart) => {
 	state.currentUser = null;
 	state.isAdmin = false;
-	setAuthenticatedNavigationVisible(false);
+	setPublicDashboardNavigationVisible();
 	setDashboardNavigationVisible(true);
 	const dashboardModule = await import('./page/dashboardPage.js');
 	if (runtimeAtStart !== getRuntimeEpoch()) {
@@ -580,7 +594,7 @@ export const main = async () => {
 		return;
 	}
 	if (bootAuthState.status !== 'authenticated') {
-		throw bootAuthState.error || new Error('Failed to resolve boot authentication state');
+		throw bootAuthState.error || new Error('无法解析启动认证状态');
 	}
 	if (!isRuntimeActive(runtimeAtStart)) {
 		return;

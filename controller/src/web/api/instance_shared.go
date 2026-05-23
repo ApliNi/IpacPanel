@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	errInstanceNotFound       = errors.New("实例不存在")
+	errInstanceNotFound       = errors.New(msg.InstanceNotFound)
 	errInstanceNameExists     = errors.New(msg.InstanceNameDuplicate)
 	errInstanceConfigNotFound = errors.New(msg.InstanceConfigNotFound)
 )
@@ -125,17 +125,17 @@ func buildInstanceUpdateMutationPlan(name string, req cfg.Instance) (cfg.Mutatio
 		process.SyncInstancePointers()
 	}
 	if name != req.Name {
-		plan.AddPostCommit("sync daemon instance runtime name", func() error {
+		plan.AddPostCommit(msg.SyncDaemonInstanceRuntimeName, func() error {
 			return process.RenameDaemonInstance(oldName, req.Name)
 		})
-		plan.AddPostCommit("cleanup old instance tasks", func() error {
+		plan.AddPostCommit(msg.CleanupOldInstanceTasks, func() error {
 			return process.RebuildInstanceTasks(name)
 		})
 	}
-	plan.AddPostCommit("sync daemon instance runtime config", func() error {
+	plan.AddPostCommit(msg.SyncDaemonInstanceRuntimeConfig, func() error {
 		return process.UpdateDaemonInstanceConfig(req.Name, req.CleanupCommand)
 	})
-	plan.AddPostCommit("rebuild instance tasks", func() error {
+	plan.AddPostCommit(msg.RebuildInstanceTasks, func() error {
 		return process.RebuildInstanceTasks(req.Name)
 	})
 	return plan, nil

@@ -1,4 +1,4 @@
-﻿package api
+package api
 
 import (
 	cfg "IpacPanel/controller/src/config"

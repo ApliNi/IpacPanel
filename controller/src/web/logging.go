@@ -2,6 +2,7 @@ package web
 
 import (
 	cfg "IpacPanel/controller/src/config"
+	"IpacPanel/controller/src/msg"
 	"bufio"
 	"crypto/rand"
 	"encoding/hex"
@@ -150,7 +151,7 @@ func (w *loggingResponseWriter) Flush() {
 func (w *loggingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	hijacker, ok := w.ResponseWriter.(http.Hijacker)
 	if !ok {
-		return nil, nil, fmt.Errorf("响应写入器不支持劫持连接")
+		return nil, nil, fmt.Errorf(msg.ResponseWriterHijackUnsupported)
 	}
 	return hijacker.Hijack()
 }
@@ -215,7 +216,7 @@ func WithRecover(next http.Handler) http.Handler {
 			if recovered == nil {
 				return
 			}
-			message := fmt.Sprintf("panic: %v", recovered)
+			message := fmt.Sprintf(msg.PanicLogFmt, recovered)
 			fields := baseRequestFields(w, r)
 			fields = append(fields,
 				logField{Key: "level", Value: "error"},
@@ -224,15 +225,15 @@ func WithRecover(next http.Handler) http.Handler {
 				logField{Key: "stack", Value: string(debug.Stack())},
 			)
 			LogEvent(fields...)
-			MarkAPIError(w, http.StatusInternalServerError, "服务器内部错误", fmt.Errorf("%s", message))
+			MarkAPIError(w, http.StatusInternalServerError, msg.InternalServerError, fmt.Errorf("%s", message))
 			if rw, ok := w.(requestLogCarrier); ok && rw.WroteHeader() {
 				return
 			}
 			if strings.HasPrefix(r.URL.Path, "/api/") {
-				WriteJSONStatus(w, http.StatusInternalServerError, APIResponse{OK: false, Message: "服务器内部错误"}, "返回 panic 错误失败")
+				WriteJSONStatus(w, http.StatusInternalServerError, APIResponse{OK: false, Message: msg.InternalServerError}, msg.WritePanicResponseFailed)
 				return
 			}
-			http.Error(w, "服务器内部错误", http.StatusInternalServerError)
+			http.Error(w, msg.InternalServerError, http.StatusInternalServerError)
 		}()
 		next.ServeHTTP(w, r)
 	})

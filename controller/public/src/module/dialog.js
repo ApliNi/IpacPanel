@@ -98,9 +98,9 @@ const bindEvents = () => {
         }
     }, true);
 
-    dom.root?.addEventListener('mousedown', (e) => {
+    dom.root.addEventListener('mousedown', (e) => {
         if (!state.active) return;
-        const isBackdrop = e.target === dom.root || e.target?.classList?.contains?.('dialog-backdrop');
+        const isBackdrop = e.target === dom.root || (e.target instanceof Element && e.target.classList.contains('dialog-backdrop'));
         if (!isBackdrop) return;
         if (state.active.type === 'alert') {
             state.active.onOk();
@@ -109,10 +109,10 @@ const bindEvents = () => {
         }
     });
 
-    dom.btnCancel?.addEventListener('click', () => {
+    dom.btnCancel.addEventListener('click', () => {
         state.active?.onCancel?.();
     });
-    dom.btnOk?.addEventListener('click', () => {
+    dom.btnOk.addEventListener('click', () => {
         state.active?.onOk?.();
     });
 };
@@ -158,9 +158,9 @@ const openDialog = (payload) => new Promise((resolve) => {
         dom.root.classList.add('visible');
         if (payload.type === 'prompt' && dom.input) {
             dom.input.focus();
-            dom.input.select?.();
+            dom.input.select();
         } else {
-            dom.btnOk?.focus?.();
+            dom.btnOk.focus();
         }
     });
 
@@ -191,7 +191,7 @@ const openDialog = (payload) => new Promise((resolve) => {
         }
 		if (payload.type === 'prompt') {
 			const maxLength = Number.isFinite(Number(payload.maxLength)) ? Math.max(0, Math.trunc(Number(payload.maxLength))) : DEFAULT_PROMPT_MAX_LENGTH;
-			const value = Array.from(String(dom.input?.value || '')).slice(0, maxLength).join('').trim();
+			const value = Array.from(String(dom.input.value || '')).slice(0, maxLength).join('').trim();
 			close(value);
 			return;
         }

@@ -1,5 +1,5 @@
-import { buildDashboardEventsURL } from '../api/dashboard.js';
-import { dispatchUnauthorized } from '../api/core.js';
+import { openDashboardEventStream } from '../api/dashboard.js';
+import { dispatchUnauthorized, parseSSEJsonData, readSSEStream } from '../api/core.js';
 import { mainContainer, state } from '../ui.js';
 
 console.log('[页面] 仪表板页加载中...');
@@ -115,7 +115,7 @@ const dom = {
 const pageState = {
 	active: false,
 	activePage: DASHBOARD_PAGE_SYSTEM,
-	source: null,
+	stream: null,
 	reconnectTimer: 0,
 	reconnectAttempt: 0,
 	lastSeq: 0,
@@ -154,7 +154,7 @@ const pageState = {
 const getUPlotRuntime = () => {
 	const UPlotCtor = window.uPlot;
 	if (typeof UPlotCtor !== 'function') {
-		throw new Error('uPlot runtime is unavailable');
+		throw new Error('uPlot 运行时不可用');
 	}
 	return UPlotCtor;
 };
@@ -999,13 +999,7 @@ const trimDashboardSamples = () => {
 	pageState.lastSamples = pageState.lastSamples.filter((sample) => sample.time >= cutoff);
 };
 
-const parseSSEPayload = (event) => {
-	try {
-		return JSON.parse(event.data || 'null');
-	} catch (error) {
-		throw new Error(`仪表板推送数据解析失败: ${error.message || String(error)}`);
-	}
-};
+const parseSSEPayload = (event) => parseSSEJsonData(event, '仪表板推送数据解析失败');
 
 const handleDashboardFull = (payload) => {
 	if (!payload || typeof payload !== 'object') {
@@ -1161,9 +1155,9 @@ const stopDashboardStream = () => {
 		window.clearTimeout(pageState.reconnectTimer);
 		pageState.reconnectTimer = 0;
 	}
-	if (pageState.source) {
-		pageState.source.close();
-		pageState.source = null;
+	if (pageState.stream) {
+		pageState.stream.controller.abort();
+		pageState.stream = null;
 	}
 };
 
@@ -1200,96 +1194,68 @@ const restartDashboardStream = () => {
 	}
 };
 
-function connectDashboardStream() {
-	if (!pageState.active || !isSystemDashboardPageActive() || pageState.source) {
+const handleDashboardStreamEvent = (event, handler, errorText, reconnectNow) => {
+	try {
+		handler(parseSSEPayload(event));
+	} catch (error) {
+		console.error(`[Dashboard] ${errorText}:`, error);
+		setError(error.message || String(error));
+		if (reconnectNow) {
+			stopDashboardStream();
+			scheduleDashboardReconnect(0);
+		}
+	}
+};
+
+async function connectDashboardStream() {
+	if (!pageState.active || !isSystemDashboardPageActive() || pageState.stream) {
 		return;
 	}
-	const source = new EventSource(buildDashboardEventsURL({
-		minutes: pageState.minutes,
-		nic: pageState.selectedInterface,
-		disk: pageState.selectedDisk,
-	}));
-	pageState.source = source;
-	source.addEventListener('auth_required', () => {
-		stopDashboardStream();
-		dispatchUnauthorized();
-	});
-	source.addEventListener('dashboard_full', (event) => {
-		try {
-			handleDashboardFull(parseSSEPayload(event));
-		} catch (error) {
-			console.error('[Dashboard] 处理全量推送失败:', error);
-			setError(error.message || String(error));
-			stopDashboardStream();
-			scheduleDashboardReconnect(0);
-		}
-	});
-	source.addEventListener('dashboard_full_meta', (event) => {
-		try {
-			handleDashboardFullMeta(parseSSEPayload(event));
-		} catch (error) {
-			console.error('[Dashboard] 处理全量元数据推送失败:', error);
-			setError(error.message || String(error));
-			stopDashboardStream();
-			scheduleDashboardReconnect(0);
-		}
-	});
-	source.addEventListener('dashboard_full_samples', (event) => {
-		try {
-			handleDashboardFullSamples(parseSSEPayload(event));
-		} catch (error) {
-			console.error('[Dashboard] 处理全量采样推送失败:', error);
-			setError(error.message || String(error));
-			stopDashboardStream();
-			scheduleDashboardReconnect(0);
-		}
-	});
-	source.addEventListener('dashboard_append', (event) => {
-		try {
-			handleDashboardAppend(parseSSEPayload(event));
-		} catch (error) {
-			console.error('[Dashboard] 处理增量推送失败:', error);
-			setError(error.message || String(error));
-			stopDashboardStream();
-			scheduleDashboardReconnect(0);
-		}
-	});
-	source.addEventListener('dashboard_options', (event) => {
-		try {
-			handleDashboardOptions(parseSSEPayload(event));
-		} catch (error) {
-			console.error('[Dashboard] 处理选项推送失败:', error);
-			setError(error.message || String(error));
-		}
-	});
-	source.addEventListener('dashboard_disabled', (event) => {
-		try {
-			handleDashboardDisabled(parseSSEPayload(event));
-		} catch (error) {
-			console.error('[Dashboard] 处理关闭状态推送失败:', error);
-			setError(error.message || String(error));
-		}
-	});
-	source.addEventListener('dashboard_error', (event) => {
-		try {
-			const payload = parseSSEPayload(event);
-			const message = payload && typeof payload === 'object' ? String(payload.message || '').trim() : '';
-			setError(message || '仪表板推送发生错误.');
-		} catch (error) {
-			console.error('[Dashboard] 处理错误推送失败:', error);
-			setError(error.message || String(error));
-		}
-	});
-	source.onopen = () => {
+	const controller = new AbortController();
+	const stream = { controller };
+	pageState.stream = stream;
+	try {
+		const res = await openDashboardEventStream({
+			minutes: pageState.minutes,
+			nic: pageState.selectedInterface,
+			disk: pageState.selectedDisk,
+		}, { signal: controller.signal });
 		pageState.reconnectAttempt = 0;
-	};
-	source.onerror = () => {
-		if (source !== pageState.source) {
-			return;
+		await readSSEStream(res, {
+			auth_required() {
+				stopDashboardStream();
+				dispatchUnauthorized();
+			},
+			dashboard_full: (event) => handleDashboardStreamEvent(event, handleDashboardFull, '处理全量推送失败', true),
+			dashboard_full_meta: (event) => handleDashboardStreamEvent(event, handleDashboardFullMeta, '处理全量元数据推送失败', true),
+			dashboard_full_samples: (event) => handleDashboardStreamEvent(event, handleDashboardFullSamples, '处理全量采样推送失败', true),
+			dashboard_append: (event) => handleDashboardStreamEvent(event, handleDashboardAppend, '处理增量推送失败', true),
+			dashboard_options: (event) => handleDashboardStreamEvent(event, handleDashboardOptions, '处理选项推送失败', false),
+			dashboard_disabled: (event) => handleDashboardStreamEvent(event, handleDashboardDisabled, '处理关闭状态推送失败', false),
+			dashboard_error(event) {
+				try {
+					const payload = parseSSEPayload(event);
+					const message = payload && typeof payload === 'object' ? String(payload.message || '').trim() : '';
+					setError(message || '仪表板推送发生错误.');
+				} catch (error) {
+					console.error('[Dashboard] 处理错误推送失败:', error);
+					setError(error.message || String(error));
+				}
+			},
+		});
+	} catch (error) {
+		if (error.name !== 'AbortError') {
+			console.error('[Dashboard] 仪表板推送连接失败:', error);
+			setError(error.message || String(error));
 		}
-		stopDashboardStream();
-		scheduleDashboardReconnect();
-	};
+	} finally {
+		if (pageState.stream === stream) {
+			pageState.stream = null;
+			if (pageState.active && isSystemDashboardPageActive()) {
+				scheduleDashboardReconnect();
+			}
+		}
+	}
 }
 
 const resizeCharts = () => {
