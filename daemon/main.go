@@ -30,7 +30,7 @@ type versionInfo struct {
 func PrintVersion() {
 	info := versionInfo{
 		Role:           "daemon",
-		Version:        version.DaemonVersion,
+		Version:        version.Version,
 		DaemonProtocol: version.DaemonProtocol,
 	}
 	var out bytes.Buffer
@@ -117,7 +117,7 @@ func main() {
 	appBaseDir = detectAppBaseDir()
 	initProcessLogger("D")
 
-	log.Printf("IpacPanel Daemon v%s [protocol=%d]", version.DaemonVersion, version.DaemonProtocol)
+	log.Printf("IpacPanel Daemon v%s [protocol=%d]", version.Version, version.DaemonProtocol)
 	if runtime.GOOS == "windows" {
 		log.Printf("platform: windows")
 	} else {

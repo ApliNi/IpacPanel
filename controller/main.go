@@ -31,7 +31,7 @@ func publicFS() (fs.FS, error) {
 func PrintVersion() {
 	info := versionInfo{
 		Role:           "controller",
-		Version:        version.ControllerVersion,
+		Version:        version.Version,
 		DaemonProtocol: version.DaemonProtocol,
 	}
 	var out bytes.Buffer
