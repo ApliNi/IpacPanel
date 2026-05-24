@@ -33,6 +33,21 @@ const postFileActionSilent = async (url, payload) => {
 	return await parseJsonData(res);
 };
 
+const triggerSilentDownload = (url) => {
+	const downloadUrl = String(url || '').trim();
+	if (!downloadUrl) {
+		throw new Error('下载地址为空');
+	}
+	const iframe = document.createElement('iframe');
+	iframe.src = downloadUrl;
+	iframe.style.display = 'none';
+	iframe.setAttribute('aria-hidden', 'true');
+	document.body.appendChild(iframe);
+	setTimeout(() => {
+		iframe.remove();
+	}, 5 * 60 * 1000);
+};
+
 const TEXT_UPLOAD_THRESHOLD_BYTES = 9 * 1024 * 1024;
 const TEXT_UPLOAD_CHUNK_SIZE_BYTES = 9 * 1024 * 1024;
 const TEXT_UPLOAD_CONCURRENCY = 4;
@@ -150,6 +165,27 @@ export const fetchFiles = async (name, path = '', fallback = false, page = 1, se
 		return await parseJsonData(res);
 	}, {
 		logMessage: `[API] 获取实例 ${name} 文件列表失败:`,
+	});
+};
+
+export const downloadFileArchive = async (name, include, exclude = [], fallbackName = 'archive.zip') => {
+	return await withApiResult(async () => {
+		const res = await authedFetch('/api/file/archive', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				instance: name,
+				include: Array.isArray(include) ? include : [],
+				exclude: Array.isArray(exclude) ? exclude : [],
+			}),
+		});
+		const data = await parseJsonData(res);
+		const downloadUrl = String(data && data.download_url ? data.download_url : '').trim();
+		const filename = String(data && data.filename ? data.filename : fallbackName).trim() || 'archive.zip';
+		triggerSilentDownload(downloadUrl);
+		return { download_url: downloadUrl, filename };
+	}, {
+		logMessage: '[API] 打包下载失败:',
 	});
 };
 

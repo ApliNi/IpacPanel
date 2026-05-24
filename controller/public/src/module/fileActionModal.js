@@ -1,7 +1,7 @@
 import { mainModalOverlay, state } from "../ui.js";
 import { buildAuthedFileRawUrl, parseSSEJsonData, readSSEStream } from '../api/core.js';
 import { clearTimer, formatFileSize, withActionsDisabled } from '../utils/utils.js';
-import { deleteFile, renameFile, streamFileExtractAction } from '../api/file.js';
+import { deleteFile, downloadFileArchive, renameFile, streamFileExtractAction } from '../api/file.js';
 import { showAlert, showConfirm } from './dialog.js';
 import { getFileType } from '../utils/icon.js';
 import { InputValidation } from '../utils/inputValidation.js';
@@ -166,6 +166,7 @@ const modalState = {
 		error: '',
 	},
 	deleting: false,
+	downloading: false,
     isBound: false,
 };
 
@@ -641,6 +642,7 @@ const close = () => {
 		modalState.initialPage = 'info';
 		modalState.isArchive = false;
 		modalState.deleting = false;
+		modalState.downloading = false;
 		modalState.extracting = false;
 		modalState.extractAbortController = null;
 		modalState.extractCanceling = false;
@@ -677,7 +679,8 @@ const open = (entryOrOptions) => {
 		dom.fileRenameName.value = entryName;
 	}
 	if (dom.fileActionDownload) {
-		dom.fileActionDownload.style.display = entry.isDir ? 'none' : '';
+		dom.fileActionDownload.style.display = '';
+		dom.fileActionDownload.textContent = 'DOWNLOAD';
 	}
 	if (dom.fileActionTabs) {
 		dom.fileActionTabs.classList.remove('hidden');
@@ -774,6 +777,60 @@ const openFileDownloadPage = () => {
 	window.open(url, '_blank', 'noopener');
 };
 
+const normalizeArchiveRule = (entry) => {
+	const path = String(entry.path || '').trim();
+	if (!path) {
+		return null;
+	}
+	return {
+		path,
+		is_dir: !!entry.isDir,
+	};
+};
+
+const downloadDirectoryArchive = async () => {
+	const entry = modalState.currentFileActionEntry;
+	if (!entry || !entry.isDir) {
+		return;
+	}
+	const instanceName = String(state.currentInstanceName || '').trim();
+	const rule = normalizeArchiveRule(entry);
+	if (!instanceName || !rule) {
+		return;
+	}
+	modalState.downloading = true;
+	if (dom.fileActionDownload) {
+		dom.fileActionDownload.textContent = 'DOWNLOADING...';
+	}
+	try {
+		const fallbackName = `${String(entry.name || 'archive').trim() || 'archive'}.zip`;
+		const result = await downloadFileArchive(instanceName, [rule], [], fallbackName);
+		if (!result.ok) {
+			if (result.unauthorized) {
+				return;
+			}
+			await showAlert(`下载失败: ${result.error || '操作失败'}`, { title: 'ERROR', tone: 'danger' });
+		}
+	} finally {
+		modalState.downloading = false;
+		if (dom.fileActionDownload) {
+			dom.fileActionDownload.textContent = 'DOWNLOAD';
+		}
+	}
+};
+
+const downloadCurrentEntry = async () => {
+	const entry = modalState.currentFileActionEntry;
+	if (!entry) {
+		return;
+	}
+	if (!entry.isDir) {
+		openFileDownloadPage();
+		return;
+	}
+	await downloadDirectoryArchive();
+};
+
 const bindEvents = () => {
     if (modalState.isBound) {
         return;
@@ -787,7 +844,9 @@ const bindEvents = () => {
         dom.fileActionCancel.onclick = () => requestClose();
     }
 	if (dom.fileActionDownload) {
-		dom.fileActionDownload.onclick = () => openFileDownloadPage();
+		dom.fileActionDownload.onclick = async () => {
+			await withActionsDisabled(dom.fileInfoActions, downloadCurrentEntry);
+		};
 	}
 	if (dom.fileActionTabInfo) {
 		dom.fileActionTabInfo.onclick = () => {

@@ -72,6 +72,8 @@ var Routes = []Route{
 	{Path: "/api/file/upload/chunk", Policy: userPost, Handler: HandleApiFileUploadChunk},
 	{Path: "/api/file/upload/abort", Policy: userPost, Handler: HandleApiFileUploadAbort},
 	{Path: "/api/file/upload/complete", Policy: userPost, Handler: HandleApiFileUploadComplete},
+	{Path: "/api/file/archive", Policy: userPost, Handler: HandleApiFileArchive},
+	{Path: "/api/file/archive/download", Policy: userGet, Handler: HandleApiFileArchiveDownload},
 	{Path: "/api/file/batch", Policy: userSSE, Handler: HandleApiFileBatch},
 	{Path: "/api/file/extract", Policy: userSSE, Handler: HandleApiFileExtract},
 

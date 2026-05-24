@@ -1,9 +1,10 @@
 import { mainModalOverlay, state } from "../ui.js";
 import { clearTimer, withActionsDisabled } from '../utils/utils.js';
 import { parseSSEJsonData, readSSEStream } from '../api/core.js';
-import { streamFileBatchAction } from '../api/file.js';
+import { downloadFileArchive, streamFileBatchAction } from '../api/file.js';
 import { showAlert } from './dialog.js';
 import { InputValidation } from '../utils/inputValidation.js';
+import { setupAutoResizeTextarea } from '../utils/autoTextarea.js';
 
 console.log('[模块] FileBatchActionModal 加载中...');
 
@@ -28,7 +29,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 						</div>
 						<div class="field-group field-group-dynamic-label">
 							<span id="fileBatchCopyRulesLabel">RULES</span>
-							<div id="fileBatchCopyRules" class="text-editable input file-batch-rule-box" contenteditable="plaintext-only" spellcheck="false"></div>
+							<textarea id="fileBatchCopyRules" class="input auto-textarea file-batch-rule-box" rows="4" maxlength="10485760" spellcheck="false"></textarea>
 						</div>
 						<div class="file-batch-copy-options">
 							<label class="checkbox-group">
@@ -49,7 +50,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 						</div>
 						<div class="field-group field-group-dynamic-label">
 							<span id="fileBatchMoveRulesLabel">RULES</span>
-							<div id="fileBatchMoveRules" class="text-editable input file-batch-rule-box" contenteditable="plaintext-only" spellcheck="false"></div>
+							<textarea id="fileBatchMoveRules" class="input auto-textarea file-batch-rule-box" rows="4" maxlength="10485760" spellcheck="false"></textarea>
 						</div>
 						<label class="checkbox-group">
 							<input id="fileBatchMoveOverwrite" type="checkbox">
@@ -63,13 +64,18 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 						</div>
 						<div class="field-group field-group-dynamic-label">
 							<span id="fileBatchDeleteRulesLabel">RULES</span>
-							<div id="fileBatchDeleteRules" class="text-editable input file-batch-rule-box" contenteditable="plaintext-only" spellcheck="false"></div>
+							<textarea id="fileBatchDeleteRules" class="input auto-textarea file-batch-rule-box" rows="4" maxlength="10485760" spellcheck="false"></textarea>
 						</div>
 					</div>
 
-					<div class="modal-actions">
-						<button class="btn" type="button" id="fileBatchCancel">CANCEL</button>
-						<button class="btn btn-start" type="button" id="fileBatchSubmit">RUN</button>
+					<div class="modal-actions modal-actions-split">
+						<div class="modal-actions-group">
+							<button class="btn" type="button" id="fileBatchDownload">DOWNLOAD</button>
+						</div>
+						<div class="modal-actions-group">
+							<button class="btn" type="button" id="fileBatchCancel">CANCEL</button>
+							<button class="btn btn-start" type="button" id="fileBatchSubmit">RUN</button>
+						</div>
 					</div>
 				</div>
 			</div>
@@ -97,6 +103,7 @@ const dom = {
 	copyOverwrite: document.getElementById('fileBatchCopyOverwrite'),
 	copyDuplicate: document.getElementById('fileBatchCopyDuplicate'),
 	moveOverwrite: document.getElementById('fileBatchMoveOverwrite'),
+	download: document.getElementById('fileBatchDownload'),
 	cancel: document.getElementById('fileBatchCancel'),
 	submit: document.getElementById('fileBatchSubmit'),
 	actions: document.querySelector('#fileBatchActionModal .modal-actions'),
@@ -122,6 +129,23 @@ const getCurrentDir = () => {
 	return '';
 };
 
+const getActiveRulesBox = () => {
+	return modalState.page === 'move'
+		? dom.moveRules
+		: (modalState.page === 'delete' ? dom.deleteRules : dom.copyRules);
+};
+
+const resizeActiveRulesBox = () => {
+	setupAutoResizeTextarea(getActiveRulesBox())();
+};
+
+const updateSubmitText = () => {
+	if (!dom.submit || modalState.submitMode !== 'run') {
+		return;
+	}
+	dom.submit.textContent = 'RUN';
+};
+
 const applyPage = (page) => {
 	modalState.page = page;
 	dom.tabCopy.classList.toggle('active', page === 'copy');
@@ -139,6 +163,8 @@ const applyPage = (page) => {
 	if (page === 'move' && dom.moveOverwrite) {
 		dom.moveOverwrite.checked = false;
 	}
+	updateSubmitText();
+	requestAnimationFrame(resizeActiveRulesBox);
 };
 
 const resetProgress = () => {
@@ -147,7 +173,7 @@ const resetProgress = () => {
 	modalState.failCount = 0;
 	updateRulesLabels();
 	modalState.submitMode = 'run';
-	if (dom.submit) dom.submit.textContent = 'RUN';
+	updateSubmitText();
 };
 
 const updateTargets = () => {
@@ -190,15 +216,38 @@ const buildRulesText = () => {
 
 const updateRules = () => {
 	const text = InputValidation.truncateUTF8Bytes(buildRulesText(), InputValidation.limits.fileContent);
-	if (dom.copyRules) dom.copyRules.textContent = text;
-	if (dom.moveRules) dom.moveRules.textContent = text;
-	if (dom.deleteRules) dom.deleteRules.textContent = text;
+	if (dom.copyRules) dom.copyRules.value = text;
+	if (dom.moveRules) dom.moveRules.value = text;
+	if (dom.deleteRules) dom.deleteRules.value = text;
+	[dom.copyRules, dom.moveRules, dom.deleteRules].forEach((box) => setupAutoResizeTextarea(box)());
 };
 
 const truncateRuleBox = (box) => {
 	if (box) {
-		box.textContent = InputValidation.truncateUTF8Bytes(box.textContent || '', InputValidation.limits.fileContent);
+		box.value = InputValidation.truncateUTF8Bytes(box.value || '', InputValidation.limits.fileContent);
+		setupAutoResizeTextarea(box)();
 	}
+};
+
+const getNormalizedSelectionRules = async () => {
+	const selection = modalState.fileSelection?.getSelection?.() || {};
+	const includeRaw = Array.isArray(selection.include) ? selection.include : [];
+	const excludeRaw = Array.isArray(selection.exclude) ? selection.exclude : [];
+	const normalizeRule = (r) => {
+		const path = String(r?.path || '').trim();
+		if (!path) return null;
+		return {
+			path,
+			is_dir: !!(r?.is_dir ?? r?.isDir),
+		};
+	};
+	const include = includeRaw.map(normalizeRule).filter(Boolean);
+	const exclude = excludeRaw.map(normalizeRule).filter(Boolean);
+	if (!include.length && !exclude.length) {
+		await showAlert('未选择任何规则', { title: 'INPUT' });
+		return null;
+	}
+	return { include, exclude };
 };
 
 const close = () => {
@@ -226,6 +275,7 @@ const open = () => {
 	dom.modal.classList.remove('closing');
 	requestAnimationFrame(() => {
 		dom.modal.classList.add('visible');
+		resizeActiveRulesBox();
 	});
 };
 
@@ -243,16 +293,7 @@ const updateRulesLabels = () => {
 	if (dom.moveRulesLabel) dom.moveRulesLabel.textContent = `RULES [${suffix}]`;
 	if (dom.deleteRulesLabel) dom.deleteRulesLabel.textContent = `RULES [${suffix}]`;
 };
-
-
-
-const getActiveRulesBox = () => {
-	return modalState.page === 'move'
-		? dom.moveRules
-		: (modalState.page === 'delete' ? dom.deleteRules : dom.copyRules);
-};
-
-const appendFail = (path, reason, isDir) => {
+const appendFail = (path, reason, isDir, rulesBox = getActiveRulesBox()) => {
 	const p = String(path || '').trim();
 	if (!p) return;
 	const r = String(reason || '').trim() || '失败';
@@ -262,9 +303,10 @@ const appendFail = (path, reason, isDir) => {
 	const dir = (typeof isDir === 'boolean') ? isDir : (p.endsWith('/') || p.endsWith('\\'));
 	const rel = formatRulePath(p, dir);
 	const line = `[${r}] ${rel}`;
-	const box = getActiveRulesBox();
+	const box = rulesBox;
 	if (box) {
-		box.textContent = InputValidation.truncateUTF8Bytes(`${box.textContent || ''}${box.textContent ? '\n' : ''}${line}`, InputValidation.limits.fileContent);
+		box.value = InputValidation.truncateUTF8Bytes(`${box.value || ''}${box.value ? '\n' : ''}${line}`, InputValidation.limits.fileContent);
+		setupAutoResizeTextarea(box)();
 	}
 };
 
@@ -326,27 +368,18 @@ const runBatch = async ({ action, overwrite }) => {
 		await showAlert('实例未选择', { title: 'ERROR', tone: 'danger' });
 		return;
 	}
-	const selection = modalState.fileSelection?.getSelection?.() || {};
-	const includeRaw = Array.isArray(selection.include) ? selection.include : [];
-	const excludeRaw = Array.isArray(selection.exclude) ? selection.exclude : [];
-	const normalizeRule = (r) => {
-		const path = String(r?.path || '').trim();
-		if (!path) return null;
-		return {
-			path,
-			is_dir: !!(r?.is_dir ?? r?.isDir),
-		};
-	};
-	const include = includeRaw.map(normalizeRule).filter(Boolean);
-	const exclude = excludeRaw.map(normalizeRule).filter(Boolean);
-	if (!include.length && !exclude.length) {
-		await showAlert('未选择任何规则', { title: 'INPUT' });
+	const rules = await getNormalizedSelectionRules();
+	if (!rules) {
 		return;
 	}
+	const { include, exclude } = rules;
 	resetProgress();
 	// Before running, clear log area (current page rules box will be used as error output).
 	const box = getActiveRulesBox();
-	if (box) box.textContent = '';
+	if (box) {
+		box.value = '';
+		setupAutoResizeTextarea(box)();
+	}
 
 	const res = await streamFileBatchAction(instanceName, {
 		action,
@@ -365,7 +398,7 @@ const runBatch = async ({ action, overwrite }) => {
 				return;
 			}
 			if (name === 'fail') {
-				appendFail(payload?.path, payload?.reason, payload?.is_dir);
+				appendFail(payload?.path, payload?.reason, payload?.is_dir, box);
 				return;
 			}
 			if (name === 'end') {
@@ -385,7 +418,26 @@ const runBatch = async ({ action, overwrite }) => {
 		},
 		});
 	} catch (error) {
-		appendFail(getCurrentDir() || './', error?.message || '操作失败', true);
+		appendFail(getCurrentDir() || './', error?.message || '操作失败', true, box);
+	}
+};
+
+const downloadBatchArchive = async () => {
+	const instanceName = state.currentInstanceName;
+	if (!instanceName) {
+		await showAlert('实例未选择', { title: 'ERROR', tone: 'danger' });
+		return;
+	}
+	const rules = await getNormalizedSelectionRules();
+	if (!rules) {
+		return;
+	}
+	const result = await downloadFileArchive(instanceName, rules.include, rules.exclude, 'archive.zip');
+	if (!result.ok) {
+		if (result.unauthorized) {
+			return;
+		}
+		await showAlert(`下载失败: ${result.error || '操作失败'}`, { title: 'ERROR', tone: 'danger' });
 	}
 };
 
@@ -400,6 +452,7 @@ const bindEvents = () => {
 	dom.tabMove.addEventListener('click', () => applyPage('move'));
 	dom.tabDelete.addEventListener('click', () => applyPage('delete'));
 	[dom.copyRules, dom.moveRules, dom.deleteRules].forEach((box) => {
+		setupAutoResizeTextarea(box);
 		box.addEventListener('blur', () => truncateRuleBox(box));
 	});
 	dom.copyDuplicate.addEventListener('change', () => {
@@ -411,6 +464,9 @@ const bindEvents = () => {
 		if (dom.copyOverwrite.checked && dom.copyDuplicate) {
 			dom.copyDuplicate.checked = false;
 		}
+	});
+	dom.download.addEventListener('click', async () => {
+		await withActionsDisabled(dom.actions, downloadBatchArchive);
 	});
 
 	dom.submit.addEventListener('click', async () => {

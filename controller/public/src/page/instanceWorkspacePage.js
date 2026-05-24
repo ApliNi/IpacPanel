@@ -7,6 +7,7 @@ import { bootFileManager, cleanupFileLastDirs, ensureFileManagerDom, getUpdateDi
 import { showAlert, showConfirm } from '../module/dialog.js';
 import { InputValidation } from '../utils/inputValidation.js';
 import { normalizeTerminalMode, terminalMode } from '../utils/enum.js';
+import { setupAutoResizeTextarea } from '../utils/autoTextarea.js';
 import {
 	buildTaskRow,
 	collectInstanceTasks,
@@ -50,11 +51,11 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 						</div>
 						<div class="field-group">
 							<span>PATH</span>
-							<div id="instanceModalPath" class="text-editable input" contenteditable="plaintext-only" spellcheck="false" data-placeholder=" ./instances/"></div>
+							<textarea id="instanceModalPath" name="path" class="input auto-textarea auto-textarea-single-line" rows="1" maxlength="4096" spellcheck="false" placeholder=" ./instances/"></textarea>
 						</div>
 						<div class="field-group">
 							<span>START COMMAND</span>
-							<div id="instanceModalCommand" class="text-editable input" contenteditable="plaintext-only" spellcheck="false"></div>
+							<textarea id="instanceModalCommand" name="command" class="input auto-textarea auto-textarea-single-line" rows="1" maxlength="4096" spellcheck="false"></textarea>
 						</div>
 						<div class="inline-config-row">
 							<label class="checkbox-group">
@@ -436,17 +437,10 @@ const applyRuntimeSettingsToTerminalPage = (settings = {}) => {
 	}
 };
 
-const syncEditablePlaceholderState = (el) => {
-	if (!el) return;
-	const value = normalizeSingleLineText(el.textContent || '');
-	el.classList.toggle('is-empty', !value);
-};
-
 const bindSingleLineEditor = (el, maxLength = 0) => {
     if (!el) return;
-	const normalizeEditorValue = () => InputValidation.truncateText(normalizeSingleLineText(el.textContent || ''), maxLength || Number.MAX_SAFE_INTEGER);
-
-	syncEditablePlaceholderState(el);
+	const normalizeEditorValue = () => InputValidation.truncateText(normalizeSingleLineText(el.value || ''), maxLength || Number.MAX_SAFE_INTEGER);
+	const scheduleResize = setupAutoResizeTextarea(el);
 
     el.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') {
@@ -457,36 +451,19 @@ const bindSingleLineEditor = (el, maxLength = 0) => {
 	    el.addEventListener('paste', (event) => {
 		event.preventDefault();
 		const text = normalizeSingleLineText(event.clipboardData?.getData('text/plain') || '');
-		if (typeof el.textContent !== 'string') {
-			syncEditablePlaceholderState(el);
-			return;
-		}
-		try {
-			// contenteditable="plaintext-only" should keep it safe, but we still insert text only.
-			const sel = window.getSelection?.();
-			if (!sel || sel.rangeCount === 0) {
-				el.textContent = (el.textContent || '') + text;
-				return;
-			}
-			const range = sel.getRangeAt(0);
-			range.deleteContents();
-			range.insertNode(document.createTextNode(text));
-			// Move caret after inserted text
-			range.collapse(false);
-			sel.removeAllRanges();
-			sel.addRange(range);
-		} catch (_) {
-			// Worst-case fallback
-			el.textContent = (el.textContent || '') + text;
-		}
-		el.textContent = normalizeEditorValue();
-		syncEditablePlaceholderState(el);
+		const selectionStart = el.selectionStart;
+		const selectionEnd = el.selectionEnd;
+		const nextValue = `${el.value.slice(0, selectionStart)}${text}${el.value.slice(selectionEnd)}`;
+		const normalizedValue = InputValidation.truncateText(normalizeSingleLineText(nextValue), maxLength || Number.MAX_SAFE_INTEGER);
+		const nextCursor = Math.min(normalizeSingleLineText(`${el.value.slice(0, selectionStart)}${text}`).length, normalizedValue.length);
+		el.value = normalizedValue;
+		el.setSelectionRange(nextCursor, nextCursor);
+		scheduleResize();
     });
 
-	el.addEventListener('input', () => syncEditablePlaceholderState(el));
 	el.addEventListener('blur', () => {
-		el.textContent = normalizeEditorValue();
-		syncEditablePlaceholderState(el);
+		el.value = normalizeEditorValue();
+		scheduleResize();
 	});
 };
 
@@ -495,6 +472,10 @@ bindSingleLineEditor(dom.instanceModalPath, InputValidation.limits.instancePath)
 
 const openInstanceModal = () => {
 	openAnimatedModal(dom.instanceModal);
+	requestAnimationFrame(() => {
+		setupAutoResizeTextarea(dom.instanceModalPath)();
+		setupAutoResizeTextarea(dom.instanceModalCommand)();
+	});
 };
 
 const focusInstanceNameInput = () => {
@@ -611,6 +592,12 @@ const switchInstanceModalPage = (page) => {
 		modalState: getInstanceModalState(),
 		page,
 	});
+	if (page === 'basic') {
+		requestAnimationFrame(() => {
+			setupAutoResizeTextarea(dom.instanceModalPath)();
+			setupAutoResizeTextarea(dom.instanceModalCommand)();
+		});
+	}
 };
 
 const bindInstanceModalTabs = () => {
@@ -627,22 +614,22 @@ const getUniqueTaskNameInModal = () => getUniqueTaskName(dom.instanceTasksList);
 
 export const getInstanceEditorValue = (type) => {
 	if (type === 'path') {
-		return dom.instanceModalPath ? normalizeSingleLineText(dom.instanceModalPath.textContent || '') : './instances/';
+		return dom.instanceModalPath ? normalizeSingleLineText(dom.instanceModalPath.value || '') : './instances/';
 	}
     if (type === 'command') {
-        return dom.instanceModalCommand ? normalizeSingleLineText(dom.instanceModalCommand.textContent || '') : '';
+        return dom.instanceModalCommand ? normalizeSingleLineText(dom.instanceModalCommand.value || '') : '';
     }
     return '';
 };
 
 export const setInstanceEditorValue = (type, value) => {
     if (type === 'path' && dom.instanceModalPath) {
-        dom.instanceModalPath.textContent = normalizeSingleLineText(value || '');
-		syncEditablePlaceholderState(dom.instanceModalPath);
+		dom.instanceModalPath.value = normalizeSingleLineText(value || '');
+		setupAutoResizeTextarea(dom.instanceModalPath)();
     }
     if (type === 'command' && dom.instanceModalCommand) {
-        dom.instanceModalCommand.textContent = normalizeSingleLineText(value || '');
-		syncEditablePlaceholderState(dom.instanceModalCommand);
+		dom.instanceModalCommand.value = normalizeSingleLineText(value || '');
+		setupAutoResizeTextarea(dom.instanceModalCommand)();
     }
 };
 
