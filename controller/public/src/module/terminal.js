@@ -18,20 +18,6 @@ console.log('[模块] TerminalWorkspace 加载中...');
 
 mainContainer.insertAdjacentHTML('beforeend', /*html*/`
 	<section id="terminalSection" class="section">
-		<style>
-			.file-pagination-status {
-				display: flex;
-				align-items: center;
-				gap: 8px;
-			}
-
-			.file-pagination-input {
-				width: 48px;
-				padding: 3px 6px;
-				text-align: center;
-				line-height: 16px;
-			}
-		</style>
 		<div class="console-content">
 			<div class="card main-terminal-card">
 				<div class="terminal-toolbar">

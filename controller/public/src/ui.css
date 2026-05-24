@@ -1,4 +1,3 @@
-
 :root {
     --bg-color: #151515;
     --panel-color: #131313;
@@ -23,8 +22,74 @@
 ::-webkit-scrollbar-corner { background: #333; }
 ::-webkit-resizer { margin: 0; }
 
-.monaco-editor {
-	--vscode-focusBorder: #151515 !important;
+input:not([type="checkbox"], [type="radio"]),
+select,
+.input,
+textarea {
+    background: var(--bg-color);
+    border: 1px solid var(--border-color);
+    color: var(--text-color);
+    padding: 7px 12px;
+    font-family: var(--font-family);
+	line-height: 17px;
+	font-size: small;
+    outline: none;
+	transition: all 0.2s;
+}
+
+input:not([type="checkbox"]):focus,
+select:focus,
+.input:focus,
+textarea:focus {
+    border-color: var(--text-subtle-color);
+}
+
+select {
+	appearance: none;
+	-webkit-appearance: none;
+	font-size: 13px;
+}
+
+table {
+	border-collapse: collapse;
+	width: 100%;
+	margin: 0;
+	font-size: 12px;
+	border: none;
+}
+
+table tr th, table tr td {
+	background-color: transparent;
+	transition: all 0.2s;
+}
+
+table tr:hover {
+	background-color: #1b1b1b;
+}
+
+table th, table td {
+	border: none;
+	padding: 6px 8px;
+}
+
+table > thead > tr > th {
+	border-top: 2px solid var(--border-color);
+	border-bottom: 1px solid var(--border-color);
+	font-weight: bold;
+}
+
+:not(pre) > code {
+	background: rgba(255, 204, 0, 0.1);
+	color: #ffcc00;
+	padding: 3px 6px;
+	border-radius: 2px;
+	font-size: 0.95em;
+	line-height: 1;
+	user-select: all;
+}
+
+.file-action-static :not(pre) > code {
+	margin: 0 6px;
 }
 
 * {
@@ -43,13 +108,17 @@ body {
     flex-direction: column;
 }
 
-/* 浏览器自动填充样式统一 */
+/* 浏览器自动填充样式 */
 input:-webkit-autofill,
 textarea:-webkit-autofill {
 	font-family: var(--font-family) !important;
 	-webkit-text-fill-color: var(--text-subtle-color) !important;
 	caret-color: var(--text-subtle-color);
 	box-shadow: 0 0 0 1000px var(--panel-color) inset !important;
+}
+
+.monaco-editor {
+	--vscode-focusBorder: #151515 !important;
 }
 
 /* 根层显示状态 */
@@ -1110,6 +1179,24 @@ input[type="password"] {
 	color: var(--text-faint-color);
 }
 
+.file-pagination-text {
+	cursor: pointer;
+	user-select: none;
+	transition: color 0.2s;
+}
+
+.file-pagination-text:hover,
+.file-pagination-text:focus-visible {
+	color: var(--text-color);
+}
+
+input.file-pagination-input {
+	width: 72px;
+	padding: 3px 6px;
+	text-align: center;
+	line-height: 16px;
+}
+
 .file-list-empty {
     padding: 14.5px;
     color: var(--text-faint-color);
@@ -1421,34 +1508,6 @@ button:active,
     gap: 8px;
     font-size: 0.8rem;
     color: var(--text-subtle-color);
-}
-
-input:not([type="checkbox"], [type="radio"]),
-select,
-.input,
-textarea {
-    background: var(--bg-color);
-    border: 1px solid var(--border-color);
-    color: var(--text-color);
-    padding: 7px 12px;
-    font-family: var(--font-family);
-	line-height: 17px;
-	font-size: small;
-    outline: none;
-	transition: all 0.2s;
-}
-
-input:not([type="checkbox"]):focus,
-select:focus,
-.input:focus,
-textarea:focus {
-    border-color: var(--text-subtle-color);
-}
-
-select {
-	appearance: none;
-	-webkit-appearance: none;
-	font-size: 13px;
 }
 
 .input {
@@ -2348,48 +2407,6 @@ input[type="radio"]:checked { border: 6px double var(--text-subtle-color); }
 	transform: translateY(-50%);
 	pointer-events: none;
 	color: var(--text-faint-color);
-}
-
-table {
-	border-collapse: collapse;
-	width: 100%;
-	margin: 0;
-	font-size: 12px;
-	border: none;
-}
-
-table tr th, table tr td {
-	background-color: transparent;
-	transition: all 0.2s;
-}
-
-table tr:hover {
-	background-color: #1b1b1b;
-}
-
-table th, table td {
-	border: none;
-	padding: 6px 8px;
-}
-
-table > thead > tr > th {
-	border-top: 2px solid var(--border-color);
-	border-bottom: 1px solid var(--border-color);
-	font-weight: bold;
-}
-
-:not(pre) > code {
-	background: rgba(255, 204, 0, 0.1);
-	color: #ffcc00;
-	padding: 3px 6px;
-	border-radius: 2px;
-	font-size: 0.95em;
-	line-height: 1;
-	user-select: all;
-}
-
-.file-action-static :not(pre) > code {
-	margin: 0 6px;
 }
 
 /* 终端滚动行为 */

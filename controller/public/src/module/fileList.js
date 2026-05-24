@@ -14,6 +14,12 @@ console.log('[模块] FileManager 加载中...');
 
 const FILE_EDITOR_SOFT_LIMIT_BYTES = 10 * 1024 * 1024;
 
+const reportFilePaginationError = async (message, error) => {
+	console.error(`[文件列表] ${message}:`, error);
+	const detail = error instanceof Error ? error.message : String(error || '操作失败');
+	await showAlert(`${message}: ${detail}`, { title: 'ERROR', tone: 'danger' });
+};
+
 const getDirSeparator = (dirPath) => {
     if (!dirPath) return '/';
 	if (dirPath.endsWith('\\')) return '\\';
@@ -57,6 +63,7 @@ const dom = {
 	fileRefreshBtn: null,
 	fileSearchInput: null,
 	filePagination: null,
+	fileSelectAllBtn: null,
 	filePanelCard: null,
 };
 
@@ -67,6 +74,7 @@ const ensureDom = () => {
 	if (!dom.fileRefreshBtn) dom.fileRefreshBtn = document.getElementById('fileRefreshBtn');
 	if (!dom.fileSearchInput) dom.fileSearchInput = document.getElementById('fileSearchInput');
 	if (!dom.filePagination) dom.filePagination = document.getElementById('filePagination');
+	if (!dom.fileSelectAllBtn) dom.fileSelectAllBtn = document.getElementById('fileSelectAllBtn');
 	if (!dom.filePanelCard) dom.filePanelCard = document.querySelector('#terminalSection .file-panel-card');
 	return !!(dom.fileList && dom.fileCurrentPath);
 };
@@ -193,6 +201,9 @@ const fmState = {
 	currentFileList: null,
 	loadSeq: 0,
 	selectionVersion: -1,
+	filePaginationEditing: null,
+	filePaginationCommitting: false,
+	filePaginationLoading: false,
 };
 
 const getCurrentDir = () => String(fmState.currentFilePath || '');
@@ -321,6 +332,15 @@ const getFilteredEntries = (data) => {
 
 const getVisibleFileEntries = (data = fmState.currentFileList) => getFilteredEntries(data);
 
+const getFileListTotalCount = (data) => Math.max(0, Number(data?.total_count) || Number(fmState.totalCount) || 0);
+
+const setFileSelectAllTitle = (currentCount, totalCount) => {
+	if (!dom.fileSelectAllBtn) {
+		return;
+	}
+	dom.fileSelectAllBtn.title = `${Math.max(0, Number(currentCount) || 0)} / ${Math.max(0, Number(totalCount) || 0)}`;
+};
+
 const renderFileSearchState = (data) => {
 	const hasLocalSearch = !shouldRunServerSearch() && !!getFileSearchQuery();
 	if (!shouldUseServerSearch(data) && !shouldRunServerSearch()) {
@@ -355,20 +375,31 @@ const buildFilePaginationNode = (action, enabled) => {
 	button.dataset.pageAction = action;
 	button.disabled = !enabled;
 	button.textContent = action.toUpperCase();
+	button.setAttribute('aria-label', action === 'prev' ? '上一页' : '下一页');
 	return button;
 };
 
 const buildFilePaginationStatus = (page, totalPages, totalCount) => {
 	const status = document.createElement('span');
 	status.className = 'file-pagination-status';
+	status.dataset.pageStatus = '1';
+	status.setAttribute('role', 'group');
+	status.setAttribute('aria-label', '文件列表分页');
 	const inputMax = Math.max(1, totalPages);
 
-	const label = document.createElement('span');
-	label.textContent = 'PAGE';
+	const text = document.createElement('span');
+	text.className = 'file-pagination-text';
+	text.dataset.pageText = '1';
+	text.tabIndex = 0;
+	text.textContent = `PAGE ${page} / ${totalPages} [${totalCount}]`;
+	text.setAttribute('role', 'button');
+	text.setAttribute('aria-label', `切换到页码输入, 当前第 ${page} 页, 共 ${totalPages} 页`);
+	text.setAttribute('aria-expanded', 'false');
+	text.setAttribute('aria-hidden', 'false');
 
 	const input = document.createElement('input');
 	input.type = 'number';
-	input.className = 'input file-pagination-input';
+	input.className = 'input file-pagination-input hidden';
 	input.dataset.pageInput = '1';
 	input.min = '1';
 	input.max = String(inputMax);
@@ -376,13 +407,74 @@ const buildFilePaginationStatus = (page, totalPages, totalCount) => {
 	input.inputMode = 'numeric';
 	input.autocomplete = 'off';
 	input.value = String(page);
-	input.setAttribute('aria-label', 'PAGE');
+	input.setAttribute('aria-label', `输入页码, 1 到 ${inputMax}`);
+	input.setAttribute('aria-hidden', 'true');
+	input.onkeydown = (event) => {
+		if (event.repeat || event.isComposing || event.keyCode === 229 || event.key !== 'Enter') {
+			return;
+		}
+		event.preventDefault();
+		input.blur();
+	};
+	input.onblur = () => {
+		submitFilePaginationInput(input).catch((error) => {
+			void reportFilePaginationError('分页输入提交失败', error);
+		});
+	};
 
-	const summary = document.createElement('span');
-	summary.textContent = `/ ${totalPages} [${totalCount}]`;
-
-	status.append(label, input, summary);
+	status.append(text, input);
 	return status;
+};
+
+const getEditingFilePaginationInput = () => {
+	if (!dom.filePagination) {
+		return null;
+	}
+	const input = dom.filePagination.querySelector('[data-page-input]:not(.hidden)');
+	return input || null;
+};
+
+const showFilePaginationInput = (status) => {
+	if (!status) {
+		throw new Error('文件分页状态容器缺失');
+	}
+	const text = status.querySelector('[data-page-text]');
+	const input = status.querySelector('[data-page-input]');
+	if (!text || !input) {
+		throw new Error('文件分页状态组件结构缺失');
+	}
+	if (fmState.filePaginationCommitting) {
+		return;
+	}
+	input.value = String(getFileListPage());
+	input.max = String(Math.max(1, getFileListTotalPages()));
+	text.classList.add('hidden');
+	text.setAttribute('aria-expanded', 'true');
+	text.setAttribute('aria-hidden', 'true');
+	input.classList.remove('hidden');
+	input.setAttribute('aria-hidden', 'false');
+	fmState.filePaginationEditing = input;
+	input.focus();
+	input.select();
+};
+
+const hideFilePaginationInput = (input) => {
+	const status = input.closest('[data-page-status]');
+	if (!status) {
+		throw new Error('文件分页输入框缺少状态容器');
+	}
+	const text = status.querySelector('[data-page-text]');
+	if (!text) {
+		throw new Error('文件分页状态文本缺失');
+	}
+	input.classList.add('hidden');
+	input.setAttribute('aria-hidden', 'true');
+	text.classList.remove('hidden');
+	text.setAttribute('aria-expanded', 'false');
+	text.setAttribute('aria-hidden', 'false');
+	if (fmState.filePaginationEditing === input) {
+		fmState.filePaginationEditing = null;
+	}
 };
 
 const normalizeFilePaginationInputPage = (input) => {
@@ -395,13 +487,23 @@ const normalizeFilePaginationInputPage = (input) => {
 };
 
 const submitFilePaginationInput = async (input) => {
-	const nextPage = normalizeFilePaginationInputPage(input);
-	input.value = String(nextPage);
-	if (nextPage === getFileListPage()) {
+	if (fmState.filePaginationCommitting) {
+		hideFilePaginationInput(input);
 		return;
 	}
-	clearFileListError();
-	await loadFiles(getCurrentDir(), nextPage);
+	fmState.filePaginationCommitting = true;
+	try {
+		const nextPage = normalizeFilePaginationInputPage(input);
+		input.value = String(nextPage);
+		hideFilePaginationInput(input);
+		if (nextPage === getFileListPage()) {
+			return;
+		}
+		clearFileListError();
+		await loadFiles(getCurrentDir(), nextPage);
+	} finally {
+		fmState.filePaginationCommitting = false;
+	}
 };
 
 const buildEmptyFileListNode = (message = 'EMPTY') => {
@@ -464,16 +566,25 @@ const renderFilePagination = (data) => {
 		return;
 	}
 	const page = getFileListPage();
-	const dataTotalPages = Number(data?.total_pages);
-	const totalPages = Number.isFinite(dataTotalPages) ? Math.max(0, Math.trunc(dataTotalPages)) : getFileListTotalPages();
-	const totalCount = Math.max(0, Number(fmState.totalCount) || Number(data?.total_count) || 0);
-	const hasPrev = totalPages > 0 && page > 1;
-	const hasNext = totalPages > 0 && page < totalPages;
-	if (!data && totalCount === 0) {
+	const currentCount = getVisibleFileEntries(data).length;
+	if (!data) {
 		dom.filePagination.replaceChildren();
 		dom.filePagination.classList.add('hidden');
+		setFileSelectAllTitle(0, 0);
 		return;
 	}
+	const dataTotalPages = Number(data?.total_pages);
+	const totalPages = Number.isFinite(dataTotalPages) ? Math.max(0, Math.trunc(dataTotalPages)) : getFileListTotalPages();
+	const totalCount = getFileListTotalCount(data);
+	const hasPrev = totalPages > 0 && page > 1;
+	const hasNext = totalPages > 0 && page < totalPages;
+	if (currentCount === 0 || totalPages <= 1) {
+		dom.filePagination.replaceChildren();
+		dom.filePagination.classList.add('hidden');
+		setFileSelectAllTitle(currentCount, totalCount || currentCount);
+		return;
+	}
+	setFileSelectAllTitle(currentCount, totalCount);
 	dom.filePagination.classList.remove('hidden');
 	const status = buildFilePaginationStatus(page, totalPages, totalCount);
 	dom.filePagination.replaceChildren(buildFilePaginationNode('prev', hasPrev), status, buildFilePaginationNode('next', hasNext));
@@ -1139,39 +1250,61 @@ const bindEvents = () => {
 	if (dom.filePagination) {
 		dom.filePagination.onclick = async (event) => {
 			const btn = event.target.closest('[data-page-action]');
-			if (!btn || btn.disabled) {
+			if (!btn) {
+				const statusText = event.target.closest('[data-page-text]');
+				if (!statusText || !dom.filePagination.contains(statusText)) {
+					return;
+				}
+				showFilePaginationInput(statusText.closest('[data-page-status]'));
+				return;
+			}
+			if (btn.disabled) {
+				return;
+			}
+			const editingInput = getEditingFilePaginationInput();
+			if (editingInput) {
+				event.preventDefault();
+				try {
+					await submitFilePaginationInput(editingInput);
+				} catch (error) {
+					await reportFilePaginationError('分页输入提交失败', error);
+				}
+				return;
+			}
+			if (fmState.filePaginationCommitting || fmState.filePaginationLoading) {
+				event.preventDefault();
 				return;
 			}
 			const action = btn.dataset.pageAction;
 			const page = getFileListPage();
-			if (action === 'prev') {
+			fmState.filePaginationLoading = true;
+			try {
+				if (action === 'prev') {
+					clearFileListError();
+					await loadFiles(getCurrentDir(), Math.max(1, page - 1));
+					return;
+				}
+				if (action !== 'next') {
+					return;
+				}
 				clearFileListError();
-				await loadFiles(getCurrentDir(), Math.max(1, page - 1));
-				return;
+				await loadFiles(getCurrentDir(), page + 1);
+			} catch (error) {
+				await reportFilePaginationError('分页按钮加载失败', error);
+			} finally {
+				fmState.filePaginationLoading = false;
 			}
-			if (action !== 'next') {
-				return;
-			}
-			clearFileListError();
-			await loadFiles(getCurrentDir(), page + 1);
 		};
 		dom.filePagination.onkeydown = (event) => {
 			if (event.repeat || event.isComposing || event.keyCode === 229 || event.key !== 'Enter') {
 				return;
 			}
-			const input = event.target.closest('[data-page-input]');
-			if (!input) {
+			const statusText = event.target.closest('[data-page-text]');
+			if (!statusText) {
 				return;
 			}
 			event.preventDefault();
-			input.blur();
-		};
-		dom.filePagination.onfocusout = (event) => {
-			const input = event.target.closest('[data-page-input]');
-			if (!input) {
-				return;
-			}
-			submitFilePaginationInput(input);
+			showFilePaginationInput(statusText.closest('[data-page-status]'));
 		};
 	}
 
