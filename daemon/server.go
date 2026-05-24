@@ -4,6 +4,7 @@ import (
 	"IpacPanel/daemon/version"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,6 +28,8 @@ type IPCServer struct {
 	connMu          sync.Mutex
 	inputErrMu      sync.Mutex
 	lastInputErrLog time.Time
+
+	controllerUpdateRestartPending atomic.Bool
 }
 
 func NewIPCServer(instances *InstanceManager) (*IPCServer, error) {
@@ -339,6 +342,19 @@ func (s *IPCServer) handleSetDebug(req *IPCRequest) *IPCResponse {
 }
 
 func (s *IPCServer) handleRestartController(req *IPCRequest) *IPCResponse {
+	purpose := req.ControllerShutdownPurpose
+	if purpose == "" {
+		purpose = ControllerShutdownPurposeRestart
+	}
+	switch purpose {
+	case ControllerShutdownPurposeRestart:
+	case ControllerShutdownPurposeUpdate:
+		log.Printf("controller restart requested for update")
+		s.controllerUpdateRestartPending.Store(true)
+	default:
+		resp := NewIPCResponse("controller_error", "", nil, "invalid controller shutdown purpose")
+		return &resp
+	}
 	resp := NewIPCResponse("ok", "", nil, "")
 	go func() {
 		time.Sleep(100 * time.Millisecond)
@@ -350,6 +366,10 @@ func (s *IPCServer) handleRestartController(req *IPCRequest) *IPCResponse {
 		}
 	}()
 	return &resp
+}
+
+func (s *IPCServer) ConsumeControllerUpdateRestartPending() bool {
+	return s.controllerUpdateRestartPending.CompareAndSwap(true, false)
 }
 
 func (s *IPCServer) handleStartInstance(req *IPCRequest) *IPCResponse {

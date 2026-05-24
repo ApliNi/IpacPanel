@@ -2256,7 +2256,7 @@ textarea {
     min-height: 32px;
     display: flex;
     align-items: center;
-    padding-bottom: 10px;
+    padding-bottom: 6px;
 	gap: 7px;
     color: var(--text-color);
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);

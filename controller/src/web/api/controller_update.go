@@ -21,6 +21,7 @@ import (
 	"IpacPanel/controller/src/compat"
 	cfg "IpacPanel/controller/src/config"
 	"IpacPanel/controller/src/msg"
+	"IpacPanel/controller/src/process"
 	web "IpacPanel/controller/src/web"
 	"IpacPanel/daemon/version"
 
@@ -564,6 +565,10 @@ func HandleApiControllerUpdateApply(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := parseControllerVersion(path); err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.ControllerUpdateFileInvalid, err)
+		return
+	}
+	if err := process.RestartControllerForUpdate(); err != nil {
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.RestartControllerFailed, err)
 		return
 	}
 	web.WriteOK(w, map[string]bool{"restarting": true})

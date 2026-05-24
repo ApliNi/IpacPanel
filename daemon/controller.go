@@ -384,9 +384,14 @@ func controllerLoop(controllerPath string, server *IPCServer) error {
 			log.Printf("controller exited normally")
 		}
 
-		log.Printf("waiting 2 seconds before checking for updates...")
-		time.Sleep(2 * time.Second)
 		server.WaitServeDone(2 * time.Second)
+
+		if server.ConsumeControllerUpdateRestartPending() {
+			log.Printf("controller exited for update, checking for updates immediately...")
+		} else {
+			log.Printf("waiting 2 seconds before checking for updates...")
+			time.Sleep(2 * time.Second)
+		}
 
 		// Do not stop daemon-held instances when the controller exits. Controller
 		// restarts are part of the update path, and instance lifetime belongs to the daemon.

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -25,6 +26,23 @@ import (
 )
 
 var versionedPublicPathPattern = regexp.MustCompile(`^/v\d+(?:\.\d+)*(?:/.*)?$`)
+
+func isExpectedControllerServerCloseError(err error) bool {
+	return err == nil || errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed)
+}
+
+func waitControllerServerExit(serverErrCh <-chan error) error {
+	select {
+	case err := <-serverErrCh:
+		if isExpectedControllerServerCloseError(err) {
+			return nil
+		}
+		return err
+	case <-time.After(2 * time.Second):
+		log.Printf("wait controller server exit timeout after shutdown")
+		return nil
+	}
+}
 
 func stripVersionedPublicPath(requestPath string) (string, bool) {
 	if !versionedPublicPathPattern.MatchString(requestPath) {
@@ -240,17 +258,22 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 	if webConfig.ForceHTTPS {
 		handler = withForceHTTPS(handler)
 	}
+	serverBaseCtx, stopServerBaseCtx := context.WithCancel(context.Background())
+	defer stopServerBaseCtx()
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           handler,
 		Protocols:         protocols,
 		ReadHeaderTimeout: 60 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		BaseContext: func(_ net.Listener) context.Context {
+			return serverBaseCtx
+		},
 	}
 	serverErrCh := make(chan error, 1)
 	go func() {
 		err := listenAndServeController(server, webConfig)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if !isExpectedControllerServerCloseError(err) {
 			serverErrCh <- err
 			return
 		}
@@ -303,10 +326,21 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 
 	select {
 	case <-shutdownRequested:
+		stopServerBaseCtx()
+		process.DisconnectAllInstanceClients()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		shutdownErr := server.Shutdown(ctx)
 		cancel()
-		serverErr := <-serverErrCh
+		if errors.Is(shutdownErr, context.DeadlineExceeded) {
+			log.Printf("controller shutdown timeout, forcing server close: %v", shutdownErr)
+			closeErr := server.Close()
+			if !isExpectedControllerServerCloseError(closeErr) {
+				shutdownErr = fmt.Errorf("force close controller server after shutdown timeout: %w", closeErr)
+			} else {
+				shutdownErr = nil
+			}
+		}
+		serverErr := waitControllerServerExit(serverErrCh)
 		api.CleanupUploadTempDir()
 		if err := file.CleanupRegisteredAtomicTempDirs(); err != nil {
 			return err
