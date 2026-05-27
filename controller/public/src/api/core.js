@@ -82,6 +82,33 @@ const getApiErrorMessage = (payload) => {
 	).trim();
 };
 
+const ERROR_TEXT_LIMIT = 500;
+
+const truncateErrorText = (text, limit = ERROR_TEXT_LIMIT) => {
+	const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+	if (!normalized) {
+		return '';
+	}
+	if (normalized.length <= limit) {
+		return normalized;
+	}
+	return `${normalized.slice(0, limit)}...`;
+};
+
+const getContentType = (res) => String(res?.headers?.get?.('Content-Type') || '').trim();
+
+const isJsonContentType = (contentType) => {
+	const normalized = String(contentType || '').toLowerCase();
+	return normalized.includes('application/json') || normalized.includes('+json');
+};
+
+const parseJsonText = (raw) => {
+	if (!String(raw || '').trim()) {
+		throw new Error('接口返回空 JSON 响应');
+	}
+	return JSON.parse(raw);
+};
+
 export const createHttpError = async (res) => {
 	const raw = await res.text().catch(() => '');
 	let message = '';
@@ -89,7 +116,7 @@ export const createHttpError = async (res) => {
 		try {
 			message = getApiErrorMessage(JSON.parse(raw));
 		} catch {
-			message = raw;
+			message = truncateErrorText(raw);
 		}
 	}
 	const error = new Error(message || `HTTP ${res.status}`);
@@ -97,24 +124,37 @@ export const createHttpError = async (res) => {
 	return error;
 };
 
-export const parseJsonSafe = async (res) => res.json().catch(() => null);
+const parseJsonPayloadStrict = async (res) => {
+	const contentType = getContentType(res);
+	const raw = await res.text().catch((error) => {
+		throw new Error(`读取接口响应失败: ${error.message || String(error)}`);
+	});
+	if (!isJsonContentType(contentType)) {
+		throw new Error(`接口返回非 JSON 响应 (${contentType || 'unknown'})`);
+	}
+	try {
+		return parseJsonText(raw);
+	} catch (error) {
+		throw new Error(`接口 JSON 解析失败: ${error.message || String(error)}`);
+	}
+};
 
 export const parseJsonData = async (res) => {
 	if (!res.ok) {
 		throw await createHttpError(res);
 	}
-	const payload = await parseJsonSafe(res);
+	const payload = await parseJsonPayloadStrict(res);
 	if (payload && Object.prototype.hasOwnProperty.call(payload, 'data')) {
 		return payload.data;
 	}
-	return null;
+	throw new Error('接口 JSON 响应缺少 data 字段');
 };
 
 export const parseJsonPayload = async (res) => {
 	if (!res.ok) {
 		throw await createHttpError(res);
 	}
-	return await parseJsonSafe(res);
+	return await parseJsonPayloadStrict(res);
 };
 
 export const postJson = async (url, payload = {}, options = {}) => {
@@ -150,6 +190,12 @@ export const postEventStream = async (url, payload = {}, options = {}) => {
 	}));
 	if (!res.ok) {
 		throw await createHttpError(res);
+	}
+	const contentType = getContentType(res).toLowerCase();
+	if (!contentType.includes('text/event-stream')) {
+		const raw = await res.text().catch(() => '');
+		const detail = truncateErrorText(raw, 200);
+		throw new Error(`接口返回非 SSE 响应 (${contentType || 'unknown'})${detail ? `: ${detail}` : ''}`);
 	}
 	return res;
 };
@@ -233,6 +279,78 @@ export const readSSEStream = async (res, handlers = {}) => {
 		parser.finish();
 	} finally {
 		reader.releaseLock();
+	}
+};
+
+export const getXhrJsonResponseData = (xhr) => {
+	const response = xhr && xhr.response && typeof xhr.response === 'object' ? xhr.response : null;
+	if (!response) {
+		return null;
+	}
+	return Object.prototype.hasOwnProperty.call(response, 'data') ? response.data : response;
+};
+
+const pickErrorMessageFromObject = (value) => {
+	if (!value || typeof value !== 'object') {
+		return '';
+	}
+	if (typeof value.message === 'string' && value.message.trim()) {
+		return value.message.trim();
+	}
+	if (typeof value.error === 'string' && value.error.trim()) {
+		return value.error.trim();
+	}
+	if (value.data && typeof value.data === 'object') {
+		return pickErrorMessageFromObject(value.data);
+	}
+	if (typeof value.data === 'string' && value.data.trim()) {
+		return value.data.trim();
+	}
+	return '';
+};
+
+const readXhrTextResponseSafely = (xhr) => {
+	if (!xhr || (xhr.responseType !== '' && xhr.responseType !== 'text')) {
+		return '';
+	}
+	try {
+		return truncateErrorText(xhr.responseText);
+	} catch {
+		return '';
+	}
+};
+
+export const buildXhrUploadErrorMessage = async (xhr, fallbackText = '上传请求失败') => {
+	const status = xhr && xhr.status ? xhr.status : 0;
+	const fallback = status ? `HTTP ${status}` : fallbackText;
+	try {
+		const response = xhr ? xhr.response : null;
+		if (typeof response === 'string' && response.trim()) {
+			return truncateErrorText(response);
+		}
+		if (response instanceof Blob) {
+			const text = await response.text();
+			if (text.trim()) {
+				return truncateErrorText(text);
+			}
+		}
+		const objectMessage = pickErrorMessageFromObject(response);
+		if (objectMessage) {
+			return objectMessage;
+		}
+		const textMessage = readXhrTextResponseSafely(xhr);
+		if (textMessage) {
+			return textMessage;
+		}
+		const contentType = xhr && typeof xhr.getResponseHeader === 'function'
+			? String(xhr.getResponseHeader('Content-Type') || '').trim()
+			: '';
+		if (contentType && !isJsonContentType(contentType)) {
+			return `${fallback}: 非 JSON 错误响应 (${contentType})`;
+		}
+		return fallback;
+	} catch {
+		return fallback;
 	}
 };
 

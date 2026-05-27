@@ -36,9 +36,12 @@ const (
 type OriginMode string
 
 const (
-	OriginModeNone      OriginMode = "none"
-	OriginModeSame      OriginMode = "same_origin"
-	OriginModeWebSocket OriginMode = "websocket_same_origin"
+	OriginModeNone OriginMode = "none"
+	OriginModeSame OriginMode = "same_origin"
+	// OriginModeSameWhenPresent validates same-origin only when Origin is present;
+	// requests without Origin are allowed for compatibility.
+	OriginModeSameWhenPresent OriginMode = "same_origin_when_present"
+	OriginModeWebSocket       OriginMode = "websocket_same_origin"
 )
 
 // RouteKind describes transport/logging semantics for a route.
@@ -76,7 +79,7 @@ func (p RoutePolicy) Validate() error {
 		return fmt.Errorf("%s: %s", msg.RouteCSRFPolicyInvalid, p.CSRF)
 	}
 	switch p.Origin {
-	case OriginModeNone, OriginModeSame, OriginModeWebSocket:
+	case OriginModeNone, OriginModeSame, OriginModeSameWhenPresent, OriginModeWebSocket:
 	default:
 		return fmt.Errorf("%s: %s", msg.RouteOriginPolicyInvalid, p.Origin)
 	}
@@ -248,6 +251,15 @@ func validateOrigin(w http.ResponseWriter, r *http.Request, mode OriginMode, con
 	case OriginModeNone:
 		return r, true
 	case OriginModeSame:
+		if originResolver(config).IsSameOriginRequest(r) {
+			return r, true
+		}
+		writeGuardError(config.ErrorWriter, w, http.StatusForbidden, msg.SameOriginValidationFailed, nil)
+		return nil, false
+	case OriginModeSameWhenPresent:
+		if strings.TrimSpace(r.Header.Get("Origin")) == "" {
+			return r, true
+		}
 		if originResolver(config).IsSameOriginRequest(r) {
 			return r, true
 		}

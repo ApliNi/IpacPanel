@@ -5,7 +5,6 @@ import {
 	createHttpError,
 	getCSRFToken,
 	parseJsonData,
-	parseJsonSafe,
 	parseJsonPayload,
 	withApiResult,
 } from './core.js';
@@ -96,17 +95,18 @@ export const deleteInstance = async (name, options = {}) => {
 				confirm_shared_delete: options.confirmSharedDelete === true,
 			}),
 		});
-		const payload = await parseJsonSafe(res);
 		if (!res.ok) {
-			if (payload?.message) {
-				return createApiFailure(new Error(payload.message), {
-					confirmRequired: payload?.data?.confirm_required === true,
+			const errorPayload = await res.clone().json().catch(() => null);
+			if (errorPayload?.message) {
+				return createApiFailure(new Error(errorPayload.message), {
+					confirmRequired: errorPayload?.data?.confirm_required === true,
 				});
 			}
 			return createApiFailure(await createHttpError(res), {
-				confirmRequired: payload?.data?.confirm_required === true,
+				confirmRequired: errorPayload?.data?.confirm_required === true,
 			});
 		}
+		const payload = await parseJsonPayload(res);
 		if (payload?.ok === false) {
 			return createApiFailure(new Error(payload.message || '删除实例失败'));
 		}

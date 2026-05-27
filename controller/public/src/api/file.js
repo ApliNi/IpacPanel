@@ -2,6 +2,8 @@ import {
 	authedFetch,
 	getCSRFToken,
 	dispatchUnauthorized,
+	buildXhrUploadErrorMessage,
+	getXhrJsonResponseData,
 	postEventStream,
 	parseJsonData,
 	withApiResult,
@@ -72,12 +74,20 @@ const splitFilePath = (path) => {
 
 const isAbortError = (error) => error && error.name === 'AbortError';
 
+const requireCompletedUploadResponse = (result) => {
+	if (!result || typeof result !== 'object' || result.completed !== true) {
+		throw new Error('上传协议异常: 缺少完成响应');
+	}
+	return result;
+};
+
+const encodeUploadHeaderValue = (value) => encodeURIComponent(String(value == null ? '' : value));
+
 const uploadTextChunkWithRetry = async (instanceName, uploadId, index, chunk, options = {}) => {
 	let lastError = null;
 	for (let attempt = 1; attempt <= TEXT_UPLOAD_RETRY_COUNT; attempt += 1) {
 		try {
-			await uploadFileChunk(instanceName, uploadId, index, chunk, null, { signal: options.signal || null });
-			return;
+			return await uploadFileChunk(instanceName, uploadId, index, chunk, null, { signal: options.signal || null });
 		} catch (error) {
 			lastError = error;
 			if (isAbortError(error) || attempt >= TEXT_UPLOAD_RETRY_COUNT) {
@@ -98,6 +108,9 @@ const uploadTextBlobAsFile = async (instanceName, dirPath, fileName, blob, overw
 			throw err;
 		}
 		const size = blob.size;
+		if (size <= TEXT_UPLOAD_CHUNK_SIZE_BYTES) {
+			return requireCompletedUploadResponse(await uploadFileSingle(instanceName, dirPath, fileName, blob, overwrite, null, { signal }));
+		}
 		const chunkSize = size > TEXT_UPLOAD_CHUNK_SIZE_BYTES ? TEXT_UPLOAD_CHUNK_SIZE_BYTES : Math.max(size, 1);
 		const chunkCount = Math.max(1, Math.ceil(size / chunkSize));
 		const initResult = await initFileUpload(instanceName, {
@@ -116,6 +129,7 @@ const uploadTextBlobAsFile = async (instanceName, dirPath, fileName, blob, overw
 		let shouldAbort = true;
 		try {
 			let nextIndex = 0;
+			const chunkResults = new Array(chunkCount).fill(null);
 			const worker = async () => {
 				while (nextIndex < chunkCount) {
 					if (signal && signal.aborted) {
@@ -127,7 +141,7 @@ const uploadTextBlobAsFile = async (instanceName, dirPath, fileName, blob, overw
 					nextIndex += 1;
 					const start = index * chunkSize;
 					const end = Math.min(size, start + chunkSize);
-					await uploadTextChunkWithRetry(instanceName, uploadId, index, blob.slice(start, end), { signal });
+					chunkResults[index] = await uploadTextChunkWithRetry(instanceName, uploadId, index, blob.slice(start, end), { signal });
 				}
 			};
 			const workers = Array.from({ length: Math.min(TEXT_UPLOAD_CONCURRENCY, chunkCount) }, () => worker());
@@ -137,7 +151,7 @@ const uploadTextBlobAsFile = async (instanceName, dirPath, fileName, blob, overw
 				err.name = 'AbortError';
 				throw err;
 			}
-			const result = await completeFileUpload(instanceName, uploadId);
+			const result = requireCompletedUploadResponse(chunkResults.find((item) => item && typeof item === 'object' && item.completed === true));
 			shouldAbort = false;
 			return result;
 		} finally {
@@ -278,19 +292,96 @@ export const initFileUpload = async (name, payload) => {
 	return await postFileActionSilent('/api/file/upload/init', Object.assign({}, payload || {}, { instance: name }));
 };
 
-export const completeFileUpload = async (name, uploadId) => {
-	return await postFileActionSilent('/api/file/upload/complete', {
-		instance: name,
-		upload_id: uploadId,
-	});
-};
-
 export const abortFileUpload = async (name, uploadId) => {
 	return await postFileActionSilent('/api/file/upload/abort', {
 		instance: name,
 		upload_id: uploadId,
 	});
 };
+
+export const uploadFileSingle = (name, path, fileName, file, overwrite, onProgress, options = {}) => new Promise((resolve, reject) => {
+	const xhr = new XMLHttpRequest();
+	const signal = options && options.signal ? options.signal : null;
+	let cleaned = false;
+	const cleanup = () => {
+		if (cleaned) {
+			return;
+		}
+		cleaned = true;
+		if (signal) {
+			signal.removeEventListener('abort', onAbort);
+		}
+	};
+	const onAbort = () => {
+		try {
+			xhr.abort();
+		} catch (e) {
+			// ignore
+		}
+	};
+	if (signal) {
+		if (signal.aborted) {
+			const err = new Error('中止');
+			err.name = 'AbortError';
+			reject(err);
+			return;
+		}
+		signal.addEventListener('abort', onAbort, { once: true });
+	}
+
+	xhr.open('POST', '/api/file/upload/single');
+	const csrfToken = getCSRFToken();
+	if (csrfToken) {
+		xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+	}
+	xhr.setRequestHeader('X-Ipac-Instance', encodeUploadHeaderValue(name));
+	xhr.setRequestHeader('X-Ipac-Path', encodeUploadHeaderValue(path));
+	xhr.setRequestHeader('X-Ipac-File-Name', encodeUploadHeaderValue(fileName));
+	xhr.setRequestHeader('X-Ipac-Overwrite', overwrite ? 'true' : 'false');
+	xhr.responseType = 'json';
+
+	xhr.upload.onprogress = (event) => {
+		if (event.lengthComputable && typeof onProgress === 'function') {
+			onProgress(event.loaded, event.total);
+		}
+	};
+
+	xhr.onload = async () => {
+		cleanup();
+		if (xhr.status === 401) {
+			dispatchUnauthorized();
+			const err = new Error('未授权');
+			err.name = 'UnauthorizedError';
+			reject(err);
+			return;
+		}
+		if (xhr.status >= 200 && xhr.status < 300) {
+			const responseData = getXhrJsonResponseData(xhr);
+			try {
+				resolve(requireCompletedUploadResponse(responseData || xhr.response || { ok: true }));
+			} catch (e) {
+				reject(e);
+			}
+			return;
+		}
+
+		const message = await buildXhrUploadErrorMessage(xhr);
+		reject(new Error(message));
+	};
+
+	xhr.onerror = () => {
+		cleanup();
+		reject(new Error('Network Error'));
+	};
+
+	xhr.onabort = () => {
+		cleanup();
+		const err = new Error('aborted');
+		err.name = 'AbortError';
+		reject(err);
+	};
+	xhr.send(file);
+});
 
 export const uploadFileChunk = (name, uploadId, index, chunk, onProgress, options = {}) => new Promise((resolve, reject) => {
 	const xhr = new XMLHttpRequest();
@@ -348,21 +439,12 @@ export const uploadFileChunk = (name, uploadId, index, chunk, onProgress, option
 			return;
 		}
 		if (xhr.status >= 200 && xhr.status < 300) {
-			const responseData = xhr.response && typeof xhr.response === 'object' ? xhr.response.data : null;
+			const responseData = getXhrJsonResponseData(xhr);
 			resolve(responseData || xhr.response || { ok: true });
 			return;
 		}
 
-		let message = `HTTP ${xhr.status}`;
-		if (typeof xhr.response === 'string' && xhr.response) {
-			message = xhr.response;
-		} else if (xhr.response instanceof Blob) {
-			message = await xhr.response.text();
-		} else if (xhr.response && xhr.response.message) {
-			message = xhr.response.message;
-		} else if (xhr.responseText) {
-			message = xhr.responseText;
-		}
+		const message = await buildXhrUploadErrorMessage(xhr);
 		reject(new Error(message));
 	};
 

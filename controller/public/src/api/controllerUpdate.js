@@ -2,6 +2,8 @@ import {
 	authedFetch,
 	getCSRFToken,
 	dispatchUnauthorized,
+	buildXhrUploadErrorMessage,
+	getXhrJsonResponseData,
 	parseJsonData,
 	withApiResult,
 } from './core.js';
@@ -82,7 +84,7 @@ export const uploadControllerUpdateChunk = (uploadId, index, chunk, onProgress, 
 			onProgress(event.loaded, event.total);
 		}
 	};
-	xhr.onload = () => {
+	xhr.onload = async () => {
 		cleanup();
 		if (xhr.status === 401) {
 			dispatchUnauthorized();
@@ -92,15 +94,12 @@ export const uploadControllerUpdateChunk = (uploadId, index, chunk, onProgress, 
 			return;
 		}
 		if (xhr.status >= 200 && xhr.status < 300) {
-			if (xhr.response && Object.prototype.hasOwnProperty.call(xhr.response, 'data')) {
-				resolve(xhr.response.data);
-				return;
-			}
-			resolve(xhr.response);
+			const responseData = getXhrJsonResponseData(xhr);
+			resolve(responseData || xhr.response || { ok: true });
 			return;
 		}
-		const responseMessage = xhr.response && xhr.response.message ? xhr.response.message : '';
-		reject(new Error(responseMessage || xhr.responseText || `HTTP ${xhr.status}`));
+		const message = await buildXhrUploadErrorMessage(xhr);
+		reject(new Error(message));
 	};
 	xhr.onerror = () => {
 		cleanup();

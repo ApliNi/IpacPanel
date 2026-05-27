@@ -1,4 +1,4 @@
-import { authedFetch, getErrorMessage, parseJsonPayload, withApiFallback } from './core.js';
+import { authedFetch, createHttpError, getErrorMessage, parseJsonPayload, withApiFallback } from './core.js';
 
 export const getLoginPow = async () => {
 	try {
@@ -7,10 +7,10 @@ export const getLoginPow = async () => {
 			credentials: 'same-origin',
 		});
 		if (!res.ok) {
-			const err = await res.text();
-			return { ok: false, message: err || `HTTP ${res.status}` };
+			const err = await createHttpError(res);
+			return { ok: false, message: err.message || `HTTP ${res.status}` };
 		}
-		const payload = await res.json().catch(() => null);
+		const payload = await parseJsonPayload(res);
 		const data = payload?.data || null;
 		if (!payload?.ok) {
 			return { ok: false, message: payload?.message || '获取 PoW 参数失败' };
@@ -71,10 +71,10 @@ export const login = async (user, pass, proofTimestamp, proofNonces) => {
 			if (res.status === 401) {
 				return { ok: false, message: '用户名或密码错误' };
 			}
-			const err = await res.text();
-			return { ok: false, message: err || `HTTP ${res.status}` };
+			const err = await createHttpError(res);
+			return { ok: false, message: err.message || `HTTP ${res.status}` };
 		}
-		const payload = await res.json();
+		const payload = await parseJsonPayload(res);
 		if (payload && payload.ok === false) {
 			return { ok: false, message: payload.message || '登录失败' };
 		}

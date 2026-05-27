@@ -1,6 +1,6 @@
 import { mainModalOverlay, state } from "../ui.js";
-import { DEFAULT_UI_REFRESH_INTERVAL_MS, clearTimer, closeAnimatedModal, formatFileSize, getUploadErrorText, openAnimatedModal, withActionsDisabled } from '../utils/utils.js';
-import { abortFileUpload, completeFileUpload, createDirectory, createTextFileAdaptive, initFileUpload, uploadFileChunk } from '../api/file.js';
+import { DEFAULT_UI_REFRESH_INTERVAL_MS, clearTimer, closeAnimatedModal, formatFileSize, getUploadErrorText, openAnimatedModal, setActionsDisabled, withActionsDisabled } from '../utils/utils.js';
+import { abortFileUpload, createDirectory, createTextFileAdaptive, initFileUpload, uploadFileChunk, uploadFileSingle } from '../api/file.js';
 import { showAlert, showConfirm } from './dialog.js';
 import { applyFileUploadFolderGroupView, applyFileUploadItemView, buildFileUploadFolderGroupNode, buildFileUploadItemNode, ceilTo, computeFolderGroupAggregates, renderFileUploadSummaryText } from './fileUploadView.js';
 import { InputValidation } from '../utils/inputValidation.js';
@@ -501,9 +501,21 @@ const updateFileUploadDropzoneState = () => {
     }
 };
 
+const updateFileUploadSubmitState = () => {
+    if (!dom.fileCreateSubmit) {
+        return;
+    }
+    dom.fileCreateSubmit.disabled = modalState.currentFileCreateType === 'upload' && !!modalState.fileUploadLocked;
+};
+
+const resetFileCreateActionsState = () => {
+    setActionsDisabled(dom.fileCreateActions, false);
+};
+
 const setFileUploadLocked = (locked) => {
     modalState.fileUploadLocked = !!locked;
     updateFileUploadDropzoneState();
+    updateFileUploadSubmitState();
 };
 
 const clearFileUploadDomUpdateTimer = () => {
@@ -632,6 +644,7 @@ const setFileUploadItems = (items) => {
 const resetFileUploadState = () => {
 	abortAllScans();
 	stopFileUploadSpeedTimer();
+    resetFileCreateActionsState();
     clearFileUploadDomUpdateTimer();
 	clearFileUploadDoneClearTimers();
 	modalState.fileUploadRunToken += 1;
@@ -674,6 +687,7 @@ const resetFileUploadState = () => {
     renderFileCreatePage();
     renderFileUploadList();
     updateFileUploadDropzoneState();
+    resetFileCreateActionsState();
 };
 
 const cancelFileUploadItem = async (id) => {
@@ -735,7 +749,7 @@ const cleanupFileUploadContext = async (ctx, options = {}) => {
 		modalState.fileUploadAbortControllers.delete(itemId);
 		modalState.fileUploadActiveContexts.delete(itemId);
 	}
-	if (!abortRemote || ctx.remoteAbortRequested || ctx.completed || ctx.completeRequested) {
+	if (!abortRemote || ctx.remoteAbortRequested || ctx.completed || ctx.mode === 'single') {
 		return;
 	}
 	ctx.remoteAbortRequested = true;
@@ -1456,8 +1470,7 @@ const uploadFileChunkWithRetry = async (instanceName, uploadId, index, chunk, on
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
-			await uploadFileChunk(instanceName, uploadId, index, chunk, onProgress, options);
-            return;
+			return await uploadFileChunk(instanceName, uploadId, index, chunk, onProgress, options);
         } catch (error) {
             lastError = error;
             if (error?.name === 'AbortError') {
@@ -1477,10 +1490,69 @@ const initFileUploadContext = async (instanceName, currentPath, item, overwrite,
 	const runToken = Number(options.runToken) || modalState.fileUploadRunToken;
 	const file = item.file;
 	const uploadSize = file.size;
+	const uploadPath = [currentPath, item.path].filter(Boolean).join('/');
+	const useSingleUpload = uploadSize <= modalState.fileUploadChunkSize;
+	const controller = new AbortController();
+	const ctx = {
+		item,
+		file,
+		instanceName,
+		runToken,
+		mode: useSingleUpload ? 'single' : 'chunked',
+		uploadId: '',
+		chunkSize: uploadSize > modalState.fileUploadChunkSize ? modalState.fileUploadChunkSize : Math.max(uploadSize, 1),
+		chunkCount: useSingleUpload ? 0 : 1,
+		chunkProgress: useSingleUpload ? [0] : null,
+		totalLoaded: 0,
+		nextChunkIndex: 0,
+		refreshProgress: null,
+		failed: false,
+		removed: false,
+		controller,
+		controllerAborted: false,
+		merging: false,
+		completeResult: null,
+		remoteAbortRequested: false,
+		completed: false,
+	};
+	ctx.refreshProgress = (status) => {
+		updateUploadItemProgress(item, ctx.totalLoaded || 0, status);
+	};
+	ctx.removed = isUploadItemCanceled(item, runToken);
+	modalState.fileUploadAbortControllers.set(item.id, ctx.controller);
+	modalState.fileUploadActiveContexts.set(item.id, ctx);
+
+	if (useSingleUpload) {
+		ctx.uploadFile = async () => {
+			if (ctx.failed || ctx.removed) {
+				return;
+			}
+			const result = await uploadFileSingle(instanceName, uploadPath, item.name, ctx.file, overwrite, (loaded) => {
+				const safeLoaded = Math.max(0, Math.min(uploadSize, loaded || 0));
+				const delta = safeLoaded - (ctx.totalLoaded || 0);
+				ctx.totalLoaded = safeLoaded;
+				recordFileUploadBytes(delta);
+				ctx.refreshProgress('UPLOADING');
+			}, { signal: ctx.controller.signal });
+			if (!result || typeof result !== 'object' || result.completed !== true) {
+				throw new Error('上传协议异常: 缺少完成响应');
+			}
+			ctx.completeResult = result;
+			const delta = uploadSize - (ctx.totalLoaded || 0);
+			if (delta !== 0) {
+				ctx.totalLoaded = uploadSize;
+				recordFileUploadBytes(delta);
+			}
+			ctx.nextChunkIndex = 1;
+			ctx.refreshProgress('UPLOADING');
+		};
+		ctx.refreshProgress('UPLOADING');
+		return ctx;
+	}
 	const chunkSize = uploadSize > modalState.fileUploadChunkSize ? modalState.fileUploadChunkSize : Math.max(uploadSize, 1);
 	const chunkCount = Math.max(1, Math.ceil(file.size / chunkSize));
 	const initResult = await initFileUpload(instanceName, {
-		path: [currentPath, item.path].filter(Boolean).join('/'),
+		path: uploadPath,
 		name: item.name,
 		size: uploadSize,
 		chunk_size: chunkSize,
@@ -1491,37 +1563,10 @@ const initFileUploadContext = async (instanceName, currentPath, item, overwrite,
 		throw new Error('UPLOAD INIT FAILED');
 	}
 
-	const chunkProgress = new Array(chunkCount).fill(0);
-	const ctx = {
-		item,
-		file,
-		instanceName,
-		runToken,
-		uploadId: initResult.upload_id,
-		chunkSize,
-		chunkCount,
-		chunkProgress,
-		totalLoaded: 0,
-		nextChunkIndex: 0,
-		refreshProgress: null,
-		failed: false,
-		removed: false,
-		controller: null,
-		controllerAborted: false,
-		merging: false,
-		completeRequested: false,
-		remoteAbortRequested: false,
-		completed: false,
-	};
-
-	ctx.refreshProgress = (status) => {
-		updateUploadItemProgress(item, ctx.totalLoaded || 0, status);
-	};
-
-	ctx.removed = isUploadItemCanceled(item, runToken);
-	ctx.controller = new AbortController();
-	modalState.fileUploadAbortControllers.set(item.id, ctx.controller);
-	modalState.fileUploadActiveContexts.set(item.id, ctx);
+	ctx.uploadId = initResult.upload_id;
+	ctx.chunkSize = chunkSize;
+	ctx.chunkCount = chunkCount;
+	ctx.chunkProgress = new Array(chunkCount).fill(0);
 
 	if (ctx.removed) {
 		// init 已经创建了后端临时文件，立即通知后端清理
@@ -1543,7 +1588,7 @@ const initFileUploadContext = async (instanceName, currentPath, item, overwrite,
 		const start = localIndex * ctx.chunkSize;
 		const end = Math.min(chunkFile.size, start + ctx.chunkSize);
 		const chunk = chunkFile.slice(start, end);
-		await uploadFileChunkWithRetry(instanceName, ctx.uploadId, index, chunk, (loaded) => {
+		const result = await uploadFileChunkWithRetry(instanceName, ctx.uploadId, index, chunk, (loaded) => {
 			const safeLoaded = Math.max(0, Math.min(chunk.size, loaded || 0));
 			const prevLoaded = ctx.chunkProgress[index] || 0;
 			const delta = safeLoaded - prevLoaded;
@@ -1552,6 +1597,9 @@ const initFileUploadContext = async (instanceName, currentPath, item, overwrite,
 			recordFileUploadBytes(delta);
 			ctx.refreshProgress('UPLOADING');
 		}, { signal: ctx.controller.signal });
+		if (result && typeof result === 'object' && result.completed === true) {
+			ctx.completeResult = result;
+		}
 		const prevLoaded = ctx.chunkProgress[index] || 0;
 		if (prevLoaded !== chunk.size) {
 			const chunkDelta = chunk.size - prevLoaded;
@@ -1582,6 +1630,9 @@ const uploadFileGroupChunks = async (contexts, limit, options = {}) => {
 		if (!ctx || ctx.failed || ctx.removed) {
 			return false;
 		}
+		if (ctx.mode === 'single') {
+			return ctx.nextChunkIndex < 1;
+		}
 		return ctx.nextChunkIndex < ctx.chunkCount;
 	};
 
@@ -1596,7 +1647,8 @@ const uploadFileGroupChunks = async (contexts, limit, options = {}) => {
 		if (pending > 0) {
 			return;
 		}
-		if (ctx.nextChunkIndex < ctx.chunkCount) {
+		const totalParts = ctx.mode === 'single' ? 1 : ctx.chunkCount;
+		if (ctx.nextChunkIndex < totalParts) {
 			return;
 		}
 		if (ctx.merging) {
@@ -1620,7 +1672,7 @@ const uploadFileGroupChunks = async (contexts, limit, options = {}) => {
 		}
 		const idx = ctx.nextChunkIndex;
 		ctx.nextChunkIndex += 1;
-		const p = ctx.uploadChunk(idx);
+		const p = ctx.mode === 'single' ? ctx.uploadFile() : ctx.uploadChunk(idx);
 		inFlight.set(p, ctx);
 		ctxInFlightCount.set(ctx, (ctxInFlightCount.get(ctx) || 0) + 1);
 		return true;
@@ -1634,7 +1686,8 @@ const uploadFileGroupChunks = async (contexts, limit, options = {}) => {
 				continue;
 			}
 			const pending = ctxInFlightCount.get(ctx) || 0;
-			if (pending > 0 || ctx.nextChunkIndex < ctx.chunkCount) {
+			const totalParts = ctx.mode === 'single' ? 1 : ctx.chunkCount;
+			if (pending > 0 || ctx.nextChunkIndex < totalParts) {
 				count += 1;
 			}
 		}
@@ -1720,6 +1773,10 @@ const uploadFileGroupChunks = async (contexts, limit, options = {}) => {
 						progress: ctx.item.progress || 0,
 						status: 'FAILED',
 						errorMessage: '已取消',
+					});
+					await cleanupFileUploadContext(ctx, {
+						abortController: true,
+						abortRemote: true,
 					});
 				} else {
 					ctx.failed = true;
@@ -1809,34 +1866,37 @@ const prepareRetryFileUploads = () => {
 };
 
 const uploadSelectedFiles = async (overwrite) => {
-	// 等待所有进行中的文件夹扫描完成
-	if (modalState.fileUploadScanPromises.length > 0) {
-		await Promise.all(modalState.fileUploadScanPromises);
-		modalState.fileUploadScanPromises = [];
-	}
-
-	const instanceName = state.currentInstanceName;
-	const currentPath = getCurrentDir();
-	const items = getUploadLeafItems();
-	if (!instanceName || !items.length) {
-		await showAlert('请选择至少一个文件', { title: 'INPUT' });
-		return false;
-	}
-
+	const runToken = modalState.fileUploadRunToken;
 	let hasSuccess = false;
 	let hasFinished = false;
 	let hasDone = false;
-	const limit = Math.max(1, modalState.fileUploadConcurrency || 1);
 	setFileUploadLocked(true);
 	resetFileUploadSpeed();
 	startFileUploadSpeedTimer();
 	try {
+		// 等待所有进行中的文件夹扫描完成；上传提交从扫描等待阶段开始锁定。
+		if (modalState.fileUploadScanPromises.length > 0) {
+			await Promise.all(modalState.fileUploadScanPromises);
+			if (runToken !== modalState.fileUploadRunToken) {
+				return false;
+			}
+			modalState.fileUploadScanPromises = [];
+		}
+
+		const instanceName = state.currentInstanceName;
+		const currentPath = getCurrentDir();
+		const items = getUploadLeafItems();
+		if (!instanceName || !items.length) {
+			await showAlert('请选择至少一个文件', { title: 'INPUT' });
+			return false;
+		}
+
+		const limit = Math.max(1, modalState.fileUploadConcurrency || 1);
 		items.forEach((item) => {
 			updateUploadItemProgress(item, 0, 'WAITING');
 		});
 
 		let nextIndex = 0;
-		const runToken = modalState.fileUploadRunToken;
 		const getNextContext = async () => {
 			for (; nextIndex < items.length; nextIndex += 1) {
 				const item = items[nextIndex];
@@ -1898,8 +1958,9 @@ const uploadSelectedFiles = async (overwrite) => {
 				}
 				try {
 					updateUploadItemProgress(ctx.item, ctx.item.size || ctx.file?.size || 0, 'MERGING');
-					ctx.completeRequested = true;
-					await completeFileUpload(instanceName, ctx.uploadId);
+					if (!ctx.completeResult || ctx.completeResult.completed !== true) {
+						throw new Error('上传协议异常: 缺少完成响应');
+					}
 					hasFinished = true;
 					ctx.completed = true;
 					updateUploadItemProgress(ctx.item, ctx.item.size || ctx.file?.size || 0, 'DONE');
@@ -1938,11 +1999,16 @@ const uploadSelectedFiles = async (overwrite) => {
 			},
 		});
 	} finally {
-		stopFileUploadSpeedTimer();
-		setFileUploadLocked(false);
-		cleanupDoneFolderGroupChildren();
-		trimFinishedUploadStats();
+		if (runToken === modalState.fileUploadRunToken) {
+			stopFileUploadSpeedTimer();
+			setFileUploadLocked(false);
+			cleanupDoneFolderGroupChildren();
+			trimFinishedUploadStats();
+		}
 	}
+    if (runToken !== modalState.fileUploadRunToken) {
+        return false;
+    }
     if (hasSuccess && typeof modalState.onRequestReload === 'function') {
         await modalState.onRequestReload();
     }
@@ -2148,12 +2214,16 @@ const cleanupDoneFolderGroupChildren = () => {
 };
 
 const setFileCreateType = (type) => {
+    if (modalState.fileUploadLocked) {
+        return;
+    }
     if (type === 'dir' || type === 'upload') {
         modalState.currentFileCreateType = type;
     } else {
         modalState.currentFileCreateType = 'file';
     }
     renderFileCreatePage();
+    updateFileUploadSubmitState();
 	if (type === 'dir') {
 		dom.fileCreateDirName.focus();
 	}
@@ -2186,23 +2256,27 @@ const resetFileCreateUploadForm = () => {
 const handleFileCreateSubmit = async (event) => {
     event.preventDefault();
 
-	await withActionsDisabled(dom.fileCreateActions, async () => {
-		const { type, name, content, overwrite } = getFileCreateFormValue();
-		if (type === 'upload') {
-			if (modalState.fileUploadAwaitConfirm) {
-				resetFileCreateUploadForm();
-				return;
-			}
-			if (hasFailedFileUploads()) {
-				prepareRetryFileUploads();
-			}
-			const ok = await uploadSelectedFiles(overwrite);
-			if (ok) {
-				setFileUploadAwaitConfirm(!hasFailedFileUploads());
-			}
+	const { type, name, content, overwrite } = getFileCreateFormValue();
+	if (type === 'upload') {
+		if (modalState.fileUploadLocked) {
 			return;
 		}
+		if (modalState.fileUploadAwaitConfirm) {
+			resetFileCreateUploadForm();
+			return;
+		}
+		if (hasFailedFileUploads()) {
+			prepareRetryFileUploads();
+		}
+		const runToken = modalState.fileUploadRunToken;
+		const ok = await uploadSelectedFiles(overwrite);
+		if (ok && runToken === modalState.fileUploadRunToken) {
+			setFileUploadAwaitConfirm(!hasFailedFileUploads());
+		}
+		return;
+	}
 
+	await withActionsDisabled(dom.fileCreateActions, async () => {
 		if (!name) {
 			await showAlert('名称不能为空', { title: 'INPUT' });
 			if (type === 'dir') {
@@ -2250,7 +2324,7 @@ const cancelAllFileUploads = () => {
 };
 
 const tryCloseWithConfirm = async () => {
-    if (modalState.currentFileCreateType === 'upload' && hasActiveFileUploads()) {
+    if (hasActiveFileUploads()) {
         const ok = await showConfirm('正在上传中，关闭将取消所有传输。是否关闭？', {
             title: 'CONFIRM',
             okText: 'CLOSE',
@@ -2268,6 +2342,7 @@ const tryCloseWithConfirm = async () => {
 const open = (options = {}) => {
     if (!dom.fileCreateModal || !dom.fileCreateName || !dom.fileCreateTypeFile) return;
     modalState.fileCreateModalCloseTimer = clearTimer(modalState.fileCreateModalCloseTimer);
+	resetFileCreateActionsState();
 	dom.fileCreateForm.reset();
     if (dom.fileCreateContent) {
         dom.fileCreateContent.value = '';
@@ -2278,6 +2353,7 @@ const open = (options = {}) => {
 	const initialType = String(options?.type || '').trim() === 'upload' ? 'upload' : 'file';
 	modalState.currentFileCreateType = initialType;
     resetFileUploadState();
+	resetFileCreateActionsState();
 	modalState.currentFileCreateType = initialType;
 	renderFileCreateTargetDir();
 	renderRecentCreatedNameLists();
@@ -2304,6 +2380,7 @@ const openUploadWithDataTransfer = async (dataTransfer) => {
 const close = () => {
     if (!dom.fileCreateModal) return;
     resetFileUploadState();
+	resetFileCreateActionsState();
 	modalState.fileCreateModalCloseTimer = closeAnimatedModal(dom.fileCreateModal, modalState.fileCreateModalCloseTimer, () => {
 		modalState.fileCreateModalCloseTimer = null;
 	});

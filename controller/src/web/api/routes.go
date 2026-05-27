@@ -17,11 +17,12 @@ type Route struct {
 var (
 	publicGet  = authz.RoutePolicy{Methods: []string{http.MethodGet}, Auth: authz.AuthModeNone, CSRF: authz.CSRFModeNone, Origin: authz.OriginModeNone, Kind: authz.RouteKindAPI}
 	publicPost = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeNone, CSRF: authz.CSRFModeNone, Origin: authz.OriginModeNone, Kind: authz.RouteKindAPI}
+	loginPost  = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeNone, CSRF: authz.CSRFModeNone, Origin: authz.OriginModeSameWhenPresent, Kind: authz.RouteKindAPI}
 	userGet    = authz.RoutePolicy{Methods: []string{http.MethodGet}, Auth: authz.AuthModeUser, CSRF: authz.CSRFModeNone, Origin: authz.OriginModeNone, Kind: authz.RouteKindAPI}
 	userPost   = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeUser, CSRF: authz.CSRFModeHeader, Origin: authz.OriginModeNone, Kind: authz.RouteKindAPI}
 	adminGet   = authz.RoutePolicy{Methods: []string{http.MethodGet}, Auth: authz.AuthModeAdmin, CSRF: authz.CSRFModeNone, Origin: authz.OriginModeNone, Kind: authz.RouteKindAPI}
 	adminPost  = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeAdmin, CSRF: authz.CSRFModeHeader, Origin: authz.OriginModeNone, Kind: authz.RouteKindAPI}
-	userSSE    = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeUser, CSRF: authz.CSRFModeHeader, Origin: authz.OriginModeNone, Kind: authz.RouteKindSSE}
+	userSSE    = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeUser, CSRF: authz.CSRFModeHeader, Origin: authz.OriginModeSameWhenPresent, Kind: authz.RouteKindSSE}
 	userWS     = authz.RoutePolicy{Methods: []string{http.MethodGet}, Auth: authz.AuthModeUser, CSRF: authz.CSRFModeWebSocketProtocol, Origin: authz.OriginModeWebSocket, Kind: authz.RouteKindWebSocket}
 
 	// Dashboard endpoints keep public-dashboard fallback in handlers. Snapshot does
@@ -55,7 +56,7 @@ var Routes = []Route{
 
 	// Auth
 	{Path: "/api/auth/pow", Policy: publicGet, Handler: HandleApiAuthPow},
-	{Path: "/api/auth/login", Policy: publicPost, Handler: HandleApiAuthLogin},
+	{Path: "/api/auth/login", Policy: loginPost, Handler: HandleApiAuthLogin},
 	{Path: "/api/auth/logout", Policy: userPost, Handler: HandleApiAuthLogout},
 	{Path: "/api/auth/reset", Policy: userPost, Handler: HandleApiAuthReset},
 
@@ -69,9 +70,9 @@ var Routes = []Route{
 	{Path: "/api/file/rename", Policy: userPost, Handler: HandleApiFileRename},
 	{Path: "/api/file/delete", Policy: userPost, Handler: HandleApiFileDelete},
 	{Path: "/api/file/upload/init", Policy: userPost, Handler: HandleApiFileUploadInit},
+	{Path: "/api/file/upload/single", Policy: userPost, Handler: HandleApiFileUploadSingle},
 	{Path: "/api/file/upload/chunk", Policy: userPost, Handler: HandleApiFileUploadChunk},
 	{Path: "/api/file/upload/abort", Policy: userPost, Handler: HandleApiFileUploadAbort},
-	{Path: "/api/file/upload/complete", Policy: userPost, Handler: HandleApiFileUploadComplete},
 	{Path: "/api/file/archive", Policy: userPost, Handler: HandleApiFileArchive},
 	{Path: "/api/file/archive/download", Policy: userGet, Handler: HandleApiFileArchiveDownload},
 	{Path: "/api/file/batch", Policy: userSSE, Handler: HandleApiFileBatch},
