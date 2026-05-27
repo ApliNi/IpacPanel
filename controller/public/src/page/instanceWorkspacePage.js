@@ -89,9 +89,9 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 							<span>TERMINAL</span>
 							<div class="select-wrapper">
 								<select id="instanceModalTerminal" name="terminal" autocomplete="off">
-									<option value="${terminalMode.NO_TERMINAL}">NO_TERMINAL [无终端]</option>
-									<option value="${terminalMode.TERMINAL}">TERMINAL [普通终端]</option>
 									<option value="${terminalMode.PTY_TERMINAL}">PTY_TERMINAL [仿真终端]</option>
+									<option value="${terminalMode.TERMINAL}">TERMINAL [普通终端]</option>
+									<option value="${terminalMode.NO_TERMINAL}">NO_TERMINAL [无终端]</option>
 								</select>
 							</div>
 							<div class="file-action-static instance-advanced-note">
