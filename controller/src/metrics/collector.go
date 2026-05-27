@@ -38,7 +38,8 @@ const (
 	dashboardDeviceKindDisk      = int64(2)
 	sqliteBusyTimeoutMS          = 5000
 	sqliteConnectTimeout         = 5 * time.Second
-	sqliteCompactTimeout         = 30 * time.Second
+	sqliteCompactBatchTimeout    = 60 * time.Second
+	sqliteCompactBatchDuration   = 2 * time.Hour
 	dashboardSQLiteDBName        = "dashboard.sqlite3"
 )
 
@@ -1386,20 +1387,20 @@ ORDER BY bucket_ts ASC`, deviceKind, name, fromUnix, toUnix, deviceKind, name, f
 }
 
 func (c *Collector) cleanupSQLiteIfCurrent(path string, maxDay int, compactAfterDay int, generation uint64) {
-	c.sqliteMu.Lock()
-	defer c.sqliteMu.Unlock()
-	c.cleanupSQLiteDB(c.currentDBForPath(path, generation), maxDay, compactAfterDay)
-}
-
-func (c *Collector) cleanupSQLiteDB(db *sql.DB, maxDay int, compactAfterDay int) {
 	if maxDay <= 0 {
 		return
 	}
+	if err := c.compactSQLite1sSamplesIfCurrent(path, compactAfterDay, generation); err != nil {
+		log.Printf(msg.DashboardSQLiteCompactOldSecondSamplesFailedWarningLogFmt, err)
+	}
+	c.sqliteMu.Lock()
+	defer c.sqliteMu.Unlock()
+	c.cleanupSQLiteDB(c.currentDBForPath(path, generation), maxDay)
+}
+
+func (c *Collector) cleanupSQLiteDB(db *sql.DB, maxDay int) {
 	if db == nil {
 		return
-	}
-	if err := compactSQLite1sSamples(db, compactAfterDay); err != nil {
-		log.Printf(msg.DashboardSQLiteCompactOldSecondSamplesFailedWarningLogFmt, err)
 	}
 	cutoff := beginningOfLocalDay(time.Now()).AddDate(0, 0, -maxDay+1).Unix()
 	if _, err := db.Exec(`DELETE FROM dashboard_device_samples_1s WHERE ts < ?`, cutoff); err != nil {
@@ -1425,12 +1426,63 @@ func (c *Collector) cleanupSQLiteDB(db *sql.DB, maxDay int, compactAfterDay int)
 	}
 }
 
-func compactSQLite1sSamples(db *sql.DB, compactAfterDay int) error {
+func (c *Collector) compactSQLite1sSamplesIfCurrent(path string, compactAfterDay int, generation uint64) error {
 	if compactAfterDay <= 0 {
 		return nil
 	}
 	cutoff := beginningOfLocalDay(time.Now()).AddDate(0, 0, -compactAfterDay).Unix()
-	ctx, cancel := context.WithTimeout(context.Background(), sqliteCompactTimeout)
+	for {
+		c.sqliteMu.Lock()
+		db := c.currentDBForPath(path, generation)
+		if db == nil {
+			c.sqliteMu.Unlock()
+			return nil
+		}
+		batchStart, ok, err := querySQLiteCompactBatchStart(db, cutoff)
+		if err != nil {
+			c.sqliteMu.Unlock()
+			return err
+		}
+		if !ok {
+			c.sqliteMu.Unlock()
+			return nil
+		}
+		batchStart = sqlite1mBucketStart(batchStart)
+		batchEnd := batchStart + int64(sqliteCompactBatchDuration/time.Second)
+		if batchEnd > cutoff {
+			batchEnd = cutoff
+		}
+		if batchEnd <= batchStart {
+			c.sqliteMu.Unlock()
+			return nil
+		}
+		err = compactSQLite1sSamplesBatch(db, batchStart, batchEnd)
+		c.sqliteMu.Unlock()
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func querySQLiteCompactBatchStart(db *sql.DB, cutoff int64) (int64, bool, error) {
+	var batchStart sql.NullInt64
+	if err := db.QueryRow(`
+SELECT MIN(ts)
+FROM (
+	SELECT MIN(ts) AS ts FROM dashboard_samples_1s WHERE ts < ?
+	UNION ALL
+	SELECT MIN(ts) AS ts FROM dashboard_device_samples_1s WHERE ts < ?
+)`, cutoff, cutoff).Scan(&batchStart); err != nil {
+		return 0, false, fmt.Errorf(msg.DashboardSQLiteExecCompactFailedFmt, err)
+	}
+	if !batchStart.Valid {
+		return 0, false, nil
+	}
+	return batchStart.Int64, true, nil
+}
+
+func compactSQLite1sSamplesBatch(db *sql.DB, batchStart int64, batchEnd int64) error {
+	ctx, cancel := context.WithTimeout(context.Background(), sqliteCompactBatchTimeout)
 	defer cancel()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1491,7 +1543,7 @@ SELECT
 	MAX(tcp_connection_count),
 	MAX(udp_connection_count)
 FROM dashboard_samples_1s
-WHERE ts < ?
+WHERE ts >= ? AND ts < ?
 GROUP BY bucket_ts
 ON CONFLICT(bucket_ts) DO UPDATE SET
 	sample_count = excluded.sample_count,
@@ -1533,7 +1585,7 @@ SELECT
 	MAX(read_bps),
 	MAX(write_bps)
 FROM dashboard_device_samples_1s
-WHERE ts < ?
+WHERE ts >= ? AND ts < ?
 GROUP BY bucket_ts, device_id
 ON CONFLICT(device_id, bucket_ts) DO UPDATE SET
 	sample_count = excluded.sample_count,
@@ -1541,11 +1593,11 @@ ON CONFLICT(device_id, bucket_ts) DO UPDATE SET
 	write_avg = excluded.write_avg,
 	read_max = excluded.read_max,
 	write_max = excluded.write_max`,
-		`DELETE FROM dashboard_device_samples_1s WHERE ts < ?`,
-		`DELETE FROM dashboard_samples_1s WHERE ts < ?`,
+		`DELETE FROM dashboard_device_samples_1s WHERE ts >= ? AND ts < ?`,
+		`DELETE FROM dashboard_samples_1s WHERE ts >= ? AND ts < ?`,
 	}
 	for _, statement := range statements {
-		if _, err := tx.ExecContext(ctx, statement, cutoff); err != nil {
+		if _, err := tx.ExecContext(ctx, statement, batchStart, batchEnd); err != nil {
 			return fmt.Errorf(msg.DashboardSQLiteExecCompactFailedFmt, err)
 		}
 	}
