@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,11 @@ import (
 type buildProduct struct {
 	Pkg      string
 	Artifact string
+}
+
+type zipEntry struct {
+	SourcePath string
+	Name       string
 }
 
 type target struct {
@@ -148,7 +154,7 @@ func buildTarget(repoRoot string, buildDir string, target target, buildTester bo
 		products = append(products, buildProduct{Pkg: "./tester", Artifact: "tester"})
 	}
 	var exePaths []string
-	var zipEntries []string
+	var binaryEntries []zipEntry
 	for _, product := range products {
 		exePath := filepath.Join(buildDir, artifactName(target, product.Artifact))
 		args := []string{"build", "-trimpath", "-ldflags", "-s -w", "-o", exePath, product.Pkg}
@@ -170,18 +176,24 @@ func buildTarget(repoRoot string, buildDir string, target target, buildTester bo
 		if target.OS == "windows" {
 			cleanName += ".exe"
 		}
-		zipEntries = append(zipEntries, cleanName)
+		binaryEntries = append(binaryEntries, zipEntry{SourcePath: exePath, Name: cleanName})
+	}
+	zipEntries, err := collectReleaseEntries(repoRoot, binaryEntries)
+	if err != nil {
+		return err
 	}
 
 	zipName := fmt.Sprintf("IpacPanel-%s-%s.zip", target.OS, target.Arch)
 	zipPath := filepath.Join(buildDir, zipName)
 	fmt.Printf("Packaging %s <- %s/%s\n", zipName, target.OS, target.Arch)
-	if err := createZip(zipPath, exePaths, zipEntries); err != nil {
+	if err := createZip(zipPath, zipEntries); err != nil {
 		return fmt.Errorf("create zip %s: %w", zipName, err)
 	}
 
 	for _, p := range exePaths {
-		os.Remove(p)
+		if err := os.Remove(p); err != nil {
+			return fmt.Errorf("remove temporary artifact %q: %w", p, err)
+		}
 	}
 
 	return nil
@@ -193,47 +205,209 @@ func artifactName(target target, name string) string {
 	}
 	return fullName
 }
-func createZip(zipPath string, files []string, names []string) error {
+func collectReleaseEntries(repoRoot string, binaryEntries []zipEntry) ([]zipEntry, error) {
+	entries := append([]zipEntry(nil), binaryEntries...)
+
+	readme, err := findRequiredRootFile(repoRoot, "README", []string{
+		"README.md",
+		"README.txt",
+		"README.rst",
+		"README",
+	})
+	if err != nil {
+		return nil, err
+	}
+	entries = append(entries, readme)
+
+	license, err := findRequiredRootFile(repoRoot, "LICENSE", []string{
+		"LICENSE",
+		"LICENSE.md",
+		"LICENSE.txt",
+		"COPYING",
+		"COPYING.md",
+		"COPYING.txt",
+	})
+	if err != nil {
+		return nil, err
+	}
+	entries = append(entries, license)
+
+	userDocs, err := collectDirectoryEntries(repoRoot, filepath.Join("doc", "user_docs"))
+	if err != nil {
+		return nil, err
+	}
+	entries = append(entries, userDocs...)
+
+	return entries, nil
+}
+
+func findRequiredRootFile(repoRoot string, label string, names []string) (zipEntry, error) {
+	checked := make([]string, 0, len(names))
+	for _, name := range names {
+		path := filepath.Join(repoRoot, name)
+		checked = append(checked, name)
+		info, err := os.Stat(path)
+		if err == nil {
+			if info.IsDir() {
+				return zipEntry{}, fmt.Errorf("required root %s file %q is a directory", label, name)
+			}
+			return zipEntry{SourcePath: path, Name: filepath.ToSlash(name)}, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return zipEntry{}, fmt.Errorf("stat root %s candidate %q: %w", label, name, err)
+		}
+	}
+
+	rootEntries, err := os.ReadDir(repoRoot)
+	if err != nil {
+		return zipEntry{}, fmt.Errorf("read repository root for %s file: %w", label, err)
+	}
+	for _, name := range names {
+		for _, rootEntry := range rootEntries {
+			if !strings.EqualFold(rootEntry.Name(), name) {
+				continue
+			}
+			path := filepath.Join(repoRoot, rootEntry.Name())
+			info, err := rootEntry.Info()
+			if err != nil {
+				return zipEntry{}, fmt.Errorf("stat root %s candidate %q: %w", label, rootEntry.Name(), err)
+			}
+			if info.IsDir() {
+				return zipEntry{}, fmt.Errorf("required root %s file %q is a directory", label, rootEntry.Name())
+			}
+			return zipEntry{SourcePath: path, Name: filepath.ToSlash(rootEntry.Name())}, nil
+		}
+	}
+	return zipEntry{}, fmt.Errorf("required root %s file not found, checked: %s", label, strings.Join(checked, ", "))
+}
+
+func collectDirectoryEntries(repoRoot string, relativeDir string) ([]zipEntry, error) {
+	dir := filepath.Join(repoRoot, relativeDir)
+	info, err := os.Stat(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("required release directory %q not found", relativeDir)
+		}
+		return nil, fmt.Errorf("stat release directory %q: %w", relativeDir, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("required release path %q is not a directory", relativeDir)
+	}
+
+	var entries []zipEntry
+	if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("walk release directory %q: %w", path, err)
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return fmt.Errorf("stat release file %q: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("release path %q is not a regular file", path)
+		}
+		relativePath, err := filepath.Rel(repoRoot, path)
+		if err != nil {
+			return fmt.Errorf("resolve release path %q relative to repo root: %w", path, err)
+		}
+		entries = append(entries, zipEntry{SourcePath: path, Name: filepath.ToSlash(relativePath)})
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("required release directory %q contains no files", relativeDir)
+	}
+	return entries, nil
+}
+
+func createZip(zipPath string, entries []zipEntry) error {
 	f, err := os.Create(zipPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("create zip file %q: %w", zipPath, err)
 	}
-	defer f.Close()
 
 	w := zip.NewWriter(f)
-	defer w.Close()
 
-	for i, file := range files {
-		src, err := os.Open(file)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", file, err)
+	for _, entry := range entries {
+		if err := addZipEntry(w, entry); err != nil {
+			if closeErr := w.Close(); closeErr != nil {
+				return fmt.Errorf("%w; additionally close zip writer: %v", err, closeErr)
+			}
+			if closeErr := f.Close(); closeErr != nil {
+				return fmt.Errorf("%w; additionally close zip file: %v", err, closeErr)
+			}
+			return err
 		}
+	}
+	if err := w.Close(); err != nil {
+		if closeErr := f.Close(); closeErr != nil {
+			return fmt.Errorf("close zip writer: %w; additionally close zip file: %v", err, closeErr)
+		}
+		return fmt.Errorf("close zip writer: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close zip file %q: %w", zipPath, err)
+	}
+	return nil
+}
 
-		info, err := src.Stat()
-		if err != nil {
-			src.Close()
-			return fmt.Errorf("stat %s: %w", file, err)
-		}
+func addZipEntry(w *zip.Writer, entry zipEntry) error {
+	if entry.Name == "" {
+		return fmt.Errorf("zip entry name is empty for %q", entry.SourcePath)
+	}
+	if strings.Contains(entry.Name, "\\") {
+		return fmt.Errorf("zip entry %q uses Windows path separator", entry.Name)
+	}
 
-		header, err := zip.FileInfoHeader(info)
-		if err != nil {
-			src.Close()
-			return fmt.Errorf("header %s: %w", file, err)
-		}
-		header.Name = names[i]
-		header.Method = zip.Deflate
+	src, err := os.Open(entry.SourcePath)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", entry.SourcePath, err)
+	}
 
-		writer, err := w.CreateHeader(header)
-		if err != nil {
-			src.Close()
-			return fmt.Errorf("create entry %s: %w", header.Name, err)
+	info, err := src.Stat()
+	if err != nil {
+		if closeErr := src.Close(); closeErr != nil {
+			return fmt.Errorf("stat %s: %w; additionally close source file: %v", entry.SourcePath, err, closeErr)
 		}
+		return fmt.Errorf("stat %s: %w", entry.SourcePath, err)
+	}
+	if !info.Mode().IsRegular() {
+		if closeErr := src.Close(); closeErr != nil {
+			return fmt.Errorf("zip source %q is not a regular file; additionally close source file: %w", entry.SourcePath, closeErr)
+		}
+		return fmt.Errorf("zip source %q is not a regular file", entry.SourcePath)
+	}
 
-		if _, err := io.Copy(writer, src); err != nil {
-			src.Close()
-			return fmt.Errorf("write %s: %w", header.Name, err)
+	header, err := zip.FileInfoHeader(info)
+	if err != nil {
+		if closeErr := src.Close(); closeErr != nil {
+			return fmt.Errorf("header %s: %w; additionally close source file: %v", entry.SourcePath, err, closeErr)
 		}
-		src.Close()
+		return fmt.Errorf("header %s: %w", entry.SourcePath, err)
+	}
+	header.Name = entry.Name
+	header.Method = zip.Deflate
+
+	writer, err := w.CreateHeader(header)
+	if err != nil {
+		if closeErr := src.Close(); closeErr != nil {
+			return fmt.Errorf("create entry %s: %w; additionally close source file: %v", header.Name, err, closeErr)
+		}
+		return fmt.Errorf("create entry %s: %w", header.Name, err)
+	}
+
+	if _, err := io.Copy(writer, src); err != nil {
+		if closeErr := src.Close(); closeErr != nil {
+			return fmt.Errorf("write %s: %w; additionally close source file: %v", header.Name, err, closeErr)
+		}
+		return fmt.Errorf("write %s: %w", header.Name, err)
+	}
+	if err := src.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", entry.SourcePath, err)
 	}
 	return nil
 }
