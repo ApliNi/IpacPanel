@@ -1024,13 +1024,10 @@ input[type="password"] {
 }
 
 .instance-access-link:hover,
-.instance-access-link:focus-visible {
+.instance-access-link:focus-visible,
+.instance-access-link.is-copied {
 	color: var(--text-color);
 	outline: none;
-}
-
-.instance-access-link.is-copied {
-	color: var(--green);
 }
 
 .instance-access-links-input {
