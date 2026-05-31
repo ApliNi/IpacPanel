@@ -5,10 +5,12 @@ package terminal
 import (
 	"errors"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/creack/pty"
 	"github.com/kballard/go-shellquote"
@@ -23,6 +25,7 @@ type Proxy struct {
 	readCloser   io.ReadCloser
 	writeCloser  io.WriteCloser
 	cmd          *exec.Cmd
+	processTree  *ProcessTree
 	ptyFile      *os.File
 	inputWriter  *encodingAwareWriter
 	outputReader *encodingAwareReader
@@ -122,38 +125,104 @@ func BuildCommand(path string, command string) (*exec.Cmd, error) {
 }
 
 func startUnixPTY(cmd *exec.Cmd, cols uint16, rows uint16) (*Proxy, error) {
+	processTree, err := NewProcessTree()
+	if err != nil {
+		return nil, err
+	}
+	processTree.PrepareCommand(cmd, true)
 	f, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: cols, Rows: rows})
 	if err != nil {
+		_ = processTree.Close()
+		return nil, err
+	}
+	if err := processTree.AttachCommand(cmd); err != nil {
+		if errors.Is(err, ErrProcessAlreadyExited) {
+			_ = processTree.Close()
+			return &Proxy{
+				readCloser:  f,
+				writeCloser: f,
+				cmd:         cmd,
+				processTree: nil,
+				ptyFile:     f,
+			}, nil
+		}
+		_ = f.Close()
+		if killErr := cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) && !errors.Is(killErr, syscall.ESRCH) {
+			_ = processTree.Close()
+			return nil, errors.Join(err, killErr)
+		}
+		_ = cmd.Wait()
+		_ = processTree.Close()
 		return nil, err
 	}
 	return &Proxy{
 		readCloser:  f,
 		writeCloser: f,
 		cmd:         cmd,
+		processTree: processTree,
 		ptyFile:     f,
 	}, nil
 }
 
 func startUnixPipe(cmd *exec.Cmd) (*Proxy, error) {
+	processTree, err := NewProcessTree()
+	if err != nil {
+		return nil, err
+	}
+	processTree.PrepareCommand(cmd, false)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		_ = processTree.Close()
 		return nil, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
+		_ = processTree.Close()
 		return nil, err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
+		_ = processTree.Close()
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
 		_ = stderr.Close()
+		_ = processTree.Close()
+		return nil, err
+	}
+	if err := processTree.AttachCommand(cmd); err != nil {
+		if errors.Is(err, ErrProcessAlreadyExited) {
+			_ = processTree.Close()
+			reader, writer := io.Pipe()
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go copyPipeOutput(&wg, writer, stdout)
+			go copyPipeOutput(&wg, writer, stderr)
+			go func() {
+				wg.Wait()
+				_ = writer.Close()
+			}()
+			return &Proxy{
+				readCloser:  reader,
+				writeCloser: stdin,
+				cmd:         cmd,
+				processTree: nil,
+			}, nil
+		}
+		_ = stdin.Close()
+		_ = stdout.Close()
+		_ = stderr.Close()
+		if killErr := cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) && !errors.Is(killErr, syscall.ESRCH) {
+			_ = processTree.Close()
+			return nil, errors.Join(err, killErr)
+		}
+		_ = cmd.Wait()
+		_ = processTree.Close()
 		return nil, err
 	}
 	reader, writer := io.Pipe()
@@ -169,6 +238,7 @@ func startUnixPipe(cmd *exec.Cmd) (*Proxy, error) {
 		readCloser:  reader,
 		writeCloser: stdin,
 		cmd:         cmd,
+		processTree: processTree,
 	}, nil
 }
 
@@ -236,7 +306,9 @@ func (p *Proxy) Close() error {
 	p.closeMu.Unlock()
 
 	var errs []error
-	if p.cmd != nil && p.cmd.Process != nil {
+	if p.processTree != nil {
+		errs = append(errs, p.processTree.Interrupt())
+	} else if p.cmd != nil && p.cmd.Process != nil {
 		errs = append(errs, p.cmd.Process.Signal(os.Interrupt))
 	}
 	if p.ptyFile != nil {
@@ -264,6 +336,9 @@ func (p *Proxy) Kill() error {
 	p.killCalled = true
 	p.killMu.Unlock()
 
+	if p.processTree != nil {
+		return p.processTree.Kill()
+	}
 	if p.cmd != nil && p.cmd.Process != nil {
 		return p.cmd.Process.Kill()
 	}
@@ -274,7 +349,21 @@ func (p *Proxy) Wait() error {
 	if p.cmd == nil {
 		return nil
 	}
-	return p.cmd.Wait()
+	err := p.cmd.Wait()
+	p.CleanupProcessTree()
+	return err
+}
+
+// CleanupProcessTree performs best-effort residual cleanup after the main wait
+// result has been collected. Cleanup errors are intentionally not mixed into the
+// wait result so callers can distinguish process exit from residual cleanup.
+func (p *Proxy) CleanupProcessTree() {
+	if p == nil || p.processTree == nil {
+		return
+	}
+	if err := p.processTree.CloseAndKillResidual(); err != nil {
+		log.Printf("proxy best-effort residual process tree cleanup error: %v", err)
+	}
 }
 
 func (p *Proxy) NotifyReadClosed() {}

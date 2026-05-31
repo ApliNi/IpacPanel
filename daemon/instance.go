@@ -69,7 +69,9 @@ type DaemonInstance struct {
 	Runtime        InstanceRuntimeState
 	Proxy          *terminal.Proxy
 	Cmd            *exec.Cmd
+	ProcessTree    *terminal.ProcessTree
 	CleanupCmd     *exec.Cmd
+	CleanupTree    *terminal.ProcessTree
 	DevNull        *os.File
 	OutputCh       chan<- IPCResponse
 	runtimeID      string
@@ -247,10 +249,11 @@ func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse) error {
 
 	var proxy *terminal.Proxy
 	var cmd *exec.Cmd
+	var processTree *terminal.ProcessTree
 	var devNull *os.File
 	var pid int
 	if IsNoTerminal(ins.Terminal) {
-		cmd, devNull, err = startNoTerminalProcess(resolvedPath, ins.Command)
+		cmd, processTree, devNull, err = startNoTerminalProcess(resolvedPath, ins.Command)
 		if err != nil {
 			return fmt.Errorf("start instance: %w", err)
 		}
@@ -268,6 +271,7 @@ func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse) error {
 	runtimeID := ins.Name
 	ins.Proxy = proxy
 	ins.Cmd = cmd
+	ins.ProcessTree = processTree
 	ins.DevNull = devNull
 	ins.OutputCh = outputCh
 	if proxy != nil {
@@ -305,24 +309,59 @@ func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse) error {
 	return nil
 }
 
-func startNoTerminalProcess(path string, command string) (*exec.Cmd, *os.File, error) {
+func startNoTerminalProcess(path string, command string) (*exec.Cmd, *terminal.ProcessTree, *os.File, error) {
 	cmd, err := terminal.BuildCommand(path, command)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+	processTree, err := terminal.NewProcessTree()
+	if err != nil {
+		if terminal.IsProcessTreeRequired() {
+			return nil, nil, nil, err
+		}
+		log.Printf("no-terminal process tree unavailable: %v", err)
+	}
+	if processTree != nil {
+		processTree.PrepareCommand(cmd, false)
 	}
 	terminal.PreventConsoleInheritance(cmd)
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open dev null: %w", err)
+		if processTree != nil {
+			_ = processTree.Close()
+		}
+		return nil, nil, nil, fmt.Errorf("open dev null: %w", err)
 	}
 	cmd.Stdin = devNull
 	cmd.Stdout = devNull
 	cmd.Stderr = devNull
 	if err := cmd.Start(); err != nil {
 		_ = devNull.Close()
-		return nil, nil, err
+		if processTree != nil {
+			_ = processTree.Close()
+		}
+		return nil, nil, nil, err
 	}
-	return cmd, devNull, nil
+	if processTree != nil {
+		if err := processTree.AttachCommand(cmd); err != nil {
+			if errors.Is(err, terminal.ErrProcessAlreadyExited) {
+				if closeErr := processTree.Close(); closeErr != nil {
+					log.Printf("no-terminal process tree close error: %v", closeErr)
+				}
+				return cmd, nil, devNull, nil
+			}
+			_ = processTree.Close()
+			if terminal.IsProcessTreeRequired() {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+				_ = devNull.Close()
+				return nil, nil, nil, err
+			}
+			log.Printf("no-terminal process tree unavailable: %v", err)
+			processTree = nil
+		}
+	}
+	return cmd, processTree, devNull, nil
 }
 
 func (ins *DaemonInstance) Stop(force bool, runtimeCode int) {
@@ -332,10 +371,15 @@ func (ins *DaemonInstance) Stop(force bool, runtimeCode int) {
 			ins.markRuntimeCodeLocked(runtimeCode)
 		}
 		cleanupCmd := ins.CleanupCmd
+		cleanupTree := ins.CleanupTree
 		name := ins.Name
 		ins.Mu.Unlock()
 		if force && cleanupCmd != nil && cleanupCmd.Process != nil {
-			if err := cleanupCmd.Process.Kill(); err != nil {
+			if cleanupTree != nil {
+				if err := cleanupTree.Kill(); err != nil {
+					log.Printf("instance %s cleanup tree kill error: %v", name, err)
+				}
+			} else if err := cleanupCmd.Process.Kill(); err != nil {
 				log.Printf("instance %s cleanup kill error: %v", name, err)
 			}
 		}
@@ -358,22 +402,16 @@ func (ins *DaemonInstance) Stop(force bool, runtimeCode int) {
 	}
 	proxy := ins.Proxy
 	cmd := ins.Cmd
+	processTree := ins.ProcessTree
 	name := ins.Name
 	ins.Mu.Unlock()
 
 	if proxy == nil && cmd != nil {
 		if cmd.Process != nil {
 			if force {
-				if err := cmd.Process.Kill(); err != nil {
-					log.Printf("instance %s kill error: %v", name, err)
-				}
+				killNoTerminalProcess(name, cmd, processTree)
 			} else {
-				if err := cmd.Process.Signal(os.Interrupt); err != nil {
-					log.Printf("instance %s interrupt error: %v", name, err)
-					if killErr := cmd.Process.Kill(); killErr != nil {
-						log.Printf("instance %s fallback kill error: %v", name, killErr)
-					}
-				}
+				stopNoTerminalProcess(name, cmd, processTree)
 			}
 		}
 		return
@@ -386,6 +424,43 @@ func (ins *DaemonInstance) Stop(force bool, runtimeCode int) {
 	}
 	if err := proxy.Close(); err != nil {
 		log.Printf("instance %s proxy close error: %v", name, err)
+	}
+}
+
+func stopNoTerminalProcess(name string, cmd *exec.Cmd, processTree *terminal.ProcessTree) {
+	if processTree != nil {
+		if !processTree.UsesSoftSignal() {
+			log.Printf("instance %s process tree does not support soft stop; using hard kill fallback", name)
+			killNoTerminalProcess(name, cmd, processTree)
+			return
+		}
+		if err := processTree.Interrupt(); err != nil {
+			log.Printf("instance %s process tree interrupt error: %v", name, err)
+			killNoTerminalProcess(name, cmd, processTree)
+		}
+		return
+	}
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		log.Printf("instance %s interrupt error: %v", name, err)
+		killNoTerminalProcess(name, cmd, nil)
+	}
+}
+
+func killNoTerminalProcess(name string, cmd *exec.Cmd, processTree *terminal.ProcessTree) {
+	if processTree != nil {
+		if err := processTree.Kill(); err != nil {
+			log.Printf("instance %s process tree kill error: %v", name, err)
+		}
+		return
+	}
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		log.Printf("instance %s kill error: %v", name, err)
 	}
 }
 
@@ -515,6 +590,8 @@ func (ins *DaemonInstance) finishProcessExit(proxy *terminal.Proxy, cmd *exec.Cm
 	}
 	ins.Proxy = nil
 	ins.Cmd = nil
+	processTree := ins.ProcessTree
+	ins.ProcessTree = nil
 	devNull := ins.DevNull
 	ins.DevNull = nil
 	outputDone := ins.outputDone
@@ -544,6 +621,7 @@ func (ins *DaemonInstance) finishProcessExit(proxy *terminal.Proxy, cmd *exec.Cm
 		if devNull != nil {
 			_ = devNull.Close()
 		}
+		cleanupProcessTree(runtimeID, processTree, "instance exit before cleanup command")
 		ins.runCleanupCommand(cleanupPath, cleanupCommand, outputCh, runtimeID)
 		ins.finishCleanupExit(proxySeq, runtime)
 		return
@@ -556,8 +634,18 @@ func (ins *DaemonInstance) finishProcessExit(proxy *terminal.Proxy, cmd *exec.Cm
 	if devNull != nil {
 		_ = devNull.Close()
 	}
+	cleanupProcessTree(runtimeID, processTree, "instance exit")
 
 	ins.sendRuntimeEvent(outputCh, IPCResponse{Type: "instance_exited", State: &runtime})
+}
+
+func cleanupProcessTree(runtimeID string, processTree *terminal.ProcessTree, context string) {
+	if processTree == nil {
+		return
+	}
+	if err := processTree.CloseAndKillResidual(); err != nil {
+		log.Printf("instance %s best-effort residual process tree cleanup error during %s: %v", runtimeID, context, err)
+	}
 }
 
 func waitDaemonOutputDone(runtimeID string, done <-chan struct{}) {
@@ -580,27 +668,70 @@ func (ins *DaemonInstance) runCleanupCommand(path string, command string, output
 		return
 	}
 	terminal.PreventConsoleInheritance(cmd)
+	processTree, err := terminal.NewProcessTree()
+	if err != nil {
+		if terminal.IsProcessTreeRequired() {
+			ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStartFailed, err.Error())
+			return
+		}
+		log.Printf("instance %s cleanup process tree unavailable: %v", runtimeID, err)
+	}
+	if processTree != nil {
+		processTree.PrepareCommand(cmd, false)
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		if processTree != nil {
+			_ = processTree.Close()
+		}
 		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStdoutFailed, err.Error())
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		_ = stdout.Close()
+		if processTree != nil {
+			_ = processTree.Close()
+		}
 		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStderrFailed, err.Error())
 		return
 	}
 	if err := cmd.Start(); err != nil {
 		_ = stdout.Close()
 		_ = stderr.Close()
+		if processTree != nil {
+			_ = processTree.Close()
+		}
 		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStartFailed, err.Error())
 		return
+	}
+	if processTree != nil {
+		if err := processTree.AttachCommand(cmd); err != nil {
+			if errors.Is(err, terminal.ErrProcessAlreadyExited) {
+				if closeErr := processTree.Close(); closeErr != nil {
+					log.Printf("instance %s cleanup process tree close error: %v", runtimeID, closeErr)
+				}
+				processTree = nil
+			} else {
+				_ = processTree.Close()
+				if terminal.IsProcessTreeRequired() {
+					_ = stdout.Close()
+					_ = stderr.Close()
+					_ = cmd.Process.Kill()
+					_ = cmd.Wait()
+					ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStartFailed, err.Error())
+					return
+				}
+				log.Printf("instance %s cleanup process tree unavailable: %v", runtimeID, err)
+				processTree = nil
+			}
+		}
 	}
 
 	ins.Mu.Lock()
 	if ins.State == instanceCleaning {
 		ins.CleanupCmd = cmd
+		ins.CleanupTree = processTree
 	}
 	ins.Mu.Unlock()
 
@@ -610,6 +741,7 @@ func (ins *DaemonInstance) runCleanupCommand(path string, command string, output
 	go ins.copyCleanupOutput(&wg, outputCh, runtimeID, stderr)
 	ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStarted)
 	waitErr := cmd.Wait()
+	cleanupProcessTree(runtimeID, processTree, "cleanup command exit")
 	wg.Wait()
 	if waitErr != nil {
 		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageExited, waitErr.Error())
@@ -672,6 +804,8 @@ func (ins *DaemonInstance) finishCleanupExit(proxySeq uint64, runtime InstanceRu
 		return
 	}
 	ins.CleanupCmd = nil
+	cleanupTree := ins.CleanupTree
+	ins.CleanupTree = nil
 	ins.State = instanceStopped
 	ins.Runtime.Lifecycle = InstanceLifecycleStopped
 	ins.Runtime.PID = 0
@@ -686,6 +820,9 @@ func (ins *DaemonInstance) finishCleanupExit(proxySeq uint64, runtime InstanceRu
 		runtimeID = runtime.InstanceName
 	}
 	ins.Mu.Unlock()
+	if cleanupTree != nil {
+		cleanupProcessTree(runtimeID, cleanupTree, "cleanup finalization")
+	}
 
 	ins.sendRuntimeEvent(outputCh, IPCResponse{Type: "instance_exited", State: &runtime})
 }
@@ -728,11 +865,15 @@ func (ins *DaemonInstance) Shutdown() {
 	ins.Mu.Lock()
 	proxy := ins.Proxy
 	cmd := ins.Cmd
+	processTree := ins.ProcessTree
 	devNull := ins.DevNull
 	cleanupCmd := ins.CleanupCmd
+	cleanupTree := ins.CleanupTree
 	ins.Proxy = nil
 	ins.Cmd = nil
+	ins.ProcessTree = nil
 	ins.CleanupCmd = nil
+	ins.CleanupTree = nil
 	ins.DevNull = nil
 	ins.outputDone = nil
 	ins.State = instanceStopped
@@ -745,10 +886,20 @@ func (ins *DaemonInstance) Shutdown() {
 		}
 	}
 	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
+		if processTree != nil {
+			_ = processTree.Kill()
+			_ = processTree.Close()
+		} else {
+			_ = cmd.Process.Kill()
+		}
 	}
 	if cleanupCmd != nil && cleanupCmd.Process != nil {
-		_ = cleanupCmd.Process.Kill()
+		if cleanupTree != nil {
+			_ = cleanupTree.Kill()
+			_ = cleanupTree.Close()
+		} else {
+			_ = cleanupCmd.Process.Kill()
+		}
 	}
 	if devNull != nil {
 		_ = devNull.Close()

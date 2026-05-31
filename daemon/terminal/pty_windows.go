@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +33,7 @@ type Proxy struct {
 	stderr       io.ReadCloser
 	pipeWriter   *io.PipeWriter
 	cmd          *exec.Cmd
+	processTree  *ProcessTree
 	inputWriter  *encodingAwareWriter
 	outputReader *encodingAwareReader
 	ptyMu        sync.Mutex
@@ -259,8 +261,19 @@ func startWindowsPTY(path string, command string, cols uint16, rows uint16) (*Pr
 	if err != nil {
 		return nil, err
 	}
+	processTree, err := NewProcessTree()
+	if err != nil {
+		log.Printf("windows pty process tree unavailable: %v", err)
+	}
+	if processTree != nil {
+		if err := processTree.AttachPID(cpty.Pid()); err != nil {
+			log.Printf("windows pty process tree unavailable; job attach is best-effort: %v", err)
+			_ = processTree.Close()
+			processTree = nil
+		}
+	}
 
-	return newWindowsProxy(&Proxy{pty: cpty}), nil
+	return newWindowsProxy(&Proxy{pty: cpty, processTree: processTree}), nil
 }
 
 func defaultTerminalEnv(env []string, caseInsensitive bool) []string {
@@ -299,27 +312,53 @@ func startWindowsPipe(path string, command string) (*Proxy, error) {
 	if err != nil {
 		return nil, err
 	}
+	processTree, err := NewProcessTree()
+	if err != nil {
+		log.Printf("windows pipe process tree unavailable: %v", err)
+	}
+	if processTree != nil {
+		processTree.PrepareCommand(cmd, false)
+	}
 	PreventConsoleInheritance(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		if processTree != nil {
+			_ = processTree.Close()
+		}
 		return nil, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
+		if processTree != nil {
+			_ = processTree.Close()
+		}
 		return nil, err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
+		if processTree != nil {
+			_ = processTree.Close()
+		}
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
 		_ = stderr.Close()
+		if processTree != nil {
+			_ = processTree.Close()
+		}
 		return nil, err
+	}
+	if processTree != nil {
+		if err := processTree.AttachCommand(cmd); err != nil {
+			log.Printf("windows pipe process tree unavailable; job attach is best-effort: %v", err)
+			_ = processTree.Close()
+			processTree = nil
+		}
 	}
 	reader, writer := io.Pipe()
 	var wg sync.WaitGroup
@@ -337,6 +376,7 @@ func startWindowsPipe(path string, command string) (*Proxy, error) {
 		stderr:      stderr,
 		pipeWriter:  writer,
 		cmd:         cmd,
+		processTree: processTree,
 	}), nil
 }
 
@@ -446,6 +486,10 @@ func (p *Proxy) Kill() error {
 	if p.pty != nil {
 		return p.killPTY()
 	}
+	if p.processTree != nil {
+		killErr := p.processTree.Kill()
+		return errors.Join(killErr, p.closePipe(false))
+	}
 	if p.cmd != nil && p.cmd.Process != nil {
 		killErr := p.cmd.Process.Kill()
 		if isWindowsProcessAlreadyDoneError(killErr) {
@@ -474,9 +518,13 @@ func (p *Proxy) closePipe(killProcess bool) error {
 		errs = appendWindowsCloseError(errs, p.readCloser.Close())
 	}
 	if killProcess && p.cmd != nil && p.cmd.Process != nil {
-		err := p.cmd.Process.Kill()
-		if err != nil && !isWindowsProcessAlreadyDoneError(err) {
-			errs = append(errs, err)
+		if p.processTree != nil {
+			errs = append(errs, p.processTree.Terminate())
+		} else {
+			err := p.cmd.Process.Kill()
+			if err != nil && !isWindowsProcessAlreadyDoneError(err) {
+				errs = append(errs, err)
+			}
 		}
 	}
 	return errors.Join(errs...)
@@ -488,7 +536,9 @@ func (p *Proxy) killPTY() error {
 
 	var errs []error
 	pid := p.pty.Pid()
-	if pid > 0 {
+	if p.processTree != nil {
+		errs = append(errs, p.processTree.Kill())
+	} else if pid > 0 {
 		proc, err := os.FindProcess(pid)
 		if err != nil {
 			errs = append(errs, err)
@@ -575,7 +625,9 @@ func (p *Proxy) Wait() error {
 		return p.waitWindowsPTYResult(ctx, cancel, done)
 	}
 	if p.cmd != nil {
-		return p.cmd.Wait()
+		err := p.cmd.Wait()
+		p.CleanupProcessTree()
+		return err
 	}
 	return nil
 }
@@ -583,14 +635,30 @@ func (p *Proxy) Wait() error {
 func (p *Proxy) waitWindowsPTYResult(ctx context.Context, cancel context.CancelFunc, done <-chan windowsPTYWaitResult) error {
 	select {
 	case result := <-done:
+		p.CleanupProcessTree()
 		return result.err
 	case <-p.waitWake:
 		cancel()
-		return waitWindowsPTYDone(done, windowsPTYWaitFallbackTimeout, "windows pty wait timeout after lifecycle signal")
+		err := waitWindowsPTYDone(done, windowsPTYWaitFallbackTimeout, "windows pty wait timeout after lifecycle signal")
+		p.CleanupProcessTree()
+		return err
 	case <-p.readClosed:
-		return waitWindowsPTYDone(done, windowsPTYReadClosedWaitTimeout, "windows pty wait timeout after output closed")
+		err := waitWindowsPTYDone(done, windowsPTYReadClosedWaitTimeout, "windows pty wait timeout after output closed")
+		p.CleanupProcessTree()
+		return err
 	case <-ctx.Done():
-		return ctx.Err()
+		err := ctx.Err()
+		p.CleanupProcessTree()
+		return err
+	}
+}
+
+func (p *Proxy) CleanupProcessTree() {
+	if p == nil || p.processTree == nil {
+		return
+	}
+	if err := p.processTree.CloseAndKillResidual(); err != nil {
+		log.Printf("proxy best-effort residual process tree cleanup error: %v", err)
 	}
 }
 
