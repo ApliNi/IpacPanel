@@ -778,6 +778,7 @@ input[type="password"] {
 }
 .dashboard-chart .u-legend tbody::before {
 	content: 'ABCD';
+	margin-right: 5px;
 	color: transparent;
 }
 
