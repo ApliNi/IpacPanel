@@ -118,6 +118,7 @@ const pageState = {
 	stream: null,
 	reconnectTimer: 0,
 	reconnectAttempt: 0,
+	publicUnauthorizedRetryUsed: false,
 	lastSeq: 0,
 	lastOptionsSeq: 0,
 	baseTs: 0,
@@ -129,7 +130,8 @@ const pageState = {
 	legendEmptyHover: false,
 	hoverTime: NaN,
 	lastSamples: [],
-	minutes: DEFAULT_MINUTES,
+	requestedMinutes: DEFAULT_MINUTES,
+	displayMinutes: DEFAULT_MINUTES,
 	selectedInterface: '',
 	selectedDisk: '',
 	detailMode: {
@@ -165,6 +167,21 @@ const clampMinutes = (value) => {
 		return DEFAULT_MINUTES;
 	}
 	return Math.min(parsed, 10080);
+};
+
+const parseSelectedMinutes = (value) => {
+	const numeric = Number(value);
+	if (!Number.isInteger(numeric) || numeric <= 0) {
+		throw new Error('仪表板显示分钟数无效.');
+	}
+	return numeric;
+};
+
+const parseSelectedMinutesFromPayload = (payload) => {
+	if (!payload || typeof payload !== 'object' || !Object.prototype.hasOwnProperty.call(payload, 'selected_minutes')) {
+		throw new Error('仪表板显示分钟数缺失.');
+	}
+	return parseSelectedMinutes(payload.selected_minutes);
 };
 
 const readStoredMinutes = () => {
@@ -210,6 +227,8 @@ const normalizeDashboardPage = (page) => {
 };
 
 const isSystemDashboardPageActive = () => pageState.activePage === DASHBOARD_PAGE_SYSTEM;
+
+const isPublicDashboardMode = () => state.currentUser === null && state.publicDashboardEnabled === true;
 
 const syncDashboardPage = () => {
 	dom.pageTabs.forEach((tab) => {
@@ -389,7 +408,7 @@ const decodeDashboardStreamSamples = (baseTs, rows) => {
 };
 
 const getGapBreakThresholdSeconds = () => {
-	const windowSeconds = Math.max(1, pageState.minutes) * 60;
+	const windowSeconds = Math.max(1, pageState.displayMinutes) * 60;
 	return Math.max(3, Math.ceil(windowSeconds / 1000) * 3);
 };
 
@@ -535,7 +554,7 @@ const chooseTimeTickIntervalMinutes = (windowMinutes, chartWidth) => {
 };
 
 const formatSparseTimeTicks = (u, values) => {
-	const intervalMinutes = chooseTimeTickIntervalMinutes(pageState.minutes, Number(u && u.width) || 0);
+	const intervalMinutes = chooseTimeTickIntervalMinutes(pageState.displayMinutes, Number(u && u.width) || 0);
 	const intervalSeconds = intervalMinutes * 60;
 	return values.map((value, index) => {
 		const isEdge = index === 0 || index === values.length - 1;
@@ -700,7 +719,7 @@ const createScaleLockHooks = (key) => ({
 
 const getCurrentWindowRange = () => {
 	const max = Math.floor(Date.now() / 1000);
-	const windowSeconds = Math.max(1, pageState.minutes) * 60;
+	const windowSeconds = Math.max(1, pageState.displayMinutes) * 60;
 	return {
 		min: max - windowSeconds,
 		max,
@@ -711,7 +730,7 @@ const getDashboardChartElements = () => [dom.cpuChart, dom.memoryChart, dom.disk
 
 const getAdaptiveTimeAxis = (windowRange) => {
 	const chartWidth = Math.max(...getDashboardChartElements().map((chartEl) => chartEl.clientWidth || 0), 640);
-	const intervalMinutes = chooseTimeTickIntervalMinutes(pageState.minutes, chartWidth);
+	const intervalMinutes = chooseTimeTickIntervalMinutes(pageState.displayMinutes, chartWidth);
 	return {
 		...axisCommon,
 		size: 24,
@@ -994,7 +1013,7 @@ const renderDashboardSamples = (force = false) => {
 };
 
 const trimDashboardSamples = () => {
-	const windowSeconds = Math.max(1, pageState.minutes) * 60;
+	const windowSeconds = Math.max(1, pageState.displayMinutes) * 60;
 	const cutoff = Math.floor(Date.now() / 1000) - windowSeconds;
 	pageState.lastSamples = pageState.lastSamples.filter((sample) => sample.time >= cutoff);
 };
@@ -1005,20 +1024,23 @@ const handleDashboardFull = (payload) => {
 	if (!payload || typeof payload !== 'object') {
 		throw new Error('仪表板全量数据无效.');
 	}
-	pageState.fullLoading = false;
-	pageState.fullScaleHints = null;
-	pageState.preserveSamplesOnNextFull = false;
+	const displayMinutes = parseSelectedMinutesFromPayload(payload);
 	validateDashboardStreamSchema(payload.sample_schema);
 	const seq = Number(payload.seq);
 	const baseTs = Number(payload.base_ts);
 	if (!Number.isFinite(seq) || seq < 0 || !Number.isFinite(baseTs) || baseTs <= 0) {
 		throw new Error('仪表板全量数据序号无效.');
 	}
+	const samples = decodeDashboardStreamSamples(baseTs, payload.samples);
+	pageState.fullLoading = false;
+	pageState.fullScaleHints = null;
+	pageState.preserveSamplesOnNextFull = false;
+	pageState.displayMinutes = displayMinutes;
 	pageState.lastSeq = seq;
 	pageState.lastOptionsSeq = 0;
 	pageState.baseTs = baseTs;
 	pageState.reconnectAttempt = 0;
-	pageState.lastSamples = decodeDashboardStreamSamples(baseTs, payload.samples);
+	pageState.lastSamples = samples;
 	const interfaceChanged = updateInterfaceOptions(payload.interfaces);
 	const diskChanged = updateDiskOptions(payload.disks);
 	if (interfaceChanged || diskChanged) {
@@ -1034,17 +1056,20 @@ const handleDashboardFullMeta = (payload) => {
 	if (!payload || typeof payload !== 'object') {
 		throw new Error('仪表板全量元数据无效.');
 	}
+	const displayMinutes = parseSelectedMinutesFromPayload(payload);
 	validateDashboardStreamSchema(payload.sample_schema);
 	const seq = Number(payload.seq);
 	const baseTs = Number(payload.base_ts);
 	if (!Number.isFinite(seq) || seq < 0 || !Number.isFinite(baseTs) || baseTs <= 0) {
 		throw new Error('仪表板全量元数据序号无效.');
 	}
+	const scaleHints = normalizeDashboardScaleHints(payload.scale_hints);
+	pageState.displayMinutes = displayMinutes;
 	pageState.lastSeq = seq;
 	pageState.lastOptionsSeq = 0;
 	pageState.baseTs = baseTs;
 	pageState.fullLoading = true;
-	pageState.fullScaleHints = normalizeDashboardScaleHints(payload.scale_hints);
+	pageState.fullScaleHints = scaleHints;
 	if (!pageState.preserveSamplesOnNextFull) {
 		pageState.lastSamples = [];
 	}
@@ -1056,6 +1081,7 @@ const handleDashboardFullMeta = (payload) => {
 		restartDashboardStream();
 		return;
 	}
+	trimDashboardSamples();
 	renderDashboardSamples(true);
 	setError('');
 };
@@ -1133,15 +1159,20 @@ const handleDashboardOptions = (payload) => {
 
 const handleDashboardDisabled = (payload) => {
 	const data = payload && typeof payload === 'object' ? payload : {};
+	const displayMinutes = parseSelectedMinutesFromPayload(data);
+	const interfaces = Array.isArray(data.interfaces) ? data.interfaces : [];
+	const disks = Array.isArray(data.disks) ? data.disks : [];
+	pageState.displayMinutes = displayMinutes;
 	pageState.lastSeq = 0;
 	pageState.lastOptionsSeq = 0;
 	pageState.baseTs = 0;
 	pageState.fullLoading = false;
 	pageState.fullScaleHints = null;
 	pageState.preserveSamplesOnNextFull = false;
+	pageState.publicUnauthorizedRetryUsed = false;
 	pageState.lastSamples = [];
-	const interfaceChanged = updateInterfaceOptions(Array.isArray(data.interfaces) ? data.interfaces : []);
-	const diskChanged = updateDiskOptions(Array.isArray(data.disks) ? data.disks : []);
+	const interfaceChanged = updateInterfaceOptions(interfaces);
+	const diskChanged = updateDiskOptions(disks);
 	if (interfaceChanged || diskChanged) {
 		restartDashboardStream();
 		return;
@@ -1168,6 +1199,7 @@ const resetDashboardStreamState = () => {
 	pageState.fullLoading = false;
 	pageState.fullScaleHints = null;
 	pageState.preserveSamplesOnNextFull = false;
+	pageState.publicUnauthorizedRetryUsed = false;
 	pageState.lastSamples = [];
 	pageState.pendingRender = false;
 	hideLinkedCrosshairs();
@@ -1215,12 +1247,17 @@ async function connectDashboardStream() {
 	const stream = { controller };
 	pageState.stream = stream;
 	try {
+		const publicDashboardMode = isPublicDashboardMode();
 		const res = await openDashboardEventStream({
-			minutes: pageState.minutes,
+			minutes: pageState.requestedMinutes,
 			nic: pageState.selectedInterface,
 			disk: pageState.selectedDisk,
-		}, { signal: controller.signal });
+		}, {
+			signal: controller.signal,
+			suppressUnauthorizedEvent: publicDashboardMode,
+		});
 		pageState.reconnectAttempt = 0;
+		pageState.publicUnauthorizedRetryUsed = false;
 		await readSSEStream(res, {
 			auth_required() {
 				stopDashboardStream();
@@ -1246,13 +1283,26 @@ async function connectDashboardStream() {
 	} catch (error) {
 		if (error.name !== 'AbortError') {
 			console.error('[Dashboard] 仪表板推送连接失败:', error);
-			setError(error.message || String(error));
+			if (error.status === 401) {
+				if (isPublicDashboardMode()) {
+					if (!pageState.publicUnauthorizedRetryUsed) {
+						pageState.publicUnauthorizedRetryUsed = true;
+						stream.reconnectDelay = 0;
+					} else {
+						stream.reconnect = false;
+						setError('仪表板访问状态已更新, 请刷新页面后重试.');
+					}
+				}
+			} else {
+				setError(error.message || String(error));
+			}
 		}
 	} finally {
 		if (pageState.stream === stream) {
 			pageState.stream = null;
-			if (pageState.active && isSystemDashboardPageActive()) {
-				scheduleDashboardReconnect();
+			if (stream.reconnect !== false && pageState.active && isSystemDashboardPageActive()) {
+				const reconnectDelay = Object.prototype.hasOwnProperty.call(stream, 'reconnectDelay') ? stream.reconnectDelay : null;
+				scheduleDashboardReconnect(reconnectDelay);
 			}
 		}
 	}
@@ -1711,9 +1761,9 @@ const bindEvents = () => {
 		tab.addEventListener('click', () => setDashboardPage(tab.dataset.page));
 	});
 	dom.minutesInput.addEventListener('change', () => {
-		pageState.minutes = clampMinutes(dom.minutesInput.value);
-		dom.minutesInput.value = String(pageState.minutes);
-		storeMinutes(pageState.minutes);
+		pageState.requestedMinutes = clampMinutes(dom.minutesInput.value);
+		dom.minutesInput.value = String(pageState.requestedMinutes);
+		storeMinutes(pageState.requestedMinutes);
 		restartDashboardStream();
 	});
 	dom.interfaceSelect.addEventListener('change', () => {
@@ -1768,9 +1818,10 @@ const hidePage = () => {
 };
 
 export const bootDashboardPage = () => {
-	pageState.minutes = readStoredMinutes();
+	pageState.requestedMinutes = readStoredMinutes();
+	pageState.displayMinutes = pageState.requestedMinutes;
 	setAllDetailModes(readStoredDetailMode());
-	dom.minutesInput.value = String(pageState.minutes);
+	dom.minutesInput.value = String(pageState.requestedMinutes);
 	syncDashboardPage();
 	syncDashboardDeviceFilterVisibility();
 	updateInterfaceOptions([]);

@@ -2,7 +2,7 @@ import { authedFetch, parseJsonData, withApiResult } from './core.js';
 
 export const fetchPublicSettings = async () => {
 	return await withApiResult(async () => {
-		const res = await authedFetch('/api/settings/public', { skipUnauthorizedReload: true });
+		const res = await authedFetch('/api/settings/public', { suppressUnauthorizedEvent: true });
 		return await parseJsonData(res);
 	}, { logMessage: '[API] 获取公开设置失败:' });
 };

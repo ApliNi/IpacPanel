@@ -48,7 +48,7 @@ export const logout = async () => {
 	return await withApiFallback(async () => {
 		const res = await authedFetch('/api/auth/logout', {
 			method: 'POST',
-			skipUnauthorizedReload: true,
+			suppressUnauthorizedEvent: true,
 		});
 		const payload = await parseJsonPayload(res);
 		if (payload && payload.ok === false) {

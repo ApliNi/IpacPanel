@@ -14,10 +14,11 @@ const buildDashboardPayload = ({ minutes = 30, nic = '', disk = '' } = {}) => ({
 	disk: String(disk || '').trim(),
 });
 
-export const fetchDashboardSnapshot = async ({ minutes = 30, nic = '', disk = '' } = {}) => {
+export const fetchDashboardSnapshot = async ({ minutes = 30, nic = '', disk = '' } = {}, options = {}) => {
 	return await withApiResult(async () => {
 		const res = await authedFetch('/api/dashboard/snapshot', {
 			method: 'POST',
+			suppressUnauthorizedEvent: options.suppressUnauthorizedEvent === true,
 			headers: {
 				'Content-Type': 'application/json',
 			},

@@ -160,6 +160,13 @@ func Wrap(next http.HandlerFunc, config GuardConfig) http.HandlerFunc {
 func Guard(w http.ResponseWriter, r *http.Request, config GuardConfig) (*http.Request, bool) {
 	policy := config.Policy
 	principal, authenticated, credentialsProvided := requestPrincipal(r, config)
+	if credentialsProvided && !authenticated {
+		clearInvalidAuthCookies(w, r, config)
+	}
+	if policy.Auth == AuthModeOptional && credentialsProvided && !authenticated {
+		writeGuardError(config.ErrorWriter, w, http.StatusUnauthorized, msg.Unauthorized, nil)
+		return nil, false
+	}
 	switch policy.Auth {
 	case AuthModeNone, AuthModeOptional:
 	case AuthModeUser:
@@ -178,10 +185,6 @@ func Guard(w http.ResponseWriter, r *http.Request, config GuardConfig) (*http.Re
 		}
 	default:
 		writeGuardError(config.ErrorWriter, w, http.StatusInternalServerError, msg.RouteAuthPolicyInvalid, fmt.Errorf("invalid route auth policy: %s", policy.Auth))
-		return nil, false
-	}
-	if policy.Auth == AuthModeOptional && policy.CSRF == CSRFModeHeaderWhenAuthenticated && credentialsProvided && !authenticated {
-		writeGuardError(config.ErrorWriter, w, http.StatusUnauthorized, msg.Unauthorized, nil)
 		return nil, false
 	}
 	if authenticated {
@@ -213,6 +216,12 @@ func markGuardUser(marker UserMarker, w http.ResponseWriter, principal *Principa
 		return
 	}
 	marker(w, principal.Username)
+}
+
+func clearInvalidAuthCookies(w http.ResponseWriter, r *http.Request, config GuardConfig) {
+	manager := cookieManager(config)
+	manager.ClearAuthCookie(w, r)
+	manager.ClearCSRFCookie(w, r)
 }
 
 func methodAllowed(r *http.Request, methods []string) bool {

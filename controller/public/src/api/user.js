@@ -63,14 +63,14 @@ export const fetchUsers = async () => {
 
 export const fetchMe = async () => {
 	return await withApiResult(async () => {
-		const res = await authedFetch('/api/user/get', { skipUnauthorizedReload: true });
+		const res = await authedFetch('/api/user/get', { suppressUnauthorizedEvent: true });
 		return await parseJsonData(res);
 	}, { logMessage: '[API] 获取当前用户信息失败:' });
 };
 
 export const resolveBootAuthState = async () => {
 	try {
-		const res = await authedFetch('/api/user/get', { skipUnauthorizedReload: true });
+		const res = await authedFetch('/api/user/get', { suppressUnauthorizedEvent: true });
 		if (res.status === 401) {
 			return {
 				status: 'unauthorized',

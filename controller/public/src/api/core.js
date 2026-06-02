@@ -459,7 +459,7 @@ export const addAuthenticatedListener = (listener) => {
 
 export const authedFetch = async (url, options = {}) => {
 	const headers = Object.assign({}, options.headers || {});
-	const skipUnauthorizedReload = options.skipUnauthorizedReload === true;
+	const suppressUnauthorizedEvent = options.suppressUnauthorizedEvent === true;
 	const method = String(options.method || 'GET').trim().toUpperCase();
 	if (shouldAttachCSRF(method)) {
 		const csrfToken = getCSRFToken();
@@ -471,9 +471,9 @@ export const authedFetch = async (url, options = {}) => {
 		headers,
 		credentials: 'same-origin',
 	});
-	delete requestOptions.skipUnauthorizedReload;
+	delete requestOptions.suppressUnauthorizedEvent;
 	const res = await fetch(url, requestOptions);
-	if (res.status === 401 && !skipUnauthorizedReload) {
+	if (res.status === 401 && !suppressUnauthorizedEvent) {
 		dispatchUnauthorized();
 	}
 	return res;

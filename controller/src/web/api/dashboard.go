@@ -22,7 +22,6 @@ type dashboardMetricCollector interface {
 var dashboardCollector dashboardMetricCollector
 
 const dashboardMaxPoints = 1000
-const dashboardPublicMaxMinutes = 1440
 
 type dashboardSnapshotResponse struct {
 	Enabled         bool                   `json:"enabled"`
@@ -164,7 +163,7 @@ func HandleApiDashboardSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	isAdmin := isDashboardAdmin(authedUser)
-	minutes, ok := parseDashboardMinutes(w, req.Minutes, isAdmin)
+	minutes, ok := parseDashboardMinutes(w, req.Minutes)
 	if !ok {
 		return
 	}
@@ -209,7 +208,7 @@ func HandleApiDashboardEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	isAdmin := isDashboardAdmin(authedUser)
-	minutes, ok := parseDashboardStreamMinutes(sse, req.Minutes, isAdmin)
+	minutes, ok := parseDashboardStreamMinutes(sse, req.Minutes)
 	if !ok {
 		return
 	}
@@ -313,7 +312,7 @@ func HandleApiDashboardEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func parseDashboardMinutes(w http.ResponseWriter, minutes int, isAdmin bool) (int, bool) {
+func parseDashboardMinutes(w http.ResponseWriter, minutes int) (int, bool) {
 	if minutes == 0 {
 		return 30, true
 	}
@@ -321,22 +320,16 @@ func parseDashboardMinutes(w http.ResponseWriter, minutes int, isAdmin bool) (in
 		web.WriteAPIError(w, http.StatusBadRequest, msg.DashboardMinutesMustBePositive, nil)
 		return 0, false
 	}
-	if !isAdmin && minutes > dashboardPublicMaxMinutes {
-		minutes = dashboardPublicMaxMinutes
-	}
 	return minutes, true
 }
 
-func parseDashboardStreamMinutes(sse *web.SSEWriter, minutes int, isAdmin bool) (int, bool) {
+func parseDashboardStreamMinutes(sse *web.SSEWriter, minutes int) (int, bool) {
 	if minutes == 0 {
 		return 30, true
 	}
 	if minutes <= 0 {
 		_ = sse.SendEvent("dashboard_error", dashboardErrorEvent{Message: msg.DashboardMinutesMustBePositiveInteger})
 		return 0, false
-	}
-	if !isAdmin && minutes > dashboardPublicMaxMinutes {
-		minutes = dashboardPublicMaxMinutes
 	}
 	return minutes, true
 }

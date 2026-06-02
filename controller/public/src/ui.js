@@ -75,6 +75,7 @@ let authenticatedCleanup = null;
 let unauthorizedHandling = false;
 let unauthorizedLocked = false;
 let runtimeEpoch = 0;
+let mainNavigationCleanup = null;
 
 const shellDom = {
 	header: mainHeader,
@@ -258,7 +259,9 @@ const enterUnauthorizedState = async (detail = {}) => {
 		}
 		resetRuntimeState();
 		try {
-			terminalPage?.closeTerminalPage?.();
+			if (terminalPage && typeof terminalPage.closeTerminalPage === 'function') {
+				terminalPage.closeTerminalPage();
+			}
 		} catch (error) {
 			console.error('[UI] 收拢终端页面失败:', error);
 		}
@@ -270,7 +273,9 @@ const enterUnauthorizedState = async (detail = {}) => {
 			console.error('[UI] 隐藏仪表板失败:', error);
 		}
 		try {
-			instanceListPage?.hidePage?.();
+			if (instanceListPage && typeof instanceListPage.hidePage === 'function') {
+				instanceListPage.hidePage();
+			}
 		} catch (error) {
 			console.error('[UI] 隐藏实例列表失败:', error);
 		}
@@ -430,6 +435,20 @@ const openDashboardPage = async (options = {}) => {
 	switchPage(pageNames.dashboard);
 };
 
+const openPublicDashboardPage = () => {
+	if (unauthorizedLocked) {
+		return;
+	}
+	if (!state.dashboardEnabled || !state.publicDashboardEnabled) {
+		return;
+	}
+	if (!dashboardPage || typeof dashboardPage.showPage !== 'function') {
+		throw new Error('仪表板页面未初始化');
+	}
+	setDashboardRoute();
+	dashboardPage.showPage();
+};
+
 const leaveTerminalPage = async () => {
 	if (unauthorizedLocked) {
 		return true;
@@ -495,20 +514,51 @@ const bindHistoryNavigation = () => {
 	};
 };
 
-const bindMainNavigation = () => {
+const bindMainNavigation = (runtimeMode = 'authenticated') => {
+	if (mainNavigationCleanup) {
+		mainNavigationCleanup();
+		mainNavigationCleanup = null;
+	}
 	const navHome = document.getElementById('navHome');
 	const navDashboard = document.getElementById('navDashboard');
-	navHome.addEventListener('click', () => {
-		void leaveTerminalPage().then((closed) => {
-			if (closed !== false) {
-				setHomeRoute();
-				switchPage(pageNames.instanceList);
-			}
-		});
-	});
-	navDashboard.addEventListener('click', () => {
-		void openDashboardPage();
-	});
+	if (!navHome || !navDashboard) {
+		throw new Error('主导航元素未初始化');
+	}
+	let onHomeClick;
+	let onDashboardClick;
+	if (runtimeMode === 'public-dashboard') {
+		onHomeClick = () => {
+			setHomeRoute({ replace: true });
+			void enterUnauthorizedState({
+				reason: UNAUTHORIZED_REASON_RUNTIME,
+				clearStoredData: false,
+				reload: false,
+			});
+		};
+		onDashboardClick = () => {
+			openPublicDashboardPage();
+		};
+	} else if (runtimeMode === 'authenticated') {
+		onHomeClick = () => {
+			void leaveTerminalPage().then((closed) => {
+				if (closed !== false) {
+					setHomeRoute();
+					switchPage(pageNames.instanceList);
+				}
+			});
+		};
+		onDashboardClick = () => {
+			void openDashboardPage();
+		};
+	} else {
+		throw new Error(`未知主导航运行模式: ${runtimeMode}`);
+	}
+	navHome.addEventListener('click', onHomeClick);
+	navDashboard.addEventListener('click', onDashboardClick);
+	mainNavigationCleanup = () => {
+		navHome.removeEventListener('click', onHomeClick);
+		navDashboard.removeEventListener('click', onDashboardClick);
+	};
 };
 
 const bindBeforeUnloadProtection = () => {
@@ -568,6 +618,7 @@ const bootPublicDashboardPage = async (runtimeAtStart) => {
 	dashboardPage = dashboardModule.bootDashboardPage();
 	setDashboardRoute({ replace: true });
 	dashboardPage.showPage();
+	bindMainNavigation('public-dashboard');
 	showShell();
 };
 
