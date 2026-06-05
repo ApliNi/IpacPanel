@@ -1133,6 +1133,19 @@ func formatRuntimeCommand(command string) []byte {
 	return []byte(command + "\r")
 }
 
+func sendDaemonStopRequest(instanceName string, stopCommand string, noTerminal bool, runtimeCode int, markErrLogFmt string, writeErrLogFmt string) {
+	if strings.TrimSpace(stopCommand) != "" && !noTerminal {
+		if err := markDaemonInstanceStopping(instanceName, runtimeCode); err != nil {
+			log.Printf(markErrLogFmt, instanceName, err)
+		}
+		if err := writeDaemonInstanceStdin(instanceName, formatRuntimeCommand(stopCommand)); err != nil {
+			log.Printf(writeErrLogFmt, instanceName, err)
+		}
+		return
+	}
+	_ = stopDaemonInstanceWithCode(instanceName, false, runtimeCode)
+}
+
 func (sp *InstanceProcess) requestRestart(mode restartRequestMode) RestartRequestResult {
 	return sp.requestRestartWithKillStop(mode, false)
 }
@@ -1175,15 +1188,8 @@ func (sp *InstanceProcess) requestRestartWithKillStop(mode restartRequestMode, u
 		sp.Mu.Unlock()
 		if useKillStop {
 			_ = stopDaemonInstanceWithCode(instanceName, true, RuntimeCodeRestarting)
-		} else if strings.TrimSpace(stopCommand) != "" && !noTerminal {
-			if err := markDaemonInstanceStopping(instanceName, RuntimeCodeRestarting); err != nil {
-				log.Printf(msg.MarkInstanceRestartingIntentFailedLogFmt, instanceName, err)
-			}
-			if err := writeDaemonInstanceStdin(instanceName, formatRuntimeCommand(stopCommand)); err != nil {
-				log.Printf(msg.WriteInstanceRestartStopCommandFailedLogFmt, instanceName, err)
-			}
 		} else {
-			_ = stopDaemonInstanceWithCode(instanceName, false, RuntimeCodeRestarting)
+			sendDaemonStopRequest(instanceName, stopCommand, noTerminal, RuntimeCodeRestarting, msg.MarkInstanceRestartingIntentFailedLogFmt, msg.WriteInstanceRestartStopCommandFailedLogFmt)
 		}
 		return RestartRequestAccepted
 	}
@@ -1276,6 +1282,8 @@ func (sp *InstanceProcess) Stop(force bool) {
 	if sp.State == processStateStoppingForRestart {
 		sp.cancelRestartLocked()
 		instanceName := sp.InstanceSnapshotLocked().Name
+		stopCommand := sp.InstanceSnapshotLocked().StopCommand
+		noTerminal := cfg.IsNoTerminal(sp.activeTerminalLocked())
 		sp.beginStopLocked(processStateStopping)
 		NotifyInstanceStatusChanged(instanceName)
 		sp.Mu.Unlock()
@@ -1288,6 +1296,8 @@ func (sp *InstanceProcess) Stop(force bool) {
 		}
 		if force {
 			_ = stopDaemonInstance(instanceName, true)
+		} else {
+			sendDaemonStopRequest(instanceName, stopCommand, noTerminal, RuntimeCodeManualStop, msg.MarkInstanceManualStopIntentFailedLogFmt, msg.WriteInstanceStopCommandFailedLogFmt)
 		}
 		return
 	}
@@ -1298,6 +1308,14 @@ func (sp *InstanceProcess) Stop(force bool) {
 			sp.cancelStartLocked()
 			sp.Mu.Unlock()
 			_ = stopDaemonInstance(instanceName, true)
+			return
+		}
+		if sp.Running {
+			instanceName := sp.InstanceSnapshotLocked().Name
+			stopCommand := sp.InstanceSnapshotLocked().StopCommand
+			noTerminal := cfg.IsNoTerminal(sp.activeTerminalLocked())
+			sp.Mu.Unlock()
+			sendDaemonStopRequest(instanceName, stopCommand, noTerminal, RuntimeCodeManualStop, msg.MarkInstanceManualStopIntentFailedLogFmt, msg.WriteInstanceStopCommandFailedLogFmt)
 			return
 		}
 		if !sp.Running && sp.Starting {
@@ -1335,16 +1353,7 @@ func (sp *InstanceProcess) Stop(force bool) {
 		return
 	}
 	sp.Mu.Unlock()
-	if strings.TrimSpace(stopCommand) != "" && !noTerminal {
-		if err := markDaemonInstanceStopping(instanceName, RuntimeCodeManualStop); err != nil {
-			log.Printf(msg.MarkInstanceManualStopIntentFailedLogFmt, instanceName, err)
-		}
-		if err := writeDaemonInstanceStdin(instanceName, formatRuntimeCommand(stopCommand)); err != nil {
-			log.Printf(msg.WriteInstanceStopCommandFailedLogFmt, instanceName, err)
-		}
-	} else {
-		_ = stopDaemonInstance(instanceName, false)
-	}
+	sendDaemonStopRequest(instanceName, stopCommand, noTerminal, RuntimeCodeManualStop, msg.MarkInstanceManualStopIntentFailedLogFmt, msg.WriteInstanceStopCommandFailedLogFmt)
 }
 
 func (sp *InstanceProcess) BeginDelete() (running bool, restarting bool, starting bool, deleting bool) {
