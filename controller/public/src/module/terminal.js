@@ -97,6 +97,19 @@ const cardState = {
 	onToggleSelectAllCurrentDir: null,
 	isBound: false,
 	ctrlCConfirming: false,
+	terminalWriteQueue: [],
+	terminalWriteRunning: false,
+	terminalWriteGeneration: 0,
+	terminalModeAtInit: null,
+	plainInputBuffer: '',
+	plainPromptVisible: false,
+	plainPromptRenderedText: '',
+	plainPromptRenderedCols: null,
+	plainPromptResizePending: false,
+	plainOutputAtLineStart: true,
+	plainRemoteOutputChunks: [],
+	plainRemoteOutputBytes: 0,
+	plainRemoteOutputTimer: null,
 	inputChunks: [],
 	inputPendingBytes: 0,
 	inputDrainTimer: null,
@@ -114,6 +127,10 @@ const TERMINAL_INPUT_CHUNK_BYTES = 16 * 1024;
 const TERMINAL_INPUT_BUFFER_HIGH_WATER = 1024 * 1024;
 const TERMINAL_INPUT_PENDING_MAX_BYTES = 4 * 1024 * 1024;
 const TERMINAL_INPUT_DRAIN_DELAY_MS = 16;
+const TERMINAL_WRITE_BATCH_LIMIT = 32;
+const TERMINAL_PLAIN_REMOTE_FLUSH_DELAY_MS = 16;
+const TERMINAL_PLAIN_REMOTE_BUFFER_FLUSH_BYTES = 256 * 1024;
+const TERMINAL_PLAIN_INPUT_MAX_CHARS = 64 * 1024;
 
 const getWsReconnectDelay = (attempt) => {
 	const safeAttempt = Math.max(0, Number(attempt) || 0);
@@ -126,6 +143,102 @@ const getWsReconnectDelay = (attempt) => {
 };
 
 const terminalInputEncoder = new TextEncoder();
+
+const PLAIN_TERMINAL_INPUT_PROMPT = '> ';
+
+const getByteLength = (data) => {
+	if (typeof data === 'string') {
+		return terminalInputEncoder.encode(data).byteLength;
+	}
+	if (data instanceof ArrayBuffer) {
+		return data.byteLength;
+	}
+	if (ArrayBuffer.isView(data)) {
+		return data.byteLength;
+	}
+	return 0;
+};
+
+const createTerminalWriteEntry = (data, afterWrite = null) => {
+	let chunk = null;
+	if (typeof data === 'string') {
+		chunk = data;
+	} else if (data instanceof ArrayBuffer) {
+		chunk = new Uint8Array(data);
+	} else if (ArrayBuffer.isView(data)) {
+		chunk = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+	}
+	if (!chunk) {
+		return null;
+	}
+	return {
+		chunk,
+		afterWrite: typeof afterWrite === 'function' ? afterWrite : null,
+	};
+};
+
+const resetTerminalWriteQueue = () => {
+	cardState.terminalWriteQueue.length = 0;
+	cardState.terminalWriteRunning = false;
+	cardState.terminalWriteGeneration += 1;
+};
+
+const takeTerminalWriteBatch = () => {
+	const first = cardState.terminalWriteQueue.shift();
+	if (!first || first.afterWrite || typeof first.chunk !== 'string') {
+		return first;
+	}
+
+	const parts = [first.chunk];
+	while (parts.length < TERMINAL_WRITE_BATCH_LIMIT) {
+		const next = cardState.terminalWriteQueue[0];
+		if (!next || next.afterWrite || typeof next.chunk !== 'string') {
+			break;
+		}
+		parts.push(cardState.terminalWriteQueue.shift().chunk);
+	}
+	return { chunk: parts.join(''), afterWrite: null };
+};
+
+const drainTerminalWriteQueue = () => {
+	if (!cardState.term) {
+		resetTerminalWriteQueue();
+		return;
+	}
+
+	const entry = takeTerminalWriteBatch();
+	if (!entry) {
+		cardState.terminalWriteRunning = false;
+		return;
+	}
+
+	cardState.terminalWriteRunning = true;
+	const writeGeneration = cardState.terminalWriteGeneration;
+	cardState.term.write(entry.chunk, () => {
+		if (writeGeneration !== cardState.terminalWriteGeneration) {
+			return;
+		}
+		try {
+			if (entry.afterWrite) {
+				entry.afterWrite();
+			}
+		} catch (error) {
+			console.error('[终端] 写入回调执行失败:', error);
+		}
+		drainTerminalWriteQueue();
+	});
+};
+
+const queueTerminalWrite = (data, afterWrite = null) => {
+	const entry = createTerminalWriteEntry(data, afterWrite);
+	if (!cardState.term || !entry) {
+		return;
+	}
+	cardState.terminalWriteQueue.push(entry);
+	if (!cardState.terminalWriteRunning) {
+		drainTerminalWriteQueue();
+	}
+};
 
 const decodeTerminalPayload = (payload) => {
 	return String(payload || '');
@@ -163,6 +276,10 @@ const writeTerminalBinary = (data) => {
 	if (!cardState.term || !data) {
 		return;
 	}
+	if (isPlainPipeMode()) {
+		enqueuePlainTerminalRemoteOutput(data);
+		return;
+	}
 	if (data instanceof ArrayBuffer) {
 		cardState.term.write(new Uint8Array(data));
 		return;
@@ -172,8 +289,9 @@ const writeTerminalBinary = (data) => {
 		return;
 	}
 	if (data instanceof Blob) {
+		const writeGeneration = cardState.terminalWriteGeneration;
 		data.arrayBuffer().then((buffer) => {
-			if (cardState.term) {
+			if (cardState.term && writeGeneration === cardState.terminalWriteGeneration) {
 				cardState.term.write(new Uint8Array(buffer));
 			}
 		}).catch((error) => {
@@ -252,6 +370,316 @@ const sendSocketInput = (text) => {
 		return true;
 	}
 	return enqueueSocketInput(data);
+};
+
+const resetPlainTerminalInputState = () => {
+	cardState.plainRemoteOutputTimer = clearTimer(cardState.plainRemoteOutputTimer);
+	cardState.plainRemoteOutputChunks.length = 0;
+	cardState.plainRemoteOutputBytes = 0;
+	cardState.plainInputBuffer = '';
+	cardState.plainPromptVisible = false;
+	cardState.plainPromptRenderedText = '';
+	cardState.plainPromptRenderedCols = null;
+	cardState.plainPromptResizePending = false;
+	cardState.plainOutputAtLineStart = true;
+};
+
+const splitGraphemes = (text) => {
+	const value = String(text || '');
+	if (!value) {
+		return [];
+	}
+	if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+		const segmenter = new Intl.Segmenter('zh-CN', { granularity: 'grapheme' });
+		return Array.from(segmenter.segment(value), item => item.segment);
+	}
+	return Array.from(value);
+};
+
+const removeLastPlainInputGrapheme = () => {
+	const chars = splitGraphemes(cardState.plainInputBuffer);
+	chars.pop();
+	cardState.plainInputBuffer = chars.join('');
+};
+
+const clearRenderedPlainTerminalPromptLine = () => {
+	if (!cardState.term || !cardState.plainPromptVisible) {
+		return;
+	}
+	cardState.term.write(getClearPlainTerminalPromptSequence(cardState.plainPromptRenderedText, getTerminalCols()));
+};
+
+const getPlainTerminalPromptText = () => {
+	if (!cardState.plainInputBuffer) {
+		return '';
+	}
+	return `${PLAIN_TERMINAL_INPUT_PROMPT}${cardState.plainInputBuffer}`;
+};
+
+const getTerminalCols = () => Math.min(TERMINAL_MAX_COLS, Math.max(1, Math.floor(Number(cardState.term.cols) || 0)));
+
+const getTerminalRows = () => Math.min(TERMINAL_MAX_ROWS, Math.max(1, Math.floor(Number(cardState.term.rows) || 0)));
+
+const getCodePointWidth = (codePoint) => {
+	if (codePoint === 0) {
+		return 0;
+	}
+	if (codePoint < 32 || (codePoint >= 0x7f && codePoint < 0xa0)) {
+		return 0;
+	}
+	if (
+		(codePoint >= 0x0300 && codePoint <= 0x036f) ||
+		(codePoint >= 0x1ab0 && codePoint <= 0x1aff) ||
+		(codePoint >= 0x1dc0 && codePoint <= 0x1dff) ||
+		(codePoint >= 0x20d0 && codePoint <= 0x20ff) ||
+		(codePoint >= 0xfe00 && codePoint <= 0xfe0f)
+	) {
+		return 0;
+	}
+	if (
+		(codePoint >= 0x1100 && codePoint <= 0x115f) ||
+		(codePoint >= 0x2329 && codePoint <= 0x232a) ||
+		(codePoint >= 0x2e80 && codePoint <= 0xa4cf) ||
+		(codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+		(codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+		(codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+		(codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+		(codePoint >= 0xff00 && codePoint <= 0xff60) ||
+		(codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+		(codePoint >= 0x1f300 && codePoint <= 0x1faff)
+	) {
+		return 2;
+	}
+	return 1;
+};
+
+const measurePlainTerminalColumns = (text, cols) => {
+	let width = 0;
+	for (const ch of String(text || '')) {
+		if (ch === '\t') {
+			width += 8 - (width % 8);
+			continue;
+		}
+		width += getCodePointWidth(ch.codePointAt(0));
+	}
+	return Math.max(0, width);
+};
+
+const getPlainTerminalPromptRows = (text, cols) => {
+	const width = measurePlainTerminalColumns(text, cols);
+	return Math.max(1, Math.ceil(width / cols));
+};
+
+const getClearPlainTerminalPromptSequence = (text, renderedCols = getTerminalCols()) => {
+	const cols = Math.min(TERMINAL_MAX_COLS, Math.max(1, Math.floor(Number(renderedCols) || getTerminalCols())));
+	const rows = getPlainTerminalPromptRows(text, cols);
+	let sequence = '\r\x1b[2K';
+	for (let index = 1; index < rows; index += 1) {
+		sequence += '\x1b[1A\r\x1b[2K';
+	}
+	return sequence;
+};
+
+const clearPlainTerminalPromptLine = () => {
+	if (!cardState.term || !cardState.plainPromptVisible) {
+		return false;
+	}
+	const currentCols = getTerminalCols();
+	const renderedCols = cardState.plainPromptRenderedCols === currentCols ? cardState.plainPromptRenderedCols : currentCols;
+	queueTerminalWrite(getClearPlainTerminalPromptSequence(cardState.plainPromptRenderedText, renderedCols));
+	cardState.plainPromptVisible = false;
+	cardState.plainPromptRenderedText = '';
+	cardState.plainPromptRenderedCols = null;
+	cardState.plainOutputAtLineStart = true;
+	return true;
+};
+
+const renderPlainTerminalPromptLine = () => {
+	if (!cardState.term || !isPlainPipeMode()) {
+		return;
+	}
+	if (cardState.plainPromptResizePending) {
+		return;
+	}
+
+	const promptText = getPlainTerminalPromptText();
+	const currentCols = getTerminalCols();
+	if (promptText === cardState.plainPromptRenderedText && cardState.plainPromptRenderedCols === currentCols) {
+		return;
+	}
+	if (cardState.plainPromptVisible && cardState.plainPromptRenderedCols === currentCols && promptText.startsWith(cardState.plainPromptRenderedText)) {
+		const appendedText = promptText.slice(cardState.plainPromptRenderedText.length);
+		queueTerminalWrite(appendedText);
+		cardState.plainPromptRenderedText = promptText;
+		cardState.plainPromptRenderedCols = currentCols;
+		cardState.plainOutputAtLineStart = false;
+		return;
+	}
+
+	clearPlainTerminalPromptLine();
+	if (!promptText) {
+		return;
+	}
+
+	const linePrefix = cardState.plainOutputAtLineStart ? '' : '\r\n';
+	queueTerminalWrite(`${linePrefix}\x1b[0m${promptText}`);
+	cardState.plainPromptVisible = true;
+	cardState.plainPromptRenderedText = promptText;
+	cardState.plainPromptRenderedCols = currentCols;
+	cardState.plainOutputAtLineStart = false;
+};
+
+const updatePlainTerminalOutputPosition = (data) => {
+	if (!isPlainPipeMode()) {
+		return;
+	}
+	if (data instanceof ArrayBuffer) {
+		if (data.byteLength === 0) {
+			return;
+		}
+		const view = new Uint8Array(data);
+		const lastByte = view[view.byteLength - 1];
+		cardState.plainOutputAtLineStart = lastByte === 10 || lastByte === 13;
+		return;
+	}
+	if (ArrayBuffer.isView(data)) {
+		if (data.byteLength === 0) {
+			return;
+		}
+		const view = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+		const lastByte = view[view.byteLength - 1];
+		cardState.plainOutputAtLineStart = lastByte === 10 || lastByte === 13;
+		return;
+	}
+	if (typeof data !== 'string') {
+		cardState.plainOutputAtLineStart = false;
+		return;
+	}
+	if (data.length === 0) {
+		return;
+	}
+	const lastChar = data.charAt(data.length - 1);
+	cardState.plainOutputAtLineStart = lastChar === '\r' || lastChar === '\n';
+};
+
+const writeTerminalOutput = (data) => {
+	if (!cardState.term || !data) {
+		return;
+	}
+	if (isPlainPipeMode()) {
+		enqueuePlainTerminalRemoteOutput(data);
+		return;
+	}
+	cardState.term.write(data);
+	updatePlainTerminalOutputPosition(data);
+};
+
+const flushPlainTerminalRemoteOutput = () => {
+	cardState.plainRemoteOutputTimer = null;
+	if (!cardState.term || cardState.plainRemoteOutputChunks.length === 0) {
+		return;
+	}
+
+	const chunks = cardState.plainRemoteOutputChunks.splice(0);
+	cardState.plainRemoteOutputBytes = 0;
+	const preservePlainPrompt = isPlainPipeMode() && cardState.plainPromptVisible;
+	if (preservePlainPrompt) {
+		clearPlainTerminalPromptLine();
+	}
+	for (const chunk of chunks) {
+		queueTerminalWrite(chunk);
+		updatePlainTerminalOutputPosition(chunk);
+	}
+	if (preservePlainPrompt) {
+		renderPlainTerminalPromptLine();
+	}
+};
+
+const enqueuePlainTerminalRemoteOutput = (data) => {
+	if (!cardState.term || !data) {
+		return;
+	}
+	if (data instanceof Blob) {
+		const writeGeneration = cardState.terminalWriteGeneration;
+		data.arrayBuffer().then((buffer) => {
+			if (cardState.term && writeGeneration === cardState.terminalWriteGeneration) {
+				enqueuePlainTerminalRemoteOutput(buffer);
+			}
+		}).catch((error) => {
+			console.error('[WebSocket] 读取二进制终端消息失败:', error);
+		});
+		return;
+	}
+
+	cardState.plainRemoteOutputChunks.push(data);
+	cardState.plainRemoteOutputBytes += getByteLength(data);
+	if (cardState.plainRemoteOutputBytes >= TERMINAL_PLAIN_REMOTE_BUFFER_FLUSH_BYTES) {
+		cardState.plainRemoteOutputTimer = clearTimer(cardState.plainRemoteOutputTimer);
+		flushPlainTerminalRemoteOutput();
+		return;
+	}
+	if (!cardState.plainRemoteOutputTimer) {
+		cardState.plainRemoteOutputTimer = setTimeout(flushPlainTerminalRemoteOutput, TERMINAL_PLAIN_REMOTE_FLUSH_DELAY_MS);
+	}
+};
+
+const appendPlainTerminalInputChar = (ch) => {
+	if (ch === '\u007f' || ch === '\b') {
+		removeLastPlainInputGrapheme();
+		return;
+	}
+	const codePoint = ch.codePointAt(0);
+	const isControlChar = (codePoint >= 0 && codePoint < 0x20 && ch !== '\t') || (codePoint >= 0x7f && codePoint <= 0x9f);
+	if (!isControlChar && cardState.plainInputBuffer.length < TERMINAL_PLAIN_INPUT_MAX_CHARS) {
+		cardState.plainInputBuffer += ch;
+	}
+};
+
+const isPlainTerminalInputControlSequence = (text) => {
+	return text.startsWith('\x1b');
+};
+
+const collectPlainTerminalCompleteLines = (data) => {
+	const lines = [];
+	const text = String(data || '');
+	if (isPlainTerminalInputControlSequence(text)) {
+		return lines;
+	}
+	for (let index = 0; index < text.length; index += 1) {
+		const ch = text.charAt(index);
+		if (ch === '\r' || ch === '\n') {
+			if (ch === '\r' && text.charAt(index + 1) === '\n') {
+				index += 1;
+			}
+			lines.push(`${cardState.plainInputBuffer}\n`);
+			cardState.plainInputBuffer = '';
+			continue;
+		}
+		appendPlainTerminalInputChar(ch);
+	}
+	return lines;
+};
+
+const handlePlainTerminalInput = (data) => {
+	if (!cardState.socket || cardState.socket.readyState !== WebSocket.OPEN) {
+		return;
+	}
+	const completeLines = collectPlainTerminalCompleteLines(data);
+	for (const line of completeLines) {
+		sendSocketInput(line);
+	}
+	renderPlainTerminalPromptLine();
+};
+
+const handleTerminalInput = (data) => {
+	if (!cardState.socket || cardState.socket.readyState !== WebSocket.OPEN) {
+		return;
+	}
+	if (isPlainPipeMode()) {
+		handlePlainTerminalInput(data);
+		return;
+	}
+	sendSocketInput(data);
 };
 
 export const copyTextToClipboard = async (text) => {
@@ -357,25 +785,6 @@ const patchCurrentSvc = (patch = {}) => {
 	Object.assign(cardState.currentSvc, patch);
 };
 
-const writeLocalInputEcho = (data) => {
-	if (!cardState.term || !data || !isPlainPipeMode()) {
-		return;
-	}
-	for (const ch of data) {
-		if (ch === '\r') {
-			cardState.term.write('\r\n');
-			continue;
-		}
-		if (ch === '\u007f' || ch === '\b') {
-			cardState.term.write('\b \b');
-			continue;
-		}
-		if (ch >= ' ' || ch === '\t') {
-			cardState.term.write(ch);
-		}
-	}
-};
-
 const scheduleResize = (afterResize = null) => {
     cardState.resizeTimer = clearTimer(cardState.resizeTimer);
     cardState.resizeTimer = setTimeout(() => {
@@ -395,20 +804,54 @@ const clearResizeProtection = () => {
 	cardState.resizeProtectionEndAt = 0;
 };
 
-const fitActiveTerminal = () => {
+const fitActiveTerminal = (afterFit = null) => {
 	if (!cardState.term || !cardState.fitAddon || !hasActiveTerminal()) {
 		return false;
 	}
-	cardState.fitAddon.fit();
+	if (cardState.plainPromptResizePending) {
+		return true;
+	}
+	const shouldRestorePlainPrompt = isPlainPipeMode()
+		&& cardState.plainPromptVisible
+		&& !!cardState.plainInputBuffer
+		&& !cardState.plainPromptResizePending;
+	if (!shouldRestorePlainPrompt) {
+		cardState.fitAddon.fit();
+		if (typeof afterFit === 'function') {
+			afterFit();
+		}
+		return true;
+	}
+
+	cardState.plainPromptResizePending = true;
+	const clearSequence = getClearPlainTerminalPromptSequence(
+		cardState.plainPromptRenderedText,
+		cardState.plainPromptRenderedCols || getTerminalCols(),
+	);
+	cardState.plainPromptVisible = false;
+	cardState.plainPromptRenderedText = '';
+	cardState.plainPromptRenderedCols = null;
+	cardState.plainOutputAtLineStart = true;
+	queueTerminalWrite(clearSequence, () => {
+		if (!cardState.term || !cardState.fitAddon || !hasActiveTerminal()) {
+			cardState.plainPromptResizePending = false;
+			return;
+		}
+		cardState.fitAddon.fit();
+		cardState.plainPromptResizePending = false;
+		renderPlainTerminalPromptLine();
+		if (typeof afterFit === 'function') {
+			afterFit();
+		}
+	});
 	return true;
 };
 
 const runResizeProtectionCheck = () => {
-	if (!fitActiveTerminal()) {
+	if (!fitActiveTerminal(() => sendResize())) {
 		clearResizeProtection();
 		return;
 	}
-	sendResize();
 	if (Date.now() >= cardState.resizeProtectionEndAt) {
 		clearResizeProtection();
 	}
@@ -423,10 +866,9 @@ const startResizeProtectionChecks = () => {
 };
 
 const syncTerminalSizeAfterFit = () => {
-	if (!fitActiveTerminal()) {
+	if (!fitActiveTerminal(() => scheduleResize())) {
 		return;
 	}
-	scheduleResize();
 	startResizeProtectionChecks();
 };
 
@@ -467,8 +909,8 @@ const observeTerminalResize = () => {
 const sendResize = (force = false) => {
     if (!cardState.term || !hasActiveTerminal()) return;
 
-	const cols = Math.min(TERMINAL_MAX_COLS, Math.max(1, Math.floor(Number(cardState.term.cols) || 0)));
-	const rows = Math.min(TERMINAL_MAX_ROWS, Math.max(1, Math.floor(Number(cardState.term.rows) || 0)));
+	const cols = getTerminalCols();
+	const rows = getTerminalRows();
     if (!force && cols === cardState.lastResizeCols && rows === cardState.lastResizeRows) {
         return;
     }
@@ -486,6 +928,9 @@ const closeTerminalSocket = () => {
 	cardState.inputChunks.length = 0;
 	cardState.inputPendingBytes = 0;
 	cardState.inputDraining = false;
+	resetTerminalWriteQueue();
+	clearRenderedPlainTerminalPromptLine();
+	resetPlainTerminalInputState();
 	resetResizeSyncState();
 	if (!cardState.socket) return;
 	cardState.socket.onopen = null;
@@ -498,6 +943,9 @@ const closeTerminalSocket = () => {
 const disposeTerminalRuntime = () => {
 	cardState.resizeTimer = clearTimer(cardState.resizeTimer);
 	clearResizeProtection();
+	resetTerminalWriteQueue();
+	clearRenderedPlainTerminalPromptLine();
+	resetPlainTerminalInputState();
 	resetResizeSyncState();
 	if (cardState.resizeHandler) {
 		window.removeEventListener('resize', cardState.resizeHandler);
@@ -510,6 +958,7 @@ const disposeTerminalRuntime = () => {
 		cardState.term = null;
 	}
 	cardState.fitAddon = null;
+	cardState.terminalModeAtInit = null;
 };
 
 const applyTerminalModeView = (svc, historySize) => {
@@ -529,19 +978,25 @@ const applyTerminalModeView = (svc, historySize) => {
 };
 
 const initTerminal = (historySize) => {
+    const activeTerminalMode = getActiveTerminalMode();
     if (cardState.term) {
-        cardState.term.options.scrollback = Math.max(1000, Math.floor(historySize * 1024 / 50));
-        return;
+		if (cardState.terminalModeAtInit !== activeTerminalMode) {
+			disposeTerminalRuntime();
+		} else {
+			cardState.term.options.scrollback = Math.max(1000, Math.floor(historySize * 1024 / 50));
+			return;
+		}
     }
 
 	console.log('[控制台页] 正在初始化 xterm.js 实例...');
 	const { TerminalCtor, FitAddonCtor } = getTerminalRuntime();
-	const plainPipeMode = isPlainPipeMode();
+	const plainPipeMode = activeTerminalMode === terminalMode.TERMINAL;
+	cardState.terminalModeAtInit = activeTerminalMode;
 
 	cardState.term = new TerminalCtor({
 		// 普通 TERMINAL 管道只输出 LF, 需要让 xterm 转为 CRLF; PTY_TERMINAL 由伪终端处理换行.
 		convertEol: plainPipeMode,
-		cursorBlink: true,
+		cursorBlink: !plainPipeMode,
 		fontFamily: `"JetBrains Mono", "JetBrains Maple Mono Regular", "JetBrains Maple Mono"`,
 		fontSize: 12,
 		// letterSpacing: 0,
@@ -582,12 +1037,7 @@ const initTerminal = (historySize) => {
 		cardState.term.open(dom.terminalDiv);
 	}
 
-    cardState.term.onData(data => {
-		if (cardState.socket && cardState.socket.readyState === WebSocket.OPEN) {
-			writeLocalInputEcho(data);
-			sendSocketInput(data);
-		}
-    });
+    cardState.term.onData(handleTerminalInput);
 
 	cardState.resizeHandler = () => {
 		syncTerminalSizeAfterFit();
@@ -675,7 +1125,7 @@ const connectWebSocket = (svc, options = {}) => {
 			try {
 				const frame = parseTerminalControlMessage(event.data);
 				if (frame.type === 'terminal' && cardState.term) {
-					cardState.term.write(decodeTerminalPayload(frame.payload.data));
+					writeTerminalOutput(decodeTerminalPayload(frame.payload.data));
 					return;
 				}
 				if (frame.type === 'error') {
@@ -690,6 +1140,9 @@ const connectWebSocket = (svc, options = {}) => {
 		onClose: () => {
 			console.log(`[WebSocket] 与 ${instanceName} 断开连接`);
 			cardState.socket = null;
+			resetTerminalWriteQueue();
+			clearRenderedPlainTerminalPromptLine();
+			resetPlainTerminalInputState();
 
 			if (state.currentInstanceName === instanceName && hasActiveTerminal()) {
 				cardState.wsDisconnectCount += 1;

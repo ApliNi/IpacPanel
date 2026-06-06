@@ -41,6 +41,45 @@ func BuildWarningTerminalSystemMessage(text string) []byte {
 	return buildTerminalMessage(terminalSystemYellow, text)
 }
 
+func appendPlainTerminalInputRune(dst []byte, r rune) []byte {
+	switch {
+	case r == '\t':
+		return append(dst, '\t')
+	case r == 0x1b:
+		return append(dst, '^', '[')
+	case r == 0x7f:
+		return append(dst, '^', '?')
+	case r >= 0 && r < 0x20:
+		return append(dst, '^', byte('@'+r))
+	case r >= 0x80 && r <= 0x9f:
+		return append(dst, fmt.Sprintf("\\x%02X", r)...)
+	default:
+		return append(dst, string(r)...)
+	}
+}
+
+func buildPlainTerminalInputEcho(data []byte) []byte {
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	lines := strings.Split(text, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+
+	echo := make([]byte, 0, len(data)+len(lines)*4)
+	for _, line := range lines {
+		echo = append(echo, '>', ' ')
+		for _, r := range line {
+			echo = appendPlainTerminalInputRune(echo, r)
+		}
+		echo = append(echo, '\r', '\n')
+	}
+	return echo
+}
+
 type processState uint8
 
 const (
@@ -77,6 +116,7 @@ type InstanceProcess struct {
 	TerminalStartupPendingEscape []byte
 	PTYAlternateScreenActive     bool
 	PTYAlternateScreenPending    []byte
+	InputMu                      sync.Mutex
 }
 
 type restartRequestMode uint8
@@ -1441,6 +1481,9 @@ func (sp *InstanceProcess) SendInput(data []byte) error {
 		return fmt.Errorf(msg.ReceivedMoreThanFmt, maxTerminalInputBytes)
 	}
 
+	sp.InputMu.Lock()
+	defer sp.InputMu.Unlock()
+
 	sp.Mu.Lock()
 	if sp.Deleting {
 		sp.Mu.Unlock()
@@ -1450,9 +1493,15 @@ func (sp *InstanceProcess) SendInput(data []byte) error {
 		sp.Mu.Unlock()
 		return errors.New(msg.InstanceNotRunning)
 	}
-	if cfg.IsNoTerminal(sp.activeTerminalLocked()) {
+	activeTerminal := sp.activeTerminalLocked()
+	if cfg.IsNoTerminal(activeTerminal) {
 		sp.Mu.Unlock()
 		return errors.New(msg.NoTerminalInputUnsupported)
+	}
+	if cfg.IsTerminal(activeTerminal) {
+		if echo := buildPlainTerminalInputEcho(data); len(echo) > 0 {
+			sp.appendAndBroadcastLocked(websocket.BinaryMessage, echo, cfg.GetHistoryLimit()*1024)
+		}
 	}
 	instanceName := sp.InstanceSnapshotLocked().Name
 	sp.Mu.Unlock()
