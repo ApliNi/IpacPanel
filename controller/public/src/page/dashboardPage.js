@@ -1734,7 +1734,11 @@ const toggleDetailModeFromChartDoubleClick = (chartEl, event) => {
 };
 
 const toggleLegendSeriesFromRowClick = (chartEl, event) => {
-	const row = event.target.closest('.u-series');
+	const eventTarget = event.target;
+	if (!(eventTarget instanceof Element)) {
+		return;
+	}
+	const row = eventTarget.closest('.u-series');
 	if (!row || !chartEl.contains(row)) {
 		return;
 	}
@@ -1745,6 +1749,7 @@ const toggleLegendSeriesFromRowClick = (chartEl, event) => {
 	}
 	event.preventDefault();
 	event.stopPropagation();
+	resumeRefreshAndHideCrosshairs();
 	if (seriesIndex === 0) {
 		toggleDetailMode(chartEl);
 		return;
@@ -1783,8 +1788,8 @@ const bindEvents = () => {
 		restartDashboardStream();
 	});
 	getChartElements().forEach((chartEl) => {
+		chartEl.addEventListener('click', (event) => toggleLegendSeriesFromRowClick(chartEl, event), true);
 		chartEl.addEventListener('click', (event) => showLinkedCrosshairsFromChartClick(chartEl, event));
-		chartEl.addEventListener('click', (event) => toggleLegendSeriesFromRowClick(chartEl, event));
 		chartEl.addEventListener('dblclick', (event) => toggleDetailModeFromChartDoubleClick(chartEl, event), true);
 		chartEl.addEventListener('pointermove', (event) => moveLinkedCrosshairs(chartEl, event));
 		chartEl.addEventListener('pointerenter', (event) => syncRefreshPauseWithChartCursor(chartEl, event));

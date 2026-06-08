@@ -1277,7 +1277,7 @@ func validateInstanceAccessLinksText(text string) error {
 
 func normalizeTaskName(name string) string {
 	name = strings.TrimSpace(nameRegex.ReplaceAllString(strings.TrimSpace(name), "_"))
-	return truncateRunes(name, maxInstanceNameLen)
+	return name
 }
 
 func NormalizeInstanceTasks(tasks []Task) []Task {
@@ -1289,7 +1289,6 @@ func NormalizeInstanceTasks(tasks []Task) []Task {
 		limit = maxTasksPerInstance
 	}
 	out := make([]Task, 0, limit)
-	seen := make(map[string]struct{}, limit)
 	for i := 0; i < limit; i++ {
 		t := tasks[i]
 		t.Name = normalizeTaskName(t.Name)
@@ -1306,22 +1305,6 @@ func NormalizeInstanceTasks(tasks []Task) []Task {
 			t.StrictRestart = false
 		}
 		t.Command = strings.TrimSpace(t.Command)
-		if t.Name == "" {
-			continue
-		}
-		if _, ok := seen[t.Name]; ok {
-			continue
-		}
-		if utf8.RuneCountInString(t.Expr) < 1 || utf8.RuneCountInString(t.Expr) > maxTaskExprLen {
-			continue
-		}
-		if utf8.RuneCountInString(t.Command) > maxTaskCommandLen {
-			continue
-		}
-		if t.Action == "command" && t.Command == "" {
-			continue
-		}
-		seen[t.Name] = struct{}{}
 		out = append(out, t)
 	}
 	return out
@@ -1344,7 +1327,16 @@ func validateInstanceTasks(tasks []Task) error {
 		}
 		seen[t.Name] = struct{}{}
 		if err := ValidateTaskExpr(t.Expr); err != nil {
-			return err
+			switch err.Error() {
+			case msg.TaskExprRequired:
+				return fmt.Errorf("%s: %s", msg.TaskExprRequired, t.Name)
+			case msg.TaskExprTooLong:
+				return fmt.Errorf("%s: %s", msg.TaskExprTooLong, t.Name)
+			case msg.TaskExprInvalid:
+				return fmt.Errorf("%s: %s", msg.TaskExprInvalid, t.Name)
+			default:
+				return err
+			}
 		}
 		switch t.Action {
 		case "start", "stop", "restart", "command":
