@@ -13,6 +13,7 @@ const limits = Object.freeze({
 	taskName: 32,
 	taskExpr: 128,
 	taskCommand: 4096,
+	taskTimezone: 128,
 	trustedProxyIpsCount: 512,
 	trustedProxyIp: 128,
 });
@@ -23,6 +24,7 @@ const settingsLimits = Object.freeze({
 	webPrivateKeyPath: limits.instancePath,
 	webPublicKeyPath: limits.instancePath,
 	instanceUpdateStagingDir: limits.instancePath,
+	taskTimezone: limits.taskTimezone,
 	trustedProxyIpsCount: limits.trustedProxyIpsCount,
 	trustedProxyIp: limits.trustedProxyIp,
 });
@@ -79,12 +81,19 @@ const normalizeTrustedProxyIps = (value) => {
 	return result.slice(0, limits.trustedProxyIpsCount);
 };
 
-const validateSettingsGeneralTextFields = ({ webTitle = '', listen = '', instanceUpdateStagingDir = '', trustedProxyIpsText = '' } = {}) => {
+const validateSettingsGeneralTextFields = ({ webTitle = '', listen = '', instanceUpdateStagingDir = '', taskTimezone = '', trustedProxyIpsText = '' } = {}) => {
 	if (SETTINGS_NAME_INVALID_PATTERN.test(webTitle)) {
 		return reject('webTitle', 'WEB TITLE 包含非法字符');
 	}
 	if (SETTINGS_SINGLE_LINE_CONTROL_CHAR_PATTERN.test(webTitle)) {
 		return reject('webTitle', 'WEB TITLE 包含非法控制字符');
+	}
+	const timezoneLengthResult = validateMaxLength('taskTimezone', 'TASK TIMEZONE', taskTimezone, settingsLimits.taskTimezone);
+	if (!timezoneLengthResult.ok) {
+		return timezoneLengthResult;
+	}
+	if (SETTINGS_SINGLE_LINE_CONTROL_CHAR_PATTERN.test(taskTimezone)) {
+		return reject('taskTimezone', 'TASK TIMEZONE 包含非法控制字符');
 	}
 
 	if (SETTINGS_MULTILINE_CONTROL_CHAR_PATTERN.test(trustedProxyIpsText)) {

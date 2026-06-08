@@ -1,9 +1,11 @@
-﻿package config
+package config
 
 import (
 	"IpacPanel/controller/src/msg"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/reugn/go-quartz/quartz"
 )
@@ -55,7 +57,17 @@ func NewTaskTrigger(expr string) (quartz.Trigger, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	trigger, err := quartz.NewCronTrigger(normalized)
+	location := time.Local
+	ManagerMu.RLock()
+	timezone := NormalizeTaskTimezone(CurrentConfig.TaskTimezone)
+	ManagerMu.RUnlock()
+	if timezone != "" {
+		location, err = time.LoadLocation(timezone)
+		if err != nil {
+			return nil, "", fmt.Errorf(msg.SettingsTaskTimezoneInvalidFmt, err)
+		}
+	}
+	trigger, err := quartz.NewCronTriggerWithLoc(normalized, location)
 	if err != nil {
 		return nil, "", errors.New(msg.TaskExprInvalid)
 	}

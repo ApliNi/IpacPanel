@@ -78,6 +78,7 @@ type Config struct {
 	HistorySize              int    `yaml:"history_size"`
 	AutoStartInterval        int    `yaml:"auto_start_interval"`
 	AutoRestartInterval      int    `yaml:"auto_restart_interval"`
+	TaskTimezone             string `yaml:"task_timezone" json:"task_timezone"`
 	InstanceUpdateStagingDir string `yaml:"instance_update_staging_dir"`
 	// TrustedProxyIPs must contain the direct proxy IPs that overwrite Forwarded/X-Forwarded-* headers.
 	// Keep this empty unless the reverse proxy is under your control and rewrites those headers.
@@ -98,6 +99,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		HistorySize              *int           `yaml:"history_size"`
 		AutoStartInterval        *int           `yaml:"auto_start_interval"`
 		AutoRestartInterval      *int           `yaml:"auto_restart_interval"`
+		TaskTimezone             *string        `yaml:"task_timezone"`
 		InstanceUpdateStagingDir *string        `yaml:"instance_update_staging_dir"`
 		TrustedProxyIPs          *[]string      `yaml:"trusted_proxy_ips"`
 		Metrics                  *MetricsConfig `yaml:"metrics"`
@@ -130,6 +132,9 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	}
 	if decoded.AutoRestartInterval != nil {
 		result.AutoRestartInterval = *decoded.AutoRestartInterval
+	}
+	if decoded.TaskTimezone != nil {
+		result.TaskTimezone = *decoded.TaskTimezone
 	}
 	if decoded.InstanceUpdateStagingDir != nil {
 		result.InstanceUpdateStagingDir = *decoded.InstanceUpdateStagingDir

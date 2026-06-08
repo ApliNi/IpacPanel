@@ -55,6 +55,13 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 						<input id="panelSettingsInstanceUpdateStagingDir" type="text" autocomplete="off" maxlength="${InputValidation.settings.limits.instanceUpdateStagingDir}" placeholder=" ./!InstanceUpdate/">
 					</div>
 					<div class="field-group">
+						<span>TASK TIMEZONE</span>
+						<input id="panelSettingsTaskTimezone" type="text" autocomplete="off" maxlength="${InputValidation.settings.limits.taskTimezone}" placeholder=" Asia/Shanghai">
+						<div class="file-action-static instance-advanced-note">
+							留空使用系统本地时区, 填写 IANA 时区 ID
+						</div>
+					</div>
+					<div class="field-group">
 						<span>TRUSTED PROXY IPS</span>
 						<textarea id="panelSettingsTrustedProxyIps" rows="4" spellcheck="false" autocomplete="off" maxlength="${InputValidation.settings.limits.trustedProxyIpsCount * (InputValidation.settings.limits.trustedProxyIp + 1)}" placeholder=" 127.0.0.1"></textarea>
 					</div>
@@ -259,6 +266,7 @@ const dom = {
 	autoStartInterval: document.getElementById('panelSettingsAutoStartInterval'),
 	autoRestartInterval: document.getElementById('panelSettingsAutoRestartInterval'),
 	instanceUpdateStagingDir: document.getElementById('panelSettingsInstanceUpdateStagingDir'),
+	taskTimezone: document.getElementById('panelSettingsTaskTimezone'),
 	trustedProxyIps: document.getElementById('panelSettingsTrustedProxyIps'),
 	metricsEnabled: document.getElementById('panelSettingsMetricsEnabled'),
 	metricsPublicDashboard: document.getElementById('panelSettingsMetricsPublicDashboard'),
@@ -328,6 +336,7 @@ const settingsState = {
 	autoStartInterval: 200,
 	autoRestartInterval: 1000,
 	instanceUpdateStagingDir: './!InstanceUpdate/',
+	taskTimezone: '',
 	trustedProxyIps: ['127.0.0.1'],
 	metricsEnabled: true,
 	metricsPublicDashboard: false,
@@ -347,6 +356,7 @@ const DEFAULT_LISTEN = '127.0.0.1:25555';
 const DEFAULT_WEB_PRIVATE_KEY_PATH = './data/cert/key';
 const DEFAULT_WEB_PUBLIC_KEY_PATH = './data/cert/pem';
 const DEFAULT_INSTANCE_UPDATE_STAGING_DIR = './!InstanceUpdate/';
+const DEFAULT_TASK_TIMEZONE = '';
 const MIN_HISTORY_SIZE = 2;
 const MAX_HISTORY_SIZE = 65536;
 const MAX_INTERVAL_MS = 86400000;
@@ -413,6 +423,7 @@ const settingsFieldInputs = {
 	webPrivateKeyPath: () => dom.webPrivateKeyPath,
 	webPublicKeyPath: () => dom.webPublicKeyPath,
 	instanceUpdateStagingDir: () => dom.instanceUpdateStagingDir,
+	taskTimezone: () => dom.taskTimezone,
 	trustedProxyIps: () => dom.trustedProxyIps,
 };
 
@@ -432,6 +443,7 @@ const settingsFieldConfigPages = {
 	webTitle: 'options',
 	listen: 'options',
 	instanceUpdateStagingDir: 'options',
+	taskTimezone: 'options',
 	trustedProxyIps: 'options',
 	webPrivateKeyPath: 'web',
 	webPublicKeyPath: 'web',
@@ -514,6 +526,7 @@ const clearSettingsFormForLoad = () => {
 		dom.autoStartInterval,
 		dom.autoRestartInterval,
 		dom.instanceUpdateStagingDir,
+		dom.taskTimezone,
 		dom.trustedProxyIps,
 		dom.metricsMemoryMaxMin,
 		dom.metricsSqliteMaxDay,
@@ -596,6 +609,7 @@ const buildRuntimeSettingsSnapshot = () => ({
 	autoStartInterval: settingsState.autoStartInterval,
 	autoRestartInterval: settingsState.autoRestartInterval,
 	instanceUpdateStagingDir: settingsState.instanceUpdateStagingDir,
+	taskTimezone: settingsState.taskTimezone,
 	trustedProxyIps: [...settingsState.trustedProxyIps],
 	metrics: {
 		enabled: settingsState.metricsEnabled,
@@ -636,6 +650,7 @@ const renderSettings = (data = {}, options = {}) => {
 	settingsState.autoStartInterval = clampInteger(data.auto_start_interval, 200, 0, MAX_INTERVAL_MS);
 	settingsState.autoRestartInterval = clampInteger(data.auto_restart_interval, 1000, 0, MAX_INTERVAL_MS);
 	settingsState.instanceUpdateStagingDir = String(data.instance_update_staging_dir || DEFAULT_INSTANCE_UPDATE_STAGING_DIR).trim();
+	settingsState.taskTimezone = String(data.task_timezone || DEFAULT_TASK_TIMEZONE).trim();
 	settingsState.trustedProxyIps = normalizeStringList(data.trusted_proxy_ips);
 	const metrics = data.metrics || {};
 	settingsState.metricsEnabled = !!metrics.enabled;
@@ -662,6 +677,7 @@ const renderSettings = (data = {}, options = {}) => {
 	if (dom.autoStartInterval) dom.autoStartInterval.value = String(settingsState.autoStartInterval);
 	if (dom.autoRestartInterval) dom.autoRestartInterval.value = String(settingsState.autoRestartInterval);
 	if (dom.instanceUpdateStagingDir) dom.instanceUpdateStagingDir.value = settingsState.instanceUpdateStagingDir;
+	if (dom.taskTimezone) dom.taskTimezone.value = settingsState.taskTimezone;
 	if (dom.trustedProxyIps) dom.trustedProxyIps.value = settingsState.trustedProxyIps.join('\n');
 	if (dom.metricsEnabled) dom.metricsEnabled.checked = settingsState.metricsEnabled;
 	if (dom.metricsPublicDashboard) dom.metricsPublicDashboard.checked = settingsState.metricsPublicDashboard;
@@ -706,8 +722,9 @@ const buildConfigSettingsPayload = () => {
 	const webTitle = normalizeWebTitle(truncateInputValue(dom.webTitle, InputValidation.settings.limits.webTitle));
 	const listen = normalizeListen(truncateInputValue(dom.listen, InputValidation.settings.limits.listen));
 	const instanceUpdateStagingDir = truncateInputValue(dom.instanceUpdateStagingDir, InputValidation.settings.limits.instanceUpdateStagingDir);
+	const taskTimezone = truncateInputValue(dom.taskTimezone, InputValidation.settings.limits.taskTimezone);
 	const trustedProxyIpsText = normalizeTrustedProxyIpsInput();
-	const validationResult = InputValidation.settings.validateGeneralTextFields({ webTitle, listen, instanceUpdateStagingDir, trustedProxyIpsText });
+	const validationResult = InputValidation.settings.validateGeneralTextFields({ webTitle, listen, instanceUpdateStagingDir, taskTimezone, trustedProxyIpsText });
 	if (!validationResult.ok) {
 		return { ok: false, validationResult };
 	}
@@ -737,6 +754,7 @@ const buildConfigSettingsPayload = () => {
 			auto_start_interval: autoStartInterval,
 			auto_restart_interval: autoRestartInterval,
 			instance_update_staging_dir: instanceUpdateStagingDir,
+			task_timezone: taskTimezone,
 			trusted_proxy_ips: trustedProxyIps,
 			web: {
 				enable_https: dom.webEnableHttps.checked,

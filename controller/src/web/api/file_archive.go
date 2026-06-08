@@ -204,8 +204,10 @@ func HandleApiFileArchiveDownload(w http.ResponseWriter, r *http.Request) {
 		web.WriteAPIError(w, http.StatusNotFound, msg.TargetNotFound, nil)
 		return
 	}
+	if _, ok := web.RequireInstanceProcessByName(w, authedUser, archive.Instance); !ok {
+		return
+	}
 	web.MarkRequestAction(w, "archive-download")
-	web.MarkRequestInstance(w, archive.Instance)
 	excludes := newFileBatchExcludeMatcherFromResolved(archive.Exclude)
 
 	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": archive.Filename})

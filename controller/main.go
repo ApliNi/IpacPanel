@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	_ "time/tzdata"
 
 	"gopkg.in/yaml.v3"
 )

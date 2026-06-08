@@ -4,6 +4,7 @@ import (
 	cfg "IpacPanel/controller/src/config"
 	"IpacPanel/controller/src/msg"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -187,10 +188,17 @@ func (j *instanceTaskJob) Description() string {
 }
 
 func rebuildAllInstanceTasksLocked() {
+	if err := rebuildAllInstanceTasks(); err != nil {
+		log.Printf(msg.RebuildInstanceScheduledTasksFailedLogFmt, msg.RebuildAllInstanceTasks, err)
+	}
+}
+
+func rebuildAllInstanceTasks() error {
 	if getTaskScheduler() == nil {
-		return
+		return fmt.Errorf(msg.SchedulerNotInitialized)
 	}
 
+	errs := make([]error, 0)
 	for _, sp := range List() {
 		if sp == nil {
 			continue
@@ -198,8 +206,10 @@ func rebuildAllInstanceTasksLocked() {
 		instanceName := sp.InstanceSnapshot().Name
 		if err := rebuildInstanceTasks(instanceName); err != nil {
 			log.Printf(msg.RebuildInstanceScheduledTasksFailedLogFmt, instanceName, err)
+			errs = append(errs, fmt.Errorf("%s: %w", instanceName, err))
 		}
 	}
+	return errors.Join(errs...)
 }
 
 func rebuildInstanceTasks(instanceName string) error {
@@ -410,4 +420,5 @@ func InitTaskScheduler()                             { initTaskScheduler() }
 func StopTaskScheduler()                             { stopTaskScheduler() }
 func DisconnectAllInstanceClients()                  { disconnectAllInstanceClients() }
 func RebuildAllInstanceTasksLocked()                 { rebuildAllInstanceTasksLocked() }
+func RebuildAllInstanceTasks() error                 { return rebuildAllInstanceTasks() }
 func RebuildInstanceTasks(instanceName string) error { return rebuildInstanceTasks(instanceName) }

@@ -25,6 +25,7 @@ type settingsResponse struct {
 	HistorySize              int                     `json:"history_size"`
 	AutoStartInterval        int                     `json:"auto_start_interval"`
 	AutoRestartInterval      int                     `json:"auto_restart_interval"`
+	TaskTimezone             string                  `json:"task_timezone"`
 	InstanceUpdateStagingDir string                  `json:"instance_update_staging_dir"`
 	TrustedProxyIPs          []string                `json:"trusted_proxy_ips"`
 	Metrics                  settingsMetricsResponse `json:"metrics"`
@@ -49,6 +50,7 @@ type settingsUpdateRequest struct {
 	HistorySize              *int                          `json:"history_size"`
 	AutoStartInterval        *int                          `json:"auto_start_interval"`
 	AutoRestartInterval      *int                          `json:"auto_restart_interval"`
+	TaskTimezone             *string                       `json:"task_timezone"`
 	InstanceUpdateStagingDir *string                       `json:"instance_update_staging_dir"`
 	TrustedProxyIPs          *[]string                     `json:"trusted_proxy_ips"`
 	Metrics                  *settingsMetricsUpdateRequest `json:"metrics"`
@@ -158,6 +160,12 @@ func HandleApiSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 	if req.AutoRestartInterval != nil {
 		savedCfg.AutoRestartInterval = cfg.NormalizeAutoRestartInterval(*req.AutoRestartInterval)
 	}
+	taskTimezoneChanged := false
+	if req.TaskTimezone != nil {
+		nextTaskTimezone := cfg.NormalizeTaskTimezone(*req.TaskTimezone)
+		taskTimezoneChanged = nextTaskTimezone != cfg.NormalizeTaskTimezone(savedCfg.TaskTimezone)
+		savedCfg.TaskTimezone = nextTaskTimezone
+	}
 	if req.InstanceUpdateStagingDir != nil {
 		savedCfg.InstanceUpdateStagingDir = cfg.NormalizeSettingsInstanceUpdateStagingDir(*req.InstanceUpdateStagingDir)
 	}
@@ -189,7 +197,7 @@ func HandleApiSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.MetricsStorageModeInvalid, err)
 		return
 	}
-	if err := cfg.ValidateSettingsTextFields(savedCfg.WebTitle, savedCfg.Listen, savedCfg.Web, savedCfg.InstanceUpdateStagingDir, savedCfg.TrustedProxyIPs); err != nil {
+	if err := cfg.ValidateSettingsTextFields(savedCfg.WebTitle, savedCfg.Listen, savedCfg.TaskTimezone, savedCfg.Web, savedCfg.InstanceUpdateStagingDir, savedCfg.TrustedProxyIPs); err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.InvalidRequestBody, err)
 		return
 	}
@@ -226,6 +234,11 @@ func HandleApiSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 		dashboardCollector.ApplyConfig(newDashboardMetricsConfig(metricsConfig))
 		return nil
 	})
+	if taskTimezoneChanged {
+		plan.AddRequiredPostCommit(msg.RebuildAllInstanceTasks, func() error {
+			return process.RebuildAllInstanceTasks()
+		})
+	}
 	plan.Publish = func() {
 		cfg.ManagerMu.Lock()
 		cfg.CurrentConfig = savedCfg
@@ -323,6 +336,7 @@ func buildSettingsResponseFromConfig(savedCfg cfg.Config) settingsResponse {
 		HistorySize:              cfg.NormalizeHistorySize(savedCfg.HistorySize),
 		AutoStartInterval:        cfg.NormalizeAutoStartInterval(savedCfg.AutoStartInterval),
 		AutoRestartInterval:      cfg.NormalizeAutoRestartInterval(savedCfg.AutoRestartInterval),
+		TaskTimezone:             cfg.NormalizeTaskTimezone(savedCfg.TaskTimezone),
 		InstanceUpdateStagingDir: cfg.NormalizeSettingsInstanceUpdateStagingDir(savedCfg.InstanceUpdateStagingDir),
 		TrustedProxyIPs:          cfg.NormalizeTrustedProxyIPs(savedCfg.TrustedProxyIPs),
 		Metrics:                  newSettingsMetricsResponse(metricsConfig),

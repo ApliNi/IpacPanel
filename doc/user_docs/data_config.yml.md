@@ -19,6 +19,8 @@ history_size: 27
 auto_start_interval: 200
 # 每个实例的重启等待时间, 单位毫秒
 auto_restart_interval: 1000
+# 计划任务执行时区, 为空时使用服务器系统本地时区, 可填写 IANA 时区 ID, 如 Asia/Shanghai
+task_timezone: ""
 # 每个实例的自动更新目录, 为每个实例的相对路径
 instance_update_staging_dir: ./!InstanceUpdate/
 # 信任的代理 IP 列表, 用于获取真实 IP

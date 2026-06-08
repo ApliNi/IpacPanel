@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
@@ -60,6 +61,7 @@ const (
 	maxAccessLinksTextLen = 2048
 	maxTrustedProxyIPs    = 512
 	maxTrustedProxyIPLen  = 128
+	maxTaskTimezoneLen    = 128
 	maxTasksPerInstance   = 512
 	minAutoIntervalMS     = 0
 	maxAutoIntervalMS     = 86400000
@@ -95,6 +97,7 @@ var defaultConfig = Config{
 	HistorySize:              27,
 	AutoStartInterval:        200,
 	AutoRestartInterval:      1000,
+	TaskTimezone:             "",
 	InstanceUpdateStagingDir: "./!InstanceUpdate/",
 	TrustedProxyIPs:          []string{"127.0.0.1"},
 	Metrics: MetricsConfig{
@@ -284,11 +287,14 @@ func ValidateSettingsTrustedProxyIPs(values []string) error {
 	return nil
 }
 
-func ValidateSettingsTextFields(webTitle string, listen string, webConfig WebConfig, instanceUpdateStagingDir string, trustedProxyIPs []string) error {
+func ValidateSettingsTextFields(webTitle string, listen string, taskTimezone string, webConfig WebConfig, instanceUpdateStagingDir string, trustedProxyIPs []string) error {
 	if err := ValidateSettingsWebTitle(webTitle); err != nil {
 		return err
 	}
 	if err := ValidateSettingsListenAddress(listen); err != nil {
+		return err
+	}
+	if err := ValidateTaskTimezone(taskTimezone); err != nil {
 		return err
 	}
 	if err := ValidateSettingsWebCertificatePath(msg.SettingsHTTPSPrivateKeyPathLabel, webConfig.PrivateKeyPath); err != nil {
@@ -309,6 +315,27 @@ func NormalizeListenAddress(listen string) string {
 		return defaultListenAddress
 	}
 	return value
+}
+
+func NormalizeTaskTimezone(timezone string) string {
+	return strings.TrimSpace(timezone)
+}
+
+func ValidateTaskTimezone(timezone string) error {
+	value := NormalizeTaskTimezone(timezone)
+	if value == "" {
+		return nil
+	}
+	if utf8.RuneCountInString(value) > maxTaskTimezoneLen {
+		return errors.New(msg.SettingsTaskTimezoneTooLong)
+	}
+	if containsInvalidSettingsControlChar(value, false) {
+		return errors.New(msg.SettingsTaskTimezoneInvalidControlChars)
+	}
+	if _, err := time.LoadLocation(value); err != nil {
+		return fmt.Errorf(msg.SettingsTaskTimezoneInvalidFmt, err)
+	}
+	return nil
 }
 
 func NormalizeSettingsInstanceUpdateStagingDir(path string) string {
@@ -648,6 +675,7 @@ type persistedConfig struct {
 	HistorySize              int            `yaml:"history_size"`
 	AutoStartInterval        int            `yaml:"auto_start_interval"`
 	AutoRestartInterval      *int           `yaml:"auto_restart_interval,omitempty"`
+	TaskTimezone             string         `yaml:"task_timezone"`
 	InstanceUpdateStagingDir string         `yaml:"instance_update_staging_dir"`
 	TrustedProxyIPs          *[]string      `yaml:"trusted_proxy_ips"`
 	Metrics                  *MetricsConfig `yaml:"metrics"`
@@ -670,6 +698,7 @@ func makePersistedConfig(cfg Config) persistedConfig {
 		HistorySize:              NormalizeHistorySize(cfg.HistorySize),
 		AutoStartInterval:        NormalizeAutoStartInterval(cfg.AutoStartInterval),
 		AutoRestartInterval:      &autoRestartInterval,
+		TaskTimezone:             NormalizeTaskTimezone(cfg.TaskTimezone),
 		InstanceUpdateStagingDir: NormalizeSettingsInstanceUpdateStagingDir(cfg.InstanceUpdateStagingDir),
 		TrustedProxyIPs:          &trustedProxyIPs,
 		Metrics:                  &metrics,
@@ -706,6 +735,7 @@ func unmarshalPersistedConfig(data []byte) (Config, error) {
 		Listen                   *string    `yaml:"listen"`
 		HistorySize              *int       `yaml:"history_size"`
 		AutoStartInterval        *int       `yaml:"auto_start_interval"`
+		TaskTimezone             *string    `yaml:"task_timezone"`
 		InstanceUpdateStagingDir *string    `yaml:"instance_update_staging_dir"`
 		Web                      *WebConfig `yaml:"web"`
 		Debug                    *bool      `yaml:"debug"`
@@ -730,6 +760,9 @@ func unmarshalPersistedConfig(data []byte) (Config, error) {
 	}
 	if persisted.AutoRestartInterval != nil {
 		cfg.AutoRestartInterval = *persisted.AutoRestartInterval
+	}
+	if decoded.TaskTimezone != nil {
+		cfg.TaskTimezone = NormalizeTaskTimezone(*decoded.TaskTimezone)
 	}
 	if decoded.InstanceUpdateStagingDir != nil {
 		cfg.InstanceUpdateStagingDir = NormalizeSettingsInstanceUpdateStagingDir(*decoded.InstanceUpdateStagingDir)
@@ -842,6 +875,9 @@ func LoadConfig() error {
 		}
 		CurrentConfig.Instances = instances
 		NormalizeConfig()
+		if err := ValidateTaskTimezone(CurrentConfig.TaskTimezone); err != nil {
+			return err
+		}
 		if InitializeInstanceRegistryHook != nil {
 			InitializeInstanceRegistryHook(CurrentConfig.Instances)
 		}
@@ -876,6 +912,9 @@ func LoadConfig() error {
 	CurrentConfig.Instances = instances
 
 	NormalizeConfig()
+	if err := ValidateTaskTimezone(CurrentConfig.TaskTimezone); err != nil {
+		return err
+	}
 	if InitializeInstanceRegistryHook != nil {
 		InitializeInstanceRegistryHook(CurrentConfig.Instances)
 	}
@@ -1023,6 +1062,7 @@ func NormalizeConfig() {
 	CurrentConfig.HistorySize = NormalizeHistorySize(CurrentConfig.HistorySize)
 	CurrentConfig.AutoStartInterval = NormalizeAutoStartInterval(CurrentConfig.AutoStartInterval)
 	CurrentConfig.AutoRestartInterval = NormalizeAutoRestartInterval(CurrentConfig.AutoRestartInterval)
+	CurrentConfig.TaskTimezone = NormalizeTaskTimezone(CurrentConfig.TaskTimezone)
 	CurrentConfig.Listen = NormalizeListenAddress(CurrentConfig.Listen)
 	CurrentConfig.Web = NormalizeWebConfig(CurrentConfig.Web)
 	normalizeMetricsConfig(&CurrentConfig.Metrics)

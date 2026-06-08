@@ -156,9 +156,10 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 						</thead>
 						<tbody>
 							<tr><td>语法标准</td><td>计划任务使用 <strong>Quartz Cron</strong> 语法, 5 段会自动补全为 6 段</td></tr>
+							<tr><td>执行时区</td><td>默认按服务器系统本地时区执行, 可在设置中指定 IANA 时区</td></tr>
 							<tr><td>字段分隔</td><td>各段之间使用空格分隔, 一共支持 5 / 6 / 7 段</td></tr>
 							<tr><td>日与周</td><td><strong>日期</strong> 与 <strong>星期</strong> 通常二选一明确指定, 另一个建议写 <code>?</code></td></tr>
-							<tr><td>英文名称</td><td>月份和星期支持英文缩写, 如 <code>JAN</code>、<code>MON-FRI</code>, 且不区分大小写</td></tr>
+							<tr><td>英文名称</td><td>月份和星期支持英文缩写, 如 <code>JAN</code>, <code>MON-FRI</code>, 且不区分大小写</td></tr>
 						</tbody>
 					</table>
 					<table>
