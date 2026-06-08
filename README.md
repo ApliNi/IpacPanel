@@ -66,8 +66,8 @@
 ## 计划中
 
 - [ ] 用户文档
+- [ ] 插件系统
 - [ ] 数据库编辑器
-- [ ] 
 
 
 ## 项目结构
@@ -156,7 +156,13 @@ go run ./build.go
 - Windows 终端: [`github.com/UserExistsError/conpty`](https://github.com/UserExistsError/conpty)
 - Shell 命令解析: [`github.com/kballard/go-shellquote`](https://github.com/kballard/go-shellquote)
 
-**参考项目**
+
+## 友链
+- [IpacEL](https://ipacel.cc/) - 技术向公益 Minecraft 服务器
+- [LINUX DO](https://linux.do/) - 新的理想型社区
+
+
+## 相关项目
 - 一个游戏服务器管理面板: [MCSManager](https://github.com/MCSManager/MCSManager)
 
 
