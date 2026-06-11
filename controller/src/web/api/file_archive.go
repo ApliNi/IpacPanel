@@ -234,7 +234,7 @@ func HandleApiFileArchiveDownload(w http.ResponseWriter, r *http.Request) {
 		}
 		if rule.IsDir {
 			if err := writeArchiveDirectory(r, w, zw, buffer, archive.RootReal, archive.ArchiveBase, rule.Path, excludes); err != nil {
-				log.Printf("archive download stopped: %v", err)
+				log.Printf(msg.ArchiveDownloadStoppedLogFmt, err)
 				web.MarkAPIError(w, http.StatusInternalServerError, msg.ReadFileFailed, err)
 				_ = zw.Close()
 				return
@@ -242,14 +242,14 @@ func HandleApiFileArchiveDownload(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if err := writeArchiveFile(w, zw, buffer, archive.RootReal, archive.ArchiveBase, rule.Path); err != nil {
-			log.Printf("archive download stopped: %v", err)
+			log.Printf(msg.ArchiveDownloadStoppedLogFmt, err)
 			web.MarkAPIError(w, http.StatusInternalServerError, msg.ReadFileFailed, err)
 			_ = zw.Close()
 			return
 		}
 	}
 	if err := zw.Close(); err != nil {
-		log.Printf("archive zip close failed: %v", err)
+		log.Printf(msg.ArchiveZipCloseFailedLogFmt, err)
 		web.MarkAPIError(w, http.StatusInternalServerError, msg.ReadFileFailed, err)
 	}
 }
@@ -343,7 +343,7 @@ func safeArchiveDownloadName(name string) string {
 func writeArchiveDirectory(r *http.Request, w http.ResponseWriter, zw *zip.Writer, buffer []byte, rootReal string, archiveBase string, dirPath string, excludes fileBatchExcludeMatcher) error {
 	err := filepath.WalkDir(dirPath, func(p string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			archiveDebugLogf("archive skipped walk entry: %s: %v", p, walkErr)
+			archiveDebugLogf(msg.ArchiveSkippedWalkEntryLogFmt, p, walkErr)
 			if d != nil && d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -356,14 +356,14 @@ func writeArchiveDirectory(r *http.Request, w http.ResponseWriter, zw *zip.Write
 		}
 		info, err := d.Info()
 		if err != nil {
-			archiveDebugLogf("archive skipped stat entry: %s: %v", p, err)
+			archiveDebugLogf(msg.ArchiveSkippedStatEntryLogFmt, p, err)
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			archiveDebugLogf("archive skipped symlink entry: %s", p)
+			archiveDebugLogf(msg.ArchiveSkippedSymlinkEntryLogFmt, p)
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -388,7 +388,7 @@ func writeArchiveDirectory(r *http.Request, w http.ResponseWriter, zw *zip.Write
 		if errors.Is(err, r.Context().Err()) {
 			return err
 		}
-		log.Printf("archive walk failed: %s: %v", dirPath, err)
+		log.Printf(msg.ArchiveWalkFailedLogFmt, dirPath, err)
 		web.MarkAPIError(w, http.StatusInternalServerError, msg.ReadFileFailed, err)
 		return err
 	}
@@ -398,19 +398,19 @@ func writeArchiveDirectory(r *http.Request, w http.ResponseWriter, zw *zip.Write
 func writeArchiveDirEntry(w http.ResponseWriter, zw *zip.Writer, archiveBase string, dirPath string, info os.FileInfo) error {
 	entryName, ok := safeArchiveEntryName(archiveBase, dirPath)
 	if !ok {
-		archiveDebugLogf("archive skipped unsafe directory entry: %s", dirPath)
+		archiveDebugLogf(msg.ArchiveSkippedUnsafeDirectoryEntryLogFmt, dirPath)
 		return nil
 	}
 	entryName = ensureTrailingSlash(entryName)
 	header, err := zip.FileInfoHeader(info)
 	if err != nil {
-		archiveDebugLogf("archive skipped directory header: %s: %v", dirPath, err)
+		archiveDebugLogf(msg.ArchiveSkippedDirectoryHeaderLogFmt, dirPath, err)
 		return nil
 	}
 	header.Name = entryName
 	header.Method = zip.Store
 	if _, err := zw.CreateHeader(header); err != nil {
-		log.Printf("archive write directory entry failed: %s: %v", dirPath, err)
+		log.Printf(msg.ArchiveWriteDirectoryEntryFailedLogFmt, dirPath, err)
 		web.MarkAPIError(w, http.StatusInternalServerError, msg.ReadFileFailed, err)
 		return err
 	}
@@ -420,11 +420,11 @@ func writeArchiveDirEntry(w http.ResponseWriter, zw *zip.Writer, archiveBase str
 func writeArchiveFile(w http.ResponseWriter, zw *zip.Writer, buffer []byte, rootReal string, archiveBase string, filePath string) error {
 	info, err := os.Lstat(filePath)
 	if err != nil {
-		archiveDebugLogf("archive skipped stat file: %s: %v", filePath, err)
+		archiveDebugLogf(msg.ArchiveSkippedStatFileLogFmt, filePath, err)
 		return nil
 	}
 	if info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
-		archiveDebugLogf("archive skipped non-regular file: %s", filePath)
+		archiveDebugLogf(msg.ArchiveSkippedNonRegularFileLogFmt, filePath)
 		return nil
 	}
 	return writeArchiveFileWithInfo(w, zw, buffer, rootReal, archiveBase, filePath, info)
@@ -432,53 +432,53 @@ func writeArchiveFile(w http.ResponseWriter, zw *zip.Writer, buffer []byte, root
 
 func writeArchiveFileWithInfo(w http.ResponseWriter, zw *zip.Writer, buffer []byte, rootReal string, archiveBase string, filePath string, info os.FileInfo) error {
 	if err := ensureArchiveFileWithinRoot(rootReal, filePath); err != nil {
-		archiveDebugLogf("archive skipped escaped file path: %s: %v", filePath, err)
+		archiveDebugLogf(msg.ArchiveSkippedEscapedFilePathLogFmt, filePath, err)
 		return nil
 	}
 	file, err := os.Open(filePath)
 	if err != nil {
-		archiveDebugLogf("archive skipped open file: %s: %v", filePath, err)
+		archiveDebugLogf(msg.ArchiveSkippedOpenFileLogFmt, filePath, err)
 		return nil
 	}
 	defer file.Close()
 	openedInfo, err := file.Stat()
 	if err != nil {
-		archiveDebugLogf("archive skipped opened file stat: %s: %v", filePath, err)
+		archiveDebugLogf(msg.ArchiveSkippedOpenedFileStatLogFmt, filePath, err)
 		return nil
 	}
 	latestInfo, err := os.Lstat(filePath)
 	if err != nil {
-		archiveDebugLogf("archive skipped latest file stat: %s: %v", filePath, err)
+		archiveDebugLogf(msg.ArchiveSkippedLatestFileStatLogFmt, filePath, err)
 		return nil
 	}
 	if latestInfo.Mode()&os.ModeSymlink != 0 || !latestInfo.Mode().IsRegular() || !openedInfo.Mode().IsRegular() || !os.SameFile(openedInfo, latestInfo) {
-		archiveDebugLogf("archive skipped changed or non-regular file: %s", filePath)
+		archiveDebugLogf(msg.ArchiveSkippedChangedOrNonRegularFileLogFmt, filePath)
 		return nil
 	}
 	if err := ensureArchiveFileWithinRoot(rootReal, filePath); err != nil {
-		archiveDebugLogf("archive skipped escaped opened file path: %s: %v", filePath, err)
+		archiveDebugLogf(msg.ArchiveSkippedEscapedOpenedFilePathLogFmt, filePath, err)
 		return nil
 	}
 	entryName, ok := safeArchiveEntryName(archiveBase, filePath)
 	if !ok {
-		archiveDebugLogf("archive skipped unsafe file entry: %s", filePath)
+		archiveDebugLogf(msg.ArchiveSkippedUnsafeFileEntryLogFmt, filePath)
 		return nil
 	}
 	header, err := zip.FileInfoHeader(info)
 	if err != nil {
-		archiveDebugLogf("archive skipped file header: %s: %v", filePath, err)
+		archiveDebugLogf(msg.ArchiveSkippedFileHeaderLogFmt, filePath, err)
 		return nil
 	}
 	header.Name = entryName
 	header.Method = zip.Deflate
 	writer, err := zw.CreateHeader(header)
 	if err != nil {
-		log.Printf("archive create file entry failed: %s: %v", filePath, err)
+		log.Printf(msg.ArchiveCreateFileEntryFailedLogFmt, filePath, err)
 		web.MarkAPIError(w, http.StatusInternalServerError, msg.ReadFileFailed, err)
 		return err
 	}
 	if _, err := io.CopyBuffer(writer, file, buffer); err != nil {
-		log.Printf("archive copy file failed: %s: %v", filePath, err)
+		log.Printf(msg.ArchiveCopyFileFailedLogFmt, filePath, err)
 		web.MarkAPIError(w, http.StatusInternalServerError, msg.ReadFileFailed, err)
 		return err
 	}

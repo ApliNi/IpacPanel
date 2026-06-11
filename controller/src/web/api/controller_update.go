@@ -242,7 +242,7 @@ func controllerUpdateBinaryIdentityForPath(path string) (*controllerUpdateBinary
 		return nil, err
 	}
 	if info.IsDir() || info.Mode()&os.ModeType != 0 {
-		return nil, fmt.Errorf("管理进程更新文件不是普通文件: %s", path)
+		return nil, fmt.Errorf(msg.ControllerUpdateFileNotRegularFmt, path)
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -289,14 +289,14 @@ func readControllerUpdateDocsMarker() (*controllerUpdateBinaryIdentity, error) {
 		return nil, err
 	}
 	if identity.Size < 0 || strings.TrimSpace(identity.SHA256Hex) == "" {
-		return nil, errors.New("管理进程更新文档暂存标记无效")
+		return nil, errors.New(msg.ControllerUpdateDocsMarkerInvalid)
 	}
 	return &identity, nil
 }
 
 func extractControllerUpdateDocsFromZip(zipPath string, stagingDir string) (int, error) {
 	if err := os.RemoveAll(stagingDir); err != nil {
-		return 0, fmt.Errorf("清理管理进程更新文档暂存目录失败: %w", err)
+		return 0, fmt.Errorf(msg.CleanupControllerUpdateDocsStagingDirFailedErrFmt, err)
 	}
 	reader, err := zip.OpenReader(zipPath)
 	if err != nil {
@@ -314,44 +314,44 @@ func extractControllerUpdateDocsFromZip(zipPath string, stagingDir string) (int,
 			continue
 		}
 		if zipEntry.FileInfo().Mode()&os.ModeType != 0 {
-			log.Printf("跳过更新压缩包中的文档特殊文件: path=%s", zipEntry.Name)
+			log.Printf(msg.SkipControllerUpdateDocSpecialFileLogFmt, zipEntry.Name)
 			continue
 		}
 		targetPath := filepath.Join(stagingDir, filepath.FromSlash(cleanName))
 		if !strings.HasPrefix(targetPath, filepath.Clean(stagingDir)+string(os.PathSeparator)) {
-			log.Printf("跳过更新压缩包中的文档非法路径: path=%s", zipEntry.Name)
+			log.Printf(msg.SkipControllerUpdateDocInvalidPathLogFmt, zipEntry.Name)
 			continue
 		}
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-			log.Printf("创建管理进程更新文档暂存目录失败: path=%s err=%v", targetPath, err)
+			log.Printf(msg.CreateControllerUpdateDocsStagingDirFailedLogFmt, targetPath, err)
 			continue
 		}
 		src, err := zipEntry.Open()
 		if err != nil {
-			log.Printf("读取发布压缩包中的文档文件失败: path=%s err=%v", zipEntry.Name, err)
+			log.Printf(msg.ReadControllerUpdateDocFromArchiveFailedLogFmt, zipEntry.Name, err)
 			continue
 		}
 		out, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		if err != nil {
 			_ = src.Close()
-			log.Printf("创建管理进程更新文档暂存文件失败: path=%s err=%v", targetPath, err)
+			log.Printf(msg.CreateControllerUpdateDocsStagingFileFailedLogFmt, targetPath, err)
 			continue
 		}
 		_, copyErr := io.Copy(out, src)
 		closeOutErr := out.Close()
 		closeSrcErr := src.Close()
 		if copyErr != nil {
-			log.Printf("提取发布压缩包中的文档文件失败: source=%s target=%s err=%v", zipEntry.Name, targetPath, copyErr)
+			log.Printf(msg.ExtractControllerUpdateDocFromArchiveFailedLogFmt, zipEntry.Name, targetPath, copyErr)
 			_ = os.Remove(targetPath)
 			continue
 		}
 		if closeOutErr != nil {
-			log.Printf("关闭管理进程更新文档暂存文件失败: path=%s err=%v", targetPath, closeOutErr)
+			log.Printf(msg.CloseControllerUpdateDocsStagingFileFailedLogFmt, targetPath, closeOutErr)
 			_ = os.Remove(targetPath)
 			continue
 		}
 		if closeSrcErr != nil {
-			log.Printf("关闭发布压缩包中的文档文件失败: path=%s err=%v", zipEntry.Name, closeSrcErr)
+			log.Printf(msg.CloseControllerUpdateDocFromArchiveFailedLogFmt, zipEntry.Name, closeSrcErr)
 			_ = os.Remove(targetPath)
 			continue
 		}
@@ -362,7 +362,7 @@ func extractControllerUpdateDocsFromZip(zipPath string, stagingDir string) (int,
 
 func cleanupControllerUpdateDocsStaging() {
 	if err := os.RemoveAll(controllerUpdateDocsStagingDir()); err != nil {
-		log.Printf("清理管理进程更新文档暂存目录失败: %v", err)
+		log.Printf(msg.CleanupControllerUpdateDocsStagingDirFailedLogFmt, err)
 	}
 }
 
@@ -370,29 +370,29 @@ func applyControllerUpdateStagedDocs() (int, int, int) {
 	stagingDir := controllerUpdateDocsStagingDir()
 	if info, err := os.Stat(stagingDir); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			log.Printf("检查管理进程更新文档暂存目录失败: %v", err)
+			log.Printf(msg.CheckControllerUpdateDocsStagingDirFailedLogFmt, err)
 		}
 		cleanupControllerUpdateDocsStaging()
 		return 0, 0, 0
 	} else if !info.IsDir() {
-		log.Printf("管理进程更新文档暂存路径不是目录: path=%s", stagingDir)
+		log.Printf(msg.ControllerUpdateDocsStagingPathNotDirLogFmt, stagingDir)
 		cleanupControllerUpdateDocsStaging()
 		return 0, 0, 1
 	}
 	markerIdentity, err := readControllerUpdateDocsMarker()
 	if err != nil {
-		log.Printf("读取管理进程更新文档暂存标记失败, 跳过文档覆盖: %v", err)
+		log.Printf(msg.ReadControllerUpdateDocsMarkerFailedSkipDocsLogFmt, err)
 		cleanupControllerUpdateDocsStaging()
 		return 0, 0, 0
 	}
 	currentIdentity, err := controllerUpdateBinaryIdentityForPath(controllerUpdateBinaryPath())
 	if err != nil {
-		log.Printf("读取当前管理进程待更新文件身份失败, 跳过文档覆盖: %v", err)
+		log.Printf(msg.ReadCurrentControllerUpdateFileIdentityFailedSkipDocsLogFmt, err)
 		cleanupControllerUpdateDocsStaging()
 		return 0, 0, 0
 	}
 	if !sameControllerUpdateBinaryIdentity(markerIdentity, currentIdentity) {
-		log.Printf("管理进程更新文档暂存标记与当前待更新文件不匹配, 跳过文档覆盖")
+		log.Printf(msg.ControllerUpdateDocsMarkerMismatchSkipDocsLog)
 		cleanupControllerUpdateDocsStaging()
 		return 0, 0, 0
 	}
@@ -403,7 +403,7 @@ func applyControllerUpdateStagedDocs() (int, int, int) {
 	walkErr := filepath.WalkDir(stagingDir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			failed++
-			log.Printf("读取管理进程更新文档暂存项失败: path=%s err=%v", path, walkErr)
+			log.Printf(msg.ReadControllerUpdateDocsStagingItemFailedLogFmt, path, walkErr)
 			return nil
 		}
 		if entry.IsDir() {
@@ -415,24 +415,24 @@ func applyControllerUpdateStagedDocs() (int, int, int) {
 		info, err := entry.Info()
 		if err != nil {
 			failed++
-			log.Printf("读取管理进程更新文档暂存项信息失败: path=%s err=%v", path, err)
+			log.Printf(msg.ReadControllerUpdateDocsStagingItemInfoFailedLogFmt, path, err)
 			return nil
 		}
 		if info.Mode()&os.ModeType != 0 {
 			failed++
-			log.Printf("跳过管理进程更新文档特殊文件: path=%s", path)
+			log.Printf(msg.SkipControllerUpdateDocsStagingSpecialFileLogFmt, path)
 			return nil
 		}
 		rel, err := filepath.Rel(stagingDir, path)
 		if err != nil {
 			failed++
-			log.Printf("计算管理进程更新文档相对路径失败: path=%s err=%v", path, err)
+			log.Printf(msg.ControllerUpdateDocsRelativePathFailedLogFmt, path, err)
 			return nil
 		}
 		relSlash := filepath.ToSlash(rel)
 		if _, ok := cleanControllerUpdateZipPath(relSlash); !ok || !isAllowedControllerUpdateDocPath(relSlash) {
 			failed++
-			log.Printf("跳过管理进程更新文档非法暂存路径: path=%s", relSlash)
+			log.Printf(msg.SkipControllerUpdateDocsInvalidStagingPathLogFmt, relSlash)
 			return nil
 		}
 		targetPath := filepath.Join(baseDir, filepath.FromSlash(relSlash))
@@ -440,21 +440,21 @@ func applyControllerUpdateStagedDocs() (int, int, int) {
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				skipped++
-				log.Printf("跳过不存在的管理进程更新文档目标: path=%s", targetPath)
+				log.Printf(msg.SkipMissingControllerUpdateDocsTargetLogFmt, targetPath)
 			} else {
 				failed++
-				log.Printf("检查管理进程更新文档目标失败: path=%s err=%v", targetPath, err)
+				log.Printf(msg.CheckControllerUpdateDocsTargetFailedLogFmt, targetPath, err)
 			}
 			return nil
 		}
 		if targetInfo.IsDir() || targetInfo.Mode()&os.ModeType != 0 {
 			failed++
-			log.Printf("跳过管理进程更新文档非普通目标文件: path=%s", targetPath)
+			log.Printf(msg.SkipControllerUpdateDocsNonRegularTargetLogFmt, targetPath)
 			return nil
 		}
 		if err := copyControllerUpdateDocFile(path, targetPath, targetInfo.Mode().Perm()); err != nil {
 			failed++
-			log.Printf("覆盖管理进程更新文档失败: source=%s target=%s err=%v", path, targetPath, err)
+			log.Printf(msg.OverwriteControllerUpdateDocsFailedLogFmt, path, targetPath, err)
 			return nil
 		}
 		applied++
@@ -462,10 +462,10 @@ func applyControllerUpdateStagedDocs() (int, int, int) {
 	})
 	if walkErr != nil {
 		failed++
-		log.Printf("遍历管理进程更新文档暂存目录失败: %v", walkErr)
+		log.Printf(msg.WalkControllerUpdateDocsStagingDirFailedLogFmt, walkErr)
 	}
 	cleanupControllerUpdateDocsStaging()
-	log.Printf("管理进程更新文档覆盖完成: applied=%d skipped=%d failed=%d", applied, skipped, failed)
+	log.Printf(msg.ControllerUpdateDocsApplyCompletedLogFmt, applied, skipped, failed)
 	return applied, skipped, failed
 }
 
@@ -684,7 +684,7 @@ func HandleApiControllerUpdateUploadChunk(w http.ResponseWriter, r *http.Request
 	}
 	chunkLock := getUploadChunkLock(session, index)
 	if chunkLock == nil {
-		web.WriteAPIError(w, http.StatusInternalServerError, msg.UploadSessionInvalid, errors.New("controller update upload chunk lock is nil"))
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.UploadSessionInvalid, errors.New(msg.ControllerUpdateUploadChunkLockNil))
 		return
 	}
 	chunkLock.Lock()
@@ -809,10 +809,10 @@ func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Requ
 	}
 	stagedDocCount, err := extractControllerUpdateDocsFromZip(session.StagePath, controllerUpdateDocsStagingDir())
 	if err != nil {
-		log.Printf("管理进程更新文档暂存失败, 将继续提交二进制更新: %v", err)
+		log.Printf(msg.ControllerUpdateDocsStagingFailedContinueLogFmt, err)
 		cleanupControllerUpdateDocsStaging()
 	} else {
-		log.Printf("管理进程更新文档暂存完成: count=%d", stagedDocCount)
+		log.Printf(msg.ControllerUpdateDocsStagingCompletedLogFmt, stagedDocCount)
 	}
 	docsStaged := err == nil
 	finalPath := controllerUpdateBinaryPath()
@@ -845,7 +845,7 @@ func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Requ
 	}
 	if docsStaged {
 		if err := writeControllerUpdateDocsMarker(finalPath); err != nil {
-			log.Printf("写入管理进程更新文档暂存标记失败, 将跳过本次文档覆盖: %v", err)
+			log.Printf(msg.WriteControllerUpdateDocsMarkerFailedSkipDocsLogFmt, err)
 			cleanupControllerUpdateDocsStaging()
 		}
 	}

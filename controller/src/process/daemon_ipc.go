@@ -58,25 +58,25 @@ const (
 )
 
 type daemonIPCRequest struct {
-	Type                      string `json:"-"`
-	ID                        uint64 `json:"id,omitempty"`
-	Msg                       string `json:"msg,omitempty"`
-	Debug                     bool   `json:"debug,omitempty"`
-	Instance                  string `json:"instance,omitempty"`
-	NewName                   string `json:"new_name,omitempty"`
-	Command                   string `json:"command,omitempty"`
-	CleanupCommand            string `json:"cleanup_command,omitempty"`
-	Path                      string `json:"path,omitempty"`
-	Terminal                  int    `json:"terminal,omitempty"`
-	InputEnc                  string `json:"input_encoding,omitempty"`
-	OutputEnc                 string `json:"output_encoding,omitempty"`
-	RuntimeCode               int    `json:"runtime_code,omitempty"`
-	Force                     bool   `json:"force,omitempty"`
-	Cols                      uint16 `json:"cols,omitempty"`
-	Rows                      uint16 `json:"rows,omitempty"`
-	ControllerShutdownPurpose string `json:"controller_shutdown_purpose,omitempty"`
-	BodyLen                   int    `json:"body_len,omitempty"`
-	Body                      []byte `json:"-"`
+	Type                      string   `json:"-"`
+	ID                        uint64   `json:"id,omitempty"`
+	Msg                       string   `json:"msg,omitempty"`
+	Debug                     bool     `json:"debug,omitempty"`
+	Instance                  string   `json:"instance,omitempty"`
+	NewName                   string   `json:"new_name,omitempty"`
+	CommandArgv               []string `json:"command_argv,omitempty"`
+	CleanupCommandArgv        []string `json:"cleanup_command_argv,omitempty"`
+	Path                      string   `json:"path,omitempty"`
+	Terminal                  int      `json:"terminal,omitempty"`
+	InputEnc                  string   `json:"input_encoding,omitempty"`
+	OutputEnc                 string   `json:"output_encoding,omitempty"`
+	RuntimeCode               int      `json:"runtime_code,omitempty"`
+	Force                     bool     `json:"force,omitempty"`
+	Cols                      uint16   `json:"cols,omitempty"`
+	Rows                      uint16   `json:"rows,omitempty"`
+	ControllerShutdownPurpose string   `json:"controller_shutdown_purpose,omitempty"`
+	BodyLen                   int      `json:"body_len,omitempty"`
+	Body                      []byte   `json:"-"`
 }
 
 type daemonIPCResponse struct {
@@ -402,14 +402,6 @@ func handleDaemonInstanceOutputFrame(instanceName string, data []byte) {
 	HandleDaemonInstanceOutput(instanceName, data)
 }
 
-func queueDaemonInstanceOutput(instanceName string, data []byte) {
-	if instanceName == "" || len(data) == 0 {
-		putDaemonOutputBuffer(data)
-		return
-	}
-	handleDaemonInstanceOutputFrame(instanceName, data)
-}
-
 func daemonRequest(req daemonIPCRequest) (daemonIPCResponse, error) {
 	client := daemonClient
 	if client == nil {
@@ -504,16 +496,16 @@ func RenameDaemonInstance(oldName string, newName string) error {
 	return err
 }
 
-func startDaemonInstance(insName string, command string, cleanupCommand string, path string, terminal int, inputEnc string, outputEnc string, cols uint16, rows uint16) (*DaemonRuntimeState, error) {
-	resp, err := daemonRequest(daemonIPCRequest{Type: "start_instance", Instance: insName, Command: command, CleanupCommand: cleanupCommand, Path: path, Terminal: terminal, InputEnc: inputEnc, OutputEnc: outputEnc, Cols: cols, Rows: rows})
+func startDaemonInstance(insName string, commandArgv []string, cleanupCommandArgv []string, path string, terminal int, inputEnc string, outputEnc string, cols uint16, rows uint16) (*DaemonRuntimeState, error) {
+	resp, err := daemonRequest(daemonIPCRequest{Type: "start_instance", Instance: insName, CommandArgv: commandArgv, CleanupCommandArgv: cleanupCommandArgv, Path: path, Terminal: terminal, InputEnc: inputEnc, OutputEnc: outputEnc, Cols: cols, Rows: rows})
 	if err != nil {
 		return nil, err
 	}
 	return resp.State, nil
 }
 
-func UpdateDaemonInstanceConfig(insName string, cleanupCommand string) error {
-	_, err := daemonRequest(daemonIPCRequest{Type: "update_instance_config", Instance: insName, CleanupCommand: cleanupCommand})
+func UpdateDaemonInstanceConfig(insName string, cleanupCommandArgv []string) error {
+	_, err := daemonRequest(daemonIPCRequest{Type: "update_instance_config", Instance: insName, CleanupCommandArgv: cleanupCommandArgv})
 	return err
 }
 

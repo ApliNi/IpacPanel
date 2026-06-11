@@ -13,7 +13,6 @@ import (
 	"syscall"
 
 	"github.com/creack/pty"
-	"github.com/kballard/go-shellquote"
 )
 
 const (
@@ -35,8 +34,8 @@ type Proxy struct {
 	killCalled   bool
 }
 
-func Start(path string, command string, usePTY bool, inputEncoding string, outputEncoding string, cols uint16, rows uint16) (*Proxy, error) {
-	cmd, err := buildUnixCommand(path, command)
+func Start(path string, argv []string, usePTY bool, inputEncoding string, outputEncoding string, cols uint16, rows uint16) (*Proxy, error) {
+	cmd, err := buildUnixCommand(path, argv)
 	if err != nil {
 		return nil, err
 	}
@@ -100,28 +99,23 @@ func normalizePTYSize(cols uint16, rows uint16) (uint16, uint16) {
 	return cols, rows
 }
 
-func buildUnixCommand(path string, command string) (*exec.Cmd, error) {
+func buildUnixCommand(path string, argv []string) (*exec.Cmd, error) {
 	var cmd *exec.Cmd
-	if command == "" {
-		cmd = exec.Command("sh")
-	} else {
-		args, err := shellquote.Split(command)
-		if err != nil {
-			return nil, err
-		}
-		if len(args) == 0 {
-			return nil, errors.New("command is empty")
-		}
-		cmd = exec.Command(args[0], args[1:]...)
+	if len(argv) == 0 {
+		return nil, errors.New("command is empty")
 	}
+	if argv[0] == "" {
+		return nil, errors.New("command is empty")
+	}
+	cmd = exec.Command(argv[0], argv[1:]...)
 	if path != "" {
 		cmd.Dir = path
 	}
 	return cmd, nil
 }
 
-func BuildCommand(path string, command string) (*exec.Cmd, error) {
-	return buildUnixCommand(path, command)
+func BuildCommand(path string, argv []string) (*exec.Cmd, error) {
+	return buildUnixCommand(path, argv)
 }
 
 func startUnixPTY(cmd *exec.Cmd, cols uint16, rows uint16) (*Proxy, error) {

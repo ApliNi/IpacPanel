@@ -159,7 +159,6 @@ type startReservation struct {
 
 type preparedStart struct {
 	state     *DaemonRuntimeState
-	warning   []byte
 	startTime time.Time
 }
 
@@ -939,7 +938,15 @@ func (sp *InstanceProcess) prepareStart(reserved *startReservation) (*preparedSt
 		sp.appendAndBroadcastLocked(websocket.BinaryMessage, BuildNormalTerminalSystemMessage(msg.StartingInstance), reserved.historyLimit)
 	}
 	sp.Mu.Unlock()
-	state, err := startDaemonInstance(reserved.ins.Name, reserved.ins.Command, reserved.ins.CleanupCommand, resolvedPath, reserved.ins.Terminal, reserved.ins.InputEncoding, reserved.ins.OutputEncoding, reserved.cols, reserved.rows)
+	commandArgv, err := CompileInstanceCommandArgv(reserved.ins.Command, resolvedPath, reserved.ins.Terminal)
+	if err != nil {
+		return nil, err
+	}
+	cleanupCommandArgv, err := CompileInstanceCleanupCommandArgv(reserved.ins.CleanupCommand, resolvedPath)
+	if err != nil {
+		return nil, err
+	}
+	state, err := startDaemonInstance(reserved.ins.Name, commandArgv, cleanupCommandArgv, resolvedPath, reserved.ins.Terminal, reserved.ins.InputEncoding, reserved.ins.OutputEncoding, reserved.cols, reserved.rows)
 	if err != nil {
 		return nil, err
 	}
@@ -972,9 +979,6 @@ func (sp *InstanceProcess) commitPreparedStartLocked(reserved *startReservation,
 	if cfg.IsPTYTerminal(reserved.ins.Terminal) {
 		sp.TerminalStartupProtecting = true
 		sp.TerminalStartupPendingEscape = nil
-	}
-	if len(prepared.warning) > 0 {
-		sp.appendHistoryLocked(prepared.warning, reserved.historyLimit)
 	}
 	NotifyInstanceStatusChanged(reserved.ins.Name)
 	return proxySeq, true

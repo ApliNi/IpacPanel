@@ -280,7 +280,7 @@ func decodeOptionalJSONBody(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	if len(body) > 1<<20 {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.RequestBodyTooLarge, errors.New("request body exceeds 1048576 bytes"))
+		web.WriteAPIError(w, http.StatusBadRequest, msg.RequestBodyTooLarge, errors.New(msg.RequestBodyExceedsBytes))
 		return false
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
@@ -296,7 +296,7 @@ func decodeOptionalJSONBody(w http.ResponseWriter, r *http.Request) bool {
 	var extra struct{}
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err == nil {
-			err = errors.New("request body contains multiple JSON values")
+			err = errors.New(msg.RequestBodyMultipleJSONValues)
 		}
 		web.WriteAPIError(w, http.StatusBadRequest, msg.InvalidRequestBody, err)
 		return false

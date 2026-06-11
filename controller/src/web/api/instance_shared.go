@@ -133,7 +133,15 @@ func buildInstanceUpdateMutationPlan(name string, req cfg.Instance) (cfg.Mutatio
 		})
 	}
 	plan.AddPostCommit(msg.SyncDaemonInstanceRuntimeConfig, func() error {
-		return process.UpdateDaemonInstanceConfig(req.Name, req.CleanupCommand)
+		resolvedPath, err := cfg.ResolveInstancePath(req.Path)
+		if err != nil {
+			return err
+		}
+		cleanupCommandArgv, err := process.CompileInstanceCleanupCommandArgv(req.CleanupCommand, resolvedPath)
+		if err != nil {
+			return err
+		}
+		return process.UpdateDaemonInstanceConfig(req.Name, cleanupCommandArgv)
 	})
 	plan.AddPostCommit(msg.RebuildInstanceTasks, func() error {
 		return process.RebuildInstanceTasks(req.Name)

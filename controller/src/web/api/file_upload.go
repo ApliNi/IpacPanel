@@ -1481,7 +1481,7 @@ func HandleApiFileUploadChunk(w http.ResponseWriter, r *http.Request) {
 
 	chunkLock := getUploadChunkLock(session, index)
 	if chunkLock == nil {
-		web.WriteAPIError(w, http.StatusInternalServerError, msg.UploadSessionInvalid, errors.New("upload chunk lock is nil"))
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.UploadSessionInvalid, errors.New(msg.UploadChunkLockNil))
 		return
 	}
 	chunkLock.Lock()

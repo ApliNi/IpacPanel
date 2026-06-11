@@ -39,7 +39,7 @@ func waitControllerServerExit(serverErrCh <-chan error) error {
 		}
 		return err
 	case <-time.After(2 * time.Second):
-		log.Printf("wait controller server exit timeout after shutdown")
+		log.Print(msg.WaitControllerServerExitTimeoutAfterShutdownLog)
 		return nil
 	}
 }
@@ -332,10 +332,10 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 		shutdownErr := server.Shutdown(ctx)
 		cancel()
 		if errors.Is(shutdownErr, context.DeadlineExceeded) {
-			log.Printf("controller shutdown timeout, forcing server close: %v", shutdownErr)
+			log.Printf(msg.ControllerShutdownTimeoutForceCloseLogFmt, shutdownErr)
 			closeErr := server.Close()
 			if !isExpectedControllerServerCloseError(closeErr) {
-				shutdownErr = fmt.Errorf("force close controller server after shutdown timeout: %w", closeErr)
+				shutdownErr = fmt.Errorf(msg.ForceCloseControllerServerAfterShutdownTimeoutFailedFmt, closeErr)
 			} else {
 				shutdownErr = nil
 			}

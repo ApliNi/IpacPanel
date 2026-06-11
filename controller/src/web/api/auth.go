@@ -1,9 +1,9 @@
 package api
 
 import (
-	"errors"
 	"IpacPanel/controller/src/msg"
 	"IpacPanel/controller/src/web/authz"
+	"errors"
 	"math/rand"
 	"net/http"
 	"strings"
@@ -122,7 +122,7 @@ func HandleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
 	csrfToken, err := authz.DefaultRuntime.Cookies.EnsureCSRFCookie(w, r)
 	if err != nil || csrfToken == "" {
 		if err == nil {
-			err = errors.New("generated CSRF token is empty")
+			err = errors.New(msg.GeneratedCSRFTokenEmpty)
 		}
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.GenerateCSRFTokenFailed, err)
 		return

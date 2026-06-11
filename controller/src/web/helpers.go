@@ -70,11 +70,11 @@ func RequireAccessibleInstanceNameByName(w http.ResponseWriter, authedUser *cfg.
 
 func DecodeJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}, options ...DecodeJSONBodyOption) bool {
 	if dst == nil {
-		WriteAPIError(w, http.StatusBadRequest, msg.InvalidRequestBody, errors.New("json decode destination is nil"))
+		WriteAPIError(w, http.StatusBadRequest, msg.InvalidRequestBody, errors.New(msg.JSONDecodeDestinationNil))
 		return false
 	}
 	if r == nil || r.Body == nil {
-		WriteAPIError(w, http.StatusBadRequest, msg.InvalidRequestBody, errors.New("request body is nil"))
+		WriteAPIError(w, http.StatusBadRequest, msg.InvalidRequestBody, errors.New(msg.RequestBodyNil))
 		return false
 	}
 	config := decodeJSONBodyConfig{bodyLimit: defaultJSONBodyLimit}
@@ -95,7 +95,7 @@ func DecodeJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}, opt
 	var extra struct{}
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			err = errors.New("request body contains multiple JSON values")
+			err = errors.New(msg.RequestBodyMultipleJSONValues)
 		}
 		WriteAPIError(w, http.StatusBadRequest, msg.InvalidRequestBody, err)
 		return false

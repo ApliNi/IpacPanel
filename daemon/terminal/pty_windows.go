@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/UserExistsError/conpty"
-	"github.com/kballard/go-shellquote"
 )
 
 type windowsCommand struct {
@@ -69,20 +68,14 @@ func normalizeWindowsPath(path string) string {
 	return filepath.Clean(path)
 }
 
-func buildWindowsCommand(path string, command string) (*windowsCommand, error) {
-	command = strings.TrimSpace(command)
-	if command == "" {
-		args := []string{"cmd.exe"}
-		return &windowsCommand{args: args, commandLine: windowsCommandLine(args)}, nil
-	}
-
-	args, err := shellquote.Split(command)
-	if err != nil {
-		return nil, err
-	}
-	if len(args) == 0 {
+func buildWindowsCommand(path string, argv []string) (*windowsCommand, error) {
+	if len(argv) == 0 {
 		return nil, errors.New("command is empty")
 	}
+	if argv[0] == "" {
+		return nil, errors.New("command is empty")
+	}
+	args := append([]string(nil), argv...)
 
 	resolved, err := resolveWindowsExecutable(path, args[0])
 	if err != nil {
@@ -90,22 +83,13 @@ func buildWindowsCommand(path string, command string) (*windowsCommand, error) {
 	}
 	args[0] = resolved
 
-	switch strings.ToLower(filepath.Ext(resolved)) {
-	case ".bat", ".cmd":
-		cmdArgs := []string{"cmd.exe", "/d", "/s", "/c", windowsCommandLine(args)}
-		return &windowsCommand{args: cmdArgs, commandLine: windowsCommandLine(cmdArgs)}, nil
-	}
-
 	return &windowsCommand{args: args, commandLine: windowsCommandLine(args)}, nil
 }
 
-func BuildCommand(path string, command string) (*exec.Cmd, error) {
-	resolved, err := buildWindowsCommand(path, command)
+func BuildCommand(path string, argv []string) (*exec.Cmd, error) {
+	resolved, err := buildWindowsCommand(path, argv)
 	if err != nil {
 		return nil, err
-	}
-	if len(resolved.args) == 0 {
-		return nil, errors.New("command is empty")
 	}
 	cmd := exec.Command(resolved.args[0], resolved.args[1:]...)
 	if path = normalizeWindowsPath(path); path != "" {
@@ -141,7 +125,10 @@ func resolveWindowsExecutable(path string, entry string) (string, error) {
 		}
 	}
 
-	return exec.LookPath(entry)
+	if filepath.Ext(entry) != "" {
+		return exec.LookPath(entry)
+	}
+	return "", fmt.Errorf("executable file not found in %%PATH%%: %s", entry)
 }
 
 func resolveWindowsPathEntry(entry string) (string, error) {
@@ -175,22 +162,9 @@ func windowsExecutableCandidates(entry string) []string {
 		return []string{entry}
 	}
 
-	pathExt := strings.TrimSpace(os.Getenv("PATHEXT"))
-	if pathExt == "" {
-		pathExt = ".COM;.EXE;.BAT;.CMD"
-	}
-
-	parts := strings.Split(pathExt, ";")
-	candidates := make([]string, 0, len(parts))
+	candidates := make([]string, 0, 2)
 	seen := map[string]struct{}{}
-	for _, part := range parts {
-		ext := strings.TrimSpace(part)
-		if ext == "" {
-			continue
-		}
-		if !strings.HasPrefix(ext, ".") {
-			ext = "." + ext
-		}
+	for _, ext := range []string{".COM", ".EXE"} {
 		candidate := entry + ext
 		key := strings.ToLower(candidate)
 		if _, ok := seen[key]; ok {
@@ -210,7 +184,7 @@ func windowsCommandLine(args []string) string {
 	return strings.Join(parts, " ")
 }
 
-func Start(path string, command string, usePTY bool, inputEncoding string, outputEncoding string, cols uint16, rows uint16) (*Proxy, error) {
+func Start(path string, argv []string, usePTY bool, inputEncoding string, outputEncoding string, cols uint16, rows uint16) (*Proxy, error) {
 	if _, ok := NormalizeTerminalEncoding(inputEncoding); !ok {
 		return nil, errors.New("terminal encoding is invalid")
 	}
@@ -222,9 +196,9 @@ func Start(path string, command string, usePTY bool, inputEncoding string, outpu
 	var proxy *Proxy
 	var err error
 	if usePTY {
-		proxy, err = startWindowsPTY(path, command, cols, rows)
+		proxy, err = startWindowsPTY(path, argv, cols, rows)
 	} else {
-		proxy, err = startWindowsPipe(path, command)
+		proxy, err = startWindowsPipe(path, argv)
 	}
 	if err != nil {
 		return nil, err
@@ -243,8 +217,8 @@ func Start(path string, command string, usePTY bool, inputEncoding string, outpu
 	return proxy, nil
 }
 
-func startWindowsPTY(path string, command string, cols uint16, rows uint16) (*Proxy, error) {
-	cmd, err := buildWindowsCommand(path, command)
+func startWindowsPTY(path string, argv []string, cols uint16, rows uint16) (*Proxy, error) {
+	cmd, err := buildWindowsCommand(path, argv)
 	if err != nil {
 		return nil, err
 	}
@@ -307,8 +281,8 @@ func normalizePTYSize(cols uint16, rows uint16) (uint16, uint16) {
 	return cols, rows
 }
 
-func startWindowsPipe(path string, command string) (*Proxy, error) {
-	cmd, err := BuildCommand(path, command)
+func startWindowsPipe(path string, argv []string) (*Proxy, error) {
+	cmd, err := BuildCommand(path, argv)
 	if err != nil {
 		return nil, err
 	}

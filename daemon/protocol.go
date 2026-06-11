@@ -24,25 +24,25 @@ const (
 )
 
 type IPCRequest struct {
-	Type                      string `json:"-"`
-	ID                        uint64 `json:"id,omitempty"`
-	Msg                       string `json:"msg,omitempty"`
-	Debug                     bool   `json:"debug,omitempty"`
-	Instance                  string `json:"instance,omitempty"`
-	NewName                   string `json:"new_name,omitempty"`
-	Command                   string `json:"command,omitempty"`
-	CleanupCommand            string `json:"cleanup_command,omitempty"`
-	Path                      string `json:"path,omitempty"`
-	Terminal                  int    `json:"terminal,omitempty"`
-	InputEnc                  string `json:"input_encoding,omitempty"`
-	OutputEnc                 string `json:"output_encoding,omitempty"`
-	RuntimeCode               int    `json:"runtime_code,omitempty"`
-	Force                     bool   `json:"force,omitempty"`
-	Cols                      uint16 `json:"cols,omitempty"`
-	Rows                      uint16 `json:"rows,omitempty"`
-	ControllerShutdownPurpose string `json:"controller_shutdown_purpose,omitempty"`
-	BodyLen                   int    `json:"body_len,omitempty"`
-	Data                      []byte `json:"-"`
+	Type                      string   `json:"-"`
+	ID                        uint64   `json:"id,omitempty"`
+	Msg                       string   `json:"msg,omitempty"`
+	Debug                     bool     `json:"debug,omitempty"`
+	Instance                  string   `json:"instance,omitempty"`
+	NewName                   string   `json:"new_name,omitempty"`
+	CommandArgv               []string `json:"command_argv,omitempty"`
+	CleanupCommandArgv        []string `json:"cleanup_command_argv,omitempty"`
+	Path                      string   `json:"path,omitempty"`
+	Terminal                  int      `json:"terminal,omitempty"`
+	InputEnc                  string   `json:"input_encoding,omitempty"`
+	OutputEnc                 string   `json:"output_encoding,omitempty"`
+	RuntimeCode               int      `json:"runtime_code,omitempty"`
+	Force                     bool     `json:"force,omitempty"`
+	Cols                      uint16   `json:"cols,omitempty"`
+	Rows                      uint16   `json:"rows,omitempty"`
+	ControllerShutdownPurpose string   `json:"controller_shutdown_purpose,omitempty"`
+	BodyLen                   int      `json:"body_len,omitempty"`
+	Data                      []byte   `json:"-"`
 }
 
 type IPCResponse struct {

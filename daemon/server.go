@@ -2,7 +2,10 @@ package main
 
 import (
 	"IpacPanel/daemon/version"
+	"errors"
+	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -372,13 +375,51 @@ func (s *IPCServer) ConsumeControllerUpdateRestartPending() bool {
 	return s.controllerUpdateRestartPending.CompareAndSwap(true, false)
 }
 
+func validateDaemonCommandArgv(argv []string) error {
+	if len(argv) == 0 {
+		return errors.New("command required")
+	}
+	return validateDaemonOptionalArgv(argv, "command_argv")
+}
+
+func validateDaemonOptionalArgv(argv []string, field string) error {
+	if len(argv) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(argv[0]) == "" {
+		return fmt.Errorf("%s[0] required", field)
+	}
+	for index, arg := range argv {
+		if hasNULByte(arg) {
+			return fmt.Errorf("%s[%d] contains NUL", field, index)
+		}
+	}
+	return nil
+}
+
+func hasNULByte(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *IPCServer) handleStartInstance(req *IPCRequest) *IPCResponse {
 	if req.Instance == "" {
 		resp := NewIPCResponse("instance_error", "", nil, "instance required")
 		return &resp
 	}
-	if req.Command == "" {
+	if err := validateDaemonCommandArgv(req.CommandArgv); err != nil {
 		resp := NewIPCResponse("instance_error", req.Instance, nil, "command required")
+		if err.Error() != "command required" {
+			resp.Error = err.Error()
+		}
+		return &resp
+	}
+	if err := validateDaemonOptionalArgv(req.CleanupCommandArgv, "cleanup_command_argv"); err != nil {
+		resp := NewIPCResponse("instance_error", req.Instance, nil, err.Error())
 		return &resp
 	}
 
@@ -441,7 +482,11 @@ func (s *IPCServer) handleUpdateInstanceConfig(req *IPCRequest) *IPCResponse {
 		resp := NewIPCResponse("ok", req.Instance, nil, "")
 		return &resp
 	}
-	ins.UpdateRuntimeConfig(req.CleanupCommand)
+	if err := validateDaemonOptionalArgv(req.CleanupCommandArgv, "cleanup_command_argv"); err != nil {
+		resp := NewIPCResponse("instance_error", req.Instance, nil, err.Error())
+		return &resp
+	}
+	ins.UpdateRuntimeConfig(req.CleanupCommandArgv)
 	resp := NewIPCResponse("ok", req.Instance, nil, "")
 	return &resp
 }

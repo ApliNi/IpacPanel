@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -56,29 +57,29 @@ const (
 )
 
 type DaemonInstance struct {
-	Name           string
-	Command        string
-	CleanupCommand string
-	Path           string
-	Terminal       int
-	InputEnc       string
-	OutputEnc      string
-	Cols           uint16
-	Rows           uint16
-	State          instanceState
-	Runtime        InstanceRuntimeState
-	Proxy          *terminal.Proxy
-	Cmd            *exec.Cmd
-	ProcessTree    *terminal.ProcessTree
-	CleanupCmd     *exec.Cmd
-	CleanupTree    *terminal.ProcessTree
-	DevNull        *os.File
-	OutputCh       chan<- IPCResponse
-	runtimeID      string
-	proxySeq       uint64
-	outputDone     chan struct{}
-	skipCleanup    bool
-	Mu             sync.Mutex
+	Name               string
+	CommandArgv        []string
+	CleanupCommandArgv []string
+	Path               string
+	Terminal           int
+	InputEnc           string
+	OutputEnc          string
+	Cols               uint16
+	Rows               uint16
+	State              instanceState
+	Runtime            InstanceRuntimeState
+	Proxy              *terminal.Proxy
+	Cmd                *exec.Cmd
+	ProcessTree        *terminal.ProcessTree
+	CleanupCmd         *exec.Cmd
+	CleanupTree        *terminal.ProcessTree
+	DevNull            *os.File
+	OutputCh           chan<- IPCResponse
+	runtimeID          string
+	proxySeq           uint64
+	outputDone         chan struct{}
+	skipCleanup        bool
+	Mu                 sync.Mutex
 }
 
 func instanceLifecycle(state instanceState) string {
@@ -110,12 +111,6 @@ func (m *InstanceManager) Get(name string) (*DaemonInstance, bool) {
 	defer m.Mu.RUnlock()
 	ins, ok := m.instances[name]
 	return ins, ok
-}
-
-func (m *InstanceManager) Set(name string, ins *DaemonInstance) {
-	m.Mu.Lock()
-	defer m.Mu.Unlock()
-	m.instances[name] = ins
 }
 
 func (m *InstanceManager) Delete(name string) {
@@ -182,8 +177,8 @@ func (m *InstanceManager) prepareInstanceForStartLocked(req *IPCRequest) *Daemon
 	}
 	ins.Mu.Lock()
 	ins.Name = req.Instance
-	ins.Command = req.Command
-	ins.CleanupCommand = strings.TrimSpace(req.CleanupCommand)
+	ins.CommandArgv = slices.Clone(req.CommandArgv)
+	ins.CleanupCommandArgv = slices.Clone(req.CleanupCommandArgv)
 	ins.Path = req.Path
 	ins.Terminal = NormalizeTerminalMode(req.Terminal)
 	ins.InputEnc = req.InputEnc
@@ -197,10 +192,10 @@ func (m *InstanceManager) prepareInstanceForStartLocked(req *IPCRequest) *Daemon
 	return ins
 }
 
-func (ins *DaemonInstance) UpdateRuntimeConfig(cleanupCommand string) {
+func (ins *DaemonInstance) UpdateRuntimeConfig(cleanupCommandArgv []string) {
 	ins.Mu.Lock()
 	defer ins.Mu.Unlock()
-	ins.CleanupCommand = strings.TrimSpace(cleanupCommand)
+	ins.CleanupCommandArgv = slices.Clone(cleanupCommandArgv)
 }
 
 func (ins *DaemonInstance) RuntimeSnapshot() InstanceRuntimeState {
@@ -253,7 +248,7 @@ func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse) error {
 	var devNull *os.File
 	var pid int
 	if IsNoTerminal(ins.Terminal) {
-		cmd, processTree, devNull, err = startNoTerminalProcess(resolvedPath, ins.Command)
+		cmd, processTree, devNull, err = startNoTerminalProcess(resolvedPath, ins.CommandArgv)
 		if err != nil {
 			return fmt.Errorf("start instance: %w", err)
 		}
@@ -261,7 +256,7 @@ func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse) error {
 			pid = cmd.Process.Pid
 		}
 	} else {
-		proxy, err = terminal.Start(resolvedPath, ins.Command, IsPTYTerminal(ins.Terminal), ins.InputEnc, ins.OutputEnc, ins.Cols, ins.Rows)
+		proxy, err = terminal.Start(resolvedPath, ins.CommandArgv, IsPTYTerminal(ins.Terminal), ins.InputEnc, ins.OutputEnc, ins.Cols, ins.Rows)
 		if err != nil {
 			return fmt.Errorf("start instance: %w", err)
 		}
@@ -309,8 +304,8 @@ func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse) error {
 	return nil
 }
 
-func startNoTerminalProcess(path string, command string) (*exec.Cmd, *terminal.ProcessTree, *os.File, error) {
-	cmd, err := terminal.BuildCommand(path, command)
+func startNoTerminalProcess(path string, argv []string) (*exec.Cmd, *terminal.ProcessTree, *os.File, error) {
+	cmd, err := terminal.BuildCommand(path, argv)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -609,9 +604,9 @@ func (ins *DaemonInstance) finishProcessExit(proxy *terminal.Proxy, cmd *exec.Cm
 	if runtimeID == "" {
 		runtimeID = ins.Runtime.InstanceName
 	}
-	cleanupCommand := strings.TrimSpace(ins.CleanupCommand)
+	cleanupArgv := slices.Clone(ins.CleanupCommandArgv)
 	cleanupPath := ins.Path
-	shouldCleanup := cleanupCommand != "" && !ins.skipCleanup && ins.Runtime.RuntimeCode != RuntimeCodeManualKill
+	shouldCleanup := len(cleanupArgv) > 0 && !ins.skipCleanup && ins.Runtime.RuntimeCode != RuntimeCodeManualKill
 	if shouldCleanup {
 		ins.State = instanceCleaning
 		ins.Runtime.Lifecycle = InstanceLifecycleCleaning
@@ -622,7 +617,7 @@ func (ins *DaemonInstance) finishProcessExit(proxy *terminal.Proxy, cmd *exec.Cm
 			_ = devNull.Close()
 		}
 		cleanupProcessTree(runtimeID, processTree, "instance exit before cleanup command")
-		ins.runCleanupCommand(cleanupPath, cleanupCommand, outputCh, runtimeID)
+		ins.runCleanupCommand(cleanupPath, cleanupArgv, outputCh, runtimeID)
 		ins.finishCleanupExit(proxySeq, runtime)
 		return
 	}
@@ -661,8 +656,11 @@ func waitDaemonOutputDone(runtimeID string, done <-chan struct{}) {
 	}
 }
 
-func (ins *DaemonInstance) runCleanupCommand(path string, command string, outputCh chan<- IPCResponse, runtimeID string) {
-	cmd, err := terminal.BuildCommand(path, command)
+func (ins *DaemonInstance) runCleanupCommand(path string, argv []string, outputCh chan<- IPCResponse, runtimeID string) {
+	if len(argv) == 0 {
+		return
+	}
+	cmd, err := terminal.BuildCommand(path, argv)
 	if err != nil {
 		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageBuildFailed, err.Error())
 		return

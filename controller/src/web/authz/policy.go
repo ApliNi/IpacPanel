@@ -92,20 +92,20 @@ func (p RoutePolicy) Validate() error {
 	switch p.Kind {
 	case RouteKindWebSocket:
 		if len(p.Methods) != 1 || p.Methods[0] != http.MethodGet {
-			return fmt.Errorf("%s: websocket route must only allow GET", msg.RouteKindPolicyInvalid)
+			return fmt.Errorf("%s: %s", msg.RouteKindPolicyInvalid, msg.RouteWebSocketMustOnlyAllowGET)
 		}
 		if p.CSRF != CSRFModeWebSocketProtocol {
-			return fmt.Errorf("%s: websocket route must use websocket CSRF", msg.RouteCSRFPolicyInvalid)
+			return fmt.Errorf("%s: %s", msg.RouteCSRFPolicyInvalid, msg.RouteWebSocketMustUseWebSocketCSRF)
 		}
 		if p.Origin != OriginModeWebSocket {
-			return fmt.Errorf("%s: websocket route must use websocket origin", msg.RouteOriginPolicyInvalid)
+			return fmt.Errorf("%s: %s", msg.RouteOriginPolicyInvalid, msg.RouteWebSocketMustUseWebSocketOrigin)
 		}
 	case RouteKindAPI, RouteKindSSE:
 		if p.CSRF == CSRFModeWebSocketProtocol {
-			return fmt.Errorf("%s: api/sse route cannot use websocket CSRF", msg.RouteCSRFPolicyInvalid)
+			return fmt.Errorf("%s: %s", msg.RouteCSRFPolicyInvalid, msg.RouteAPISSECannotUseWebSocketCSRF)
 		}
 		if p.Origin == OriginModeWebSocket {
-			return fmt.Errorf("%s: api/sse route cannot use websocket origin", msg.RouteOriginPolicyInvalid)
+			return fmt.Errorf("%s: %s", msg.RouteOriginPolicyInvalid, msg.RouteAPISSECannotUseWebSocketOrigin)
 		}
 	}
 	return nil
@@ -113,7 +113,7 @@ func (p RoutePolicy) Validate() error {
 
 func validateRouteMethods(methods []string) error {
 	if len(methods) == 0 {
-		return fmt.Errorf("%s: route must declare at least one method", msg.MethodNotAllowed)
+		return fmt.Errorf("%s: %s", msg.MethodNotAllowed, msg.RouteMustDeclareMethod)
 	}
 	seen := make(map[string]struct{}, len(methods))
 	for _, method := range methods {
@@ -123,7 +123,7 @@ func validateRouteMethods(methods []string) error {
 			return fmt.Errorf("%s: %s", msg.MethodNotAllowed, method)
 		}
 		if _, ok := seen[method]; ok {
-			return fmt.Errorf("%s: duplicate method %s", msg.MethodNotAllowed, method)
+			return fmt.Errorf("%s: "+msg.DuplicateMethodFmt, msg.MethodNotAllowed, method)
 		}
 		seen[method] = struct{}{}
 	}
@@ -184,7 +184,7 @@ func Guard(w http.ResponseWriter, r *http.Request, config GuardConfig) (*http.Re
 			return nil, false
 		}
 	default:
-		writeGuardError(config.ErrorWriter, w, http.StatusInternalServerError, msg.RouteAuthPolicyInvalid, fmt.Errorf("invalid route auth policy: %s", policy.Auth))
+		writeGuardError(config.ErrorWriter, w, http.StatusInternalServerError, msg.RouteAuthPolicyInvalid, fmt.Errorf(msg.InvalidRouteAuthPolicyFmt, policy.Auth))
 		return nil, false
 	}
 	if authenticated {
@@ -281,7 +281,7 @@ func validateOrigin(w http.ResponseWriter, r *http.Request, mode OriginMode, con
 		writeGuardError(config.ErrorWriter, w, http.StatusForbidden, msg.SameOriginValidationFailed, nil)
 		return nil, false
 	default:
-		writeGuardError(config.ErrorWriter, w, http.StatusInternalServerError, msg.RouteOriginPolicyInvalid, fmt.Errorf("invalid route origin policy: %s", mode))
+		writeGuardError(config.ErrorWriter, w, http.StatusInternalServerError, msg.RouteOriginPolicyInvalid, fmt.Errorf(msg.InvalidRouteOriginPolicyFmt, mode))
 		return nil, false
 	}
 }
@@ -308,18 +308,18 @@ func validateCSRF(w http.ResponseWriter, r *http.Request, mode CSRFMode, authent
 	case CSRFModeWebSocketProtocol:
 		instance, token, selectedProtocol, err := csrfValidator(config).ParseTerminalWebSocketSubprotocolParams(r)
 		if err != nil {
-			log.Printf("route_kind=ws action=parse_subprotocol error=%q detail=%q", msg.CSRFValidationFailed, err.Error())
+			log.Printf(msg.WSParseSubprotocolFailedLogFmt, msg.CSRFValidationFailed, err.Error())
 			writeGuardError(config.ErrorWriter, w, http.StatusForbidden, msg.CSRFValidationFailed, err)
 			return nil, false
 		}
 		if csrfValidator(config).ValidateWebSocketTokenExact(r, token) {
 			return RequestWithTerminalWebSocketParams(r, TerminalWebSocketParams{Instance: instance, SelectedProtocol: selectedProtocol}), true
 		}
-		log.Printf("route_kind=ws action=validate_csrf error=%q", msg.CSRFValidationFailed)
+		log.Printf(msg.WSValidateCSRFFailedLogFmt, msg.CSRFValidationFailed)
 		writeGuardError(config.ErrorWriter, w, http.StatusForbidden, msg.CSRFValidationFailed, nil)
 		return nil, false
 	default:
-		writeGuardError(config.ErrorWriter, w, http.StatusInternalServerError, msg.RouteCSRFPolicyInvalid, fmt.Errorf("invalid route CSRF policy: %s", mode))
+		writeGuardError(config.ErrorWriter, w, http.StatusInternalServerError, msg.RouteCSRFPolicyInvalid, fmt.Errorf(msg.InvalidRouteCSRFPolicyFmt, mode))
 		return nil, false
 	}
 }

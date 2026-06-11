@@ -59,26 +59,26 @@ func (v *CSRFValidator) ValidateToken(r *http.Request, token string) bool {
 
 func (v *CSRFValidator) ParseTerminalWebSocketSubprotocolParams(r *http.Request) (string, string, string, error) {
 	if r == nil {
-		return "", "", "", errors.New("websocket subprotocol request is nil")
+		return "", "", "", errors.New(msg.WebSocketSubprotocolRequestNil)
 	}
 	headerValues := r.Header.Values("Sec-WebSocket-Protocol")
 	if len(headerValues) != 1 {
-		return "", "", "", errors.New("websocket subprotocol must have exactly one header value")
+		return "", "", "", errors.New(msg.WebSocketSubprotocolHeaderCountInvalid)
 	}
 	header := strings.TrimSpace(headerValues[0])
 	if header == "" {
-		return "", "", "", errors.New("websocket subprotocol header is empty")
+		return "", "", "", errors.New(msg.WebSocketSubprotocolHeaderEmpty)
 	}
 
 	var selectedProtocol string
 	for _, raw := range strings.Split(header, ",") {
 		token := strings.TrimSpace(raw)
 		if token == "" || len(token) > maxTerminalWebSocketSubprotocolLength || !isRawBase64URLToken(token) {
-			return "", "", "", errors.New("websocket subprotocol token is invalid")
+			return "", "", "", errors.New(msg.WebSocketSubprotocolTokenInvalid)
 		}
 		if selectedProtocol != "" {
 			// 当前终端握手设计只接受单个子协议 token, 多 token 明确失败。
-			return "", "", "", errors.New("websocket subprotocol has multiple tokens")
+			return "", "", "", errors.New(msg.WebSocketSubprotocolTokenMultiple)
 		}
 		selectedProtocol = token
 	}
@@ -94,7 +94,7 @@ func (v *CSRFValidator) ParseTerminalWebSocketSubprotocolParams(r *http.Request)
 	instance := params.Instance
 	csrf := params.CSRF
 	if instance == "" || csrf == "" {
-		return "", "", "", errors.New("websocket subprotocol params are incomplete")
+		return "", "", "", errors.New(msg.WebSocketSubprotocolParamsIncomplete)
 	}
 	return instance, csrf, selectedProtocol, nil
 }
