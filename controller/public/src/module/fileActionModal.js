@@ -1,10 +1,12 @@
 import { mainModalOverlay, state } from "../ui.js";
-import { buildAuthedFileRawUrl, parseSSEJsonData, readSSEStream } from '../api/core.js';
+import { buildAuthedFileRawUrl } from '../api/core.js';
 import { clearTimer, formatFileSize, withActionsDisabled } from '../utils/utils.js';
 import { deleteFile, downloadFileArchive, renameFile, streamFileExtractAction } from '../api/file.js';
 import { showAlert, showConfirm } from './dialog.js';
 import { getFileType } from '../utils/icon.js';
 import { InputValidation } from '../utils/inputValidation.js';
+import { readJsonSSEStream } from '../utils/sse.js';
+import { applyTabPageState, bindTabPageButtons } from '../utils/modalHelper.js';
 
 console.log('[模块] FileActionModal 加载中...');
 
@@ -22,7 +24,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 					<button id="fileActionTabDelete" class="filter-btn" type="button" data-page="delete">DELETE</button>
 				</div>
 				<div class="file-action-body">
-					<form id="fileActionPageInfo" class="file-action-page active">
+					<form id="fileActionPageInfo" class="modal-page file-action-page active">
 						<div class="field-group">
 							<span>NAME</span>
 							<input id="fileRenameName" type="text" autocomplete="off" maxlength="${InputValidation.limits.fileName}" required>
@@ -49,7 +51,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 							</div>
 						</div>
 					</form>
-					<form id="fileActionPageExtract" class="file-action-page">
+					<form id="fileActionPageExtract" class="modal-page file-action-page">
 						<div class="field-group">
 							<span>ARCHIVE</span>
 							<div id="fileExtractSourcePath" class="file-action-static"></div>
@@ -88,7 +90,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 							<button class="btn btn-start" type="submit" id="fileExtractSubmit">RUN</button>
 						</div>
 					</form>
-					<form id="fileActionPageDelete" class="file-action-page">
+					<form id="fileActionPageDelete" class="modal-page file-action-page">
 						<div class="field-group">
 							<span>WARNING</span>
 							<div class="file-action-static file-delete-warning">此操作不可撤销, 请确认删除当前对象</div>
@@ -170,6 +172,12 @@ const modalState = {
     isBound: false,
 };
 
+const fileActionTabPages = [
+	{ name: 'info', tab: dom.fileActionTabInfo, page: dom.fileActionPageInfo },
+	{ name: 'extract', tab: dom.fileActionTabExtract, page: dom.fileActionPageExtract, enabled: () => modalState.isArchive },
+	{ name: 'delete', tab: dom.fileActionTabDelete, page: dom.fileActionPageDelete },
+];
+
 const getCurrentDir = () => {
 	if (typeof modalState.getCurrentDir === 'function') {
 		return String(modalState.getCurrentDir() || '');
@@ -179,18 +187,7 @@ const getCurrentDir = () => {
 
 const applyFileActionPage = (page) => {
     modalState.currentFileActionPage = page;
-    dom.fileActionTabInfo.classList.toggle('active', page === 'info');
-    dom.fileActionTabExtract.classList.toggle('active', page === 'extract');
-    dom.fileActionTabDelete.classList.toggle('active', page === 'delete');
-    if (dom.fileActionPageInfo) {
-        dom.fileActionPageInfo.classList.toggle('active', page === 'info');
-    }
-	if (dom.fileActionPageExtract) {
-		dom.fileActionPageExtract.classList.toggle('active', page === 'extract' && modalState.isArchive);
-	}
-	if (dom.fileActionPageDelete) {
-		dom.fileActionPageDelete.classList.toggle('active', page === 'delete');
-	}
+	applyTabPageState(page, fileActionTabPages);
 };
 
 const resolveOpenPage = (requestedPage) => {
@@ -409,30 +406,6 @@ const requestClose = async () => {
 	await requestCancelExtract();
 };
 
-const decodeSse = async (res, handlers) => {
-	await readSSEStream(res, {
-		message: (event) => emitDecodedSseEvent(event, handlers),
-		progress: (event) => emitDecodedSseEvent(event, handlers),
-		fail: (event) => emitDecodedSseEvent(event, handlers),
-		error: (event) => emitDecodedSseEvent(event, handlers),
-		end: (event) => emitDecodedSseEvent(event, handlers),
-		done: (event) => emitDecodedSseEvent(event, handlers),
-	});
-};
-
-const emitDecodedSseEvent = (event, handlers) => {
-	if (typeof handlers?.onEvent !== 'function') {
-		return;
-	}
-	let payload = null;
-	try {
-		payload = parseSSEJsonData(event, '文件解压事件解析失败');
-	} catch {
-		payload = { raw: String(event.data || '').trim() };
-	}
-	handlers.onEvent(String(event.type || 'message'), payload);
-};
-
 const buildExtractDetailText = (payload) => {
 	const current = Number(payload?.current);
 	const total = Number(payload?.total);
@@ -500,7 +473,8 @@ const extractArchive = async () => {
 			extract_here: !dom.fileExtractModeCustom.checked,
 			overwrite: !!dom.fileExtractOverwrite.checked,
 		}, { signal: abortController.signal });
-		await decodeSse(res, {
+		await readJsonSSEStream(res, {
+			parseErrorMessage: '文件解压事件解析失败',
 			onEvent: (name, payload) => {
 				if (!isCurrentExtractTask(abortController, extractRunId)) {
 					return;
@@ -848,36 +822,22 @@ const bindEvents = () => {
 			await withActionsDisabled(dom.fileInfoActions, downloadCurrentEntry);
 		};
 	}
-	if (dom.fileActionTabInfo) {
-		dom.fileActionTabInfo.onclick = () => {
+	bindTabPageButtons(fileActionTabPages, (page) => {
 			if (modalState.extracting) {
 				return;
 			}
-			applyFileActionPage('info');
-		};
-	}
-	if (dom.fileActionTabExtract) {
-		dom.fileActionTabExtract.onclick = () => {
-			if (modalState.extracting) {
-				return;
-			}
+		if (page === 'extract') {
 			if (!modalState.isArchive) {
 				return;
 			}
-			applyFileActionPage('extract');
+			applyFileActionPage(page);
 			if (dom.fileExtractModeCustom.checked) {
 				dom.fileExtractDirName.focus();
 			}
-		};
-	}
-	if (dom.fileActionTabDelete) {
-		dom.fileActionTabDelete.onclick = () => {
-			if (modalState.extracting) {
-				return;
-			}
-			applyFileActionPage('delete');
-		};
-	}
+			return;
+		}
+		applyFileActionPage(page === 'delete' ? 'delete' : 'info');
+	});
 	dom.fileExtractModeCurrent.addEventListener('change', () => updateExtractTargetMode());
 	dom.fileExtractModeCustom.addEventListener('change', () => {
 		updateExtractTargetMode();

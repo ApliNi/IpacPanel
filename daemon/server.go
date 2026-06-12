@@ -196,8 +196,8 @@ func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, c
 			body = append(body, resp.Body...)
 			pendingBytes += len(resp.Body)
 			current.Body = body
-			current.release = mergeIPCRelease(current.release, resp.release)
-			resp.release = nil
+			current.ReleaseFunc = mergeIPCRelease(current.ReleaseFunc, resp.ReleaseFunc)
+			resp.ReleaseFunc = nil
 			pending[resp.Instance] = current
 			return
 		}

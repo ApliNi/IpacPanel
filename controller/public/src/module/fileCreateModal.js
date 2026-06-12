@@ -2325,7 +2325,7 @@ const cancelAllFileUploads = () => {
 
 const tryCloseWithConfirm = async () => {
     if (hasActiveFileUploads()) {
-        const ok = await showConfirm('正在上传中，关闭将取消所有传输。是否关闭？', {
+        const ok = await showConfirm('正在上传中, 关闭将取消所有传输. 是否关闭?', {
             title: 'CONFIRM',
             okText: 'CLOSE',
             cancelText: 'CANCEL',

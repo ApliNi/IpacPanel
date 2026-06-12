@@ -85,7 +85,7 @@
 │   │   ├── web/             # Web 服务
 │   │   │   └── api/         # Web API / WebSocket
 │   │   ├── compat/          # 跨平台兼容工具
-│   │   ├── atomicfile/      # 原子文件写入工具
+│   │   ├── atomic/file/     # 原子文件写入工具
 │   │   └── msg/             # 消息定义
 │   │
 │   └── public/              # Web 前端静态资源

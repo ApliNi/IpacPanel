@@ -3,15 +3,14 @@ package process
 import (
 	cfg "IpacPanel/controller/src/config"
 	"IpacPanel/controller/src/msg"
+	"IpacPanel/daemon/ipc"
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,79 +19,33 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const maxDaemonIPCHeaderSize = 64 * 1024
-const maxDaemonIPCBodySize = 16 * 1024 * 1024
 const daemonOutputBufferPoolMaxBytes = 512 * 1024
 
 const (
-	RuntimeCodeUnknown        = 0
-	RuntimeCodeRunning        = 1
-	RuntimeCodeManualStop     = 10
-	RuntimeCodeManualKill     = 11
-	RuntimeCodeRestarting     = 12
-	RuntimeCodeUnexpectedExit = 20
+	RuntimeCodeUnknown        = ipc.RuntimeCodeUnknown
+	RuntimeCodeRunning        = ipc.RuntimeCodeRunning
+	RuntimeCodeManualStop     = ipc.RuntimeCodeManualStop
+	RuntimeCodeManualKill     = ipc.RuntimeCodeManualKill
+	RuntimeCodeRestarting     = ipc.RuntimeCodeRestarting
+	RuntimeCodeUnexpectedExit = ipc.RuntimeCodeUnexpectedExit
 )
 
 const (
-	ControllerShutdownPurposeRestart = "restart"
-	ControllerShutdownPurposeUpdate  = "update"
+	ControllerShutdownPurposeRestart = ipc.ControllerShutdownPurposeRestart
+	ControllerShutdownPurposeUpdate  = ipc.ControllerShutdownPurposeUpdate
 )
 
-type DaemonRuntimeState struct {
-	InstanceName string    `json:"instance_name"`
-	RuntimeAlias string    `json:"runtime_alias,omitempty"`
-	Lifecycle    string    `json:"lifecycle"`
-	RuntimeCode  int       `json:"runtime_code"`
-	PID          int       `json:"pid,omitempty"`
-	StartTime    time.Time `json:"start_time,omitempty"`
-	ExitTime     time.Time `json:"exit_time,omitempty"`
-	RestartCount int       `json:"restart_count"`
-	Terminal     int       `json:"terminal,omitempty"`
-}
+type DaemonRuntimeState = ipc.InstanceRuntimeState
 
 const (
-	DaemonLifecycleStopped  = "stopped"
-	DaemonLifecycleRunning  = "running"
-	DaemonLifecycleStopping = "stopping"
-	DaemonLifecycleCleaning = "cleaning"
+	DaemonLifecycleStopped  = ipc.InstanceLifecycleStopped
+	DaemonLifecycleRunning  = ipc.InstanceLifecycleRunning
+	DaemonLifecycleStopping = ipc.InstanceLifecycleStopping
+	DaemonLifecycleCleaning = ipc.InstanceLifecycleCleaning
 )
 
-type daemonIPCRequest struct {
-	Type                      string   `json:"-"`
-	ID                        uint64   `json:"id,omitempty"`
-	Msg                       string   `json:"msg,omitempty"`
-	Debug                     bool     `json:"debug,omitempty"`
-	Instance                  string   `json:"instance,omitempty"`
-	NewName                   string   `json:"new_name,omitempty"`
-	CommandArgv               []string `json:"command_argv,omitempty"`
-	CleanupCommandArgv        []string `json:"cleanup_command_argv,omitempty"`
-	Path                      string   `json:"path,omitempty"`
-	Terminal                  int      `json:"terminal,omitempty"`
-	InputEnc                  string   `json:"input_encoding,omitempty"`
-	OutputEnc                 string   `json:"output_encoding,omitempty"`
-	RuntimeCode               int      `json:"runtime_code,omitempty"`
-	Force                     bool     `json:"force,omitempty"`
-	Cols                      uint16   `json:"cols,omitempty"`
-	Rows                      uint16   `json:"rows,omitempty"`
-	ControllerShutdownPurpose string   `json:"controller_shutdown_purpose,omitempty"`
-	BodyLen                   int      `json:"body_len,omitempty"`
-	Body                      []byte   `json:"-"`
-}
-
-type daemonIPCResponse struct {
-	Type           string               `json:"-"`
-	ID             uint64               `json:"id,omitempty"`
-	Msg            string               `json:"msg,omitempty"`
-	Placeholder    string               `json:"placeholder,omitempty"`
-	Args           []string             `json:"args,omitempty"`
-	Instance       string               `json:"instance,omitempty"`
-	BodyLen        int                  `json:"body_len,omitempty"`
-	Body           []byte               `json:"-"`
-	Error          string               `json:"error,omitempty"`
-	DaemonProtocol int                  `json:"daemon_protocol,omitempty"`
-	Runtime        []DaemonRuntimeState `json:"runtime,omitempty"`
-	State          *DaemonRuntimeState  `json:"state,omitempty"`
-}
+type daemonIPCRequest = ipc.Request
+type daemonIPCResponse = ipc.Response
 
 type daemonIPCClient struct {
 	closer    io.Closer
@@ -172,176 +125,19 @@ func DaemonDisconnected() <-chan struct{} {
 	return client.done
 }
 
-func decodeDaemonIPCFrame(line []byte, resp *daemonIPCResponse) error {
-	line = bytes.TrimSuffix(line, []byte{'\n'})
-	line = bytes.TrimSuffix(line, []byte{'\r'})
-	if len(line) == 0 || line[0] != ':' {
-		return errors.New(msg.InvalidDaemonIPCFramePrefix)
-	}
-	line = line[1:]
-	sep := bytes.Index(line, []byte(": "))
-	if sep <= 0 {
-		return errors.New(msg.InvalidDaemonIPCFrameHeader)
-	}
-	frameType := string(line[:sep])
-	if err := json.Unmarshal(line[sep+len(": "):], resp); err != nil {
-		return err
-	}
-	resp.Type = frameType
-	return nil
-}
-
-func encodeDaemonIPCFrame(frameType string, payload interface{}) ([]byte, error) {
-	if frameType == "" {
-		return nil, errors.New(msg.DaemonIPCFrameTypeRequired)
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-	frame := make([]byte, 0, 1+len(frameType)+len(": ")+len(data)+1)
-	frame = append(frame, ':')
-	frame = append(frame, frameType...)
-	frame = append(frame, ": "...)
-	frame = append(frame, data...)
-	frame = append(frame, '\n')
-	return frame, nil
-}
-
-func readDaemonIPCHeaderLine(reader *bufio.Reader) ([]byte, error) {
-	var line []byte
-	for {
-		part, err := reader.ReadSlice('\n')
-		line = append(line, part...)
-		if len(line) > maxDaemonIPCHeaderSize {
-			return nil, fmt.Errorf(msg.DaemonIPCHeaderTooLargeFmt, len(line))
-		}
-		if err == nil {
-			return line, nil
-		}
-		if errors.Is(err, bufio.ErrBufferFull) {
-			continue
-		}
-		return nil, err
-	}
-}
-
-func validateDaemonIPCBodyLen(bodyLen int) error {
-	if bodyLen < 0 {
-		return fmt.Errorf(msg.DaemonIPCBodyLengthNegativeFmt, bodyLen)
-	}
-	if bodyLen > maxDaemonIPCBodySize {
-		return fmt.Errorf(msg.DaemonIPCBodyTooLargeFmt, bodyLen)
-	}
-	return nil
-}
-
-func parseDaemonIPCPositiveInt(data []byte) (int, error) {
-	if len(data) == 0 {
-		return 0, errors.New(msg.EmptyInteger)
-	}
-	value := 0
-	for _, b := range data {
-		if b < '0' || b > '9' {
-			return 0, fmt.Errorf(msg.InvalidDigitFmt, b)
-		}
-		digit := int(b - '0')
-		if value > (maxDaemonIPCBodySize-digit)/10 {
-			return 0, errors.New(msg.IntegerTooLarge)
-		}
-		value = value*10 + digit
-	}
-	return value, nil
-}
-
-func readDaemonIPCUntil(reader *bufio.Reader, delim byte, fieldName string) ([]byte, error) {
-	part, err := reader.ReadSlice(delim)
-	if err != nil {
-		return nil, fmt.Errorf(msg.ReadDaemonIPCFieldFailedFmt, fieldName, err)
-	}
-	if len(part) > maxDaemonIPCHeaderSize {
-		return nil, fmt.Errorf(msg.DaemonIPCFieldTooLargeFmt, fieldName, len(part))
-	}
-	return part[:len(part)-1], nil
-}
-
-func readDaemonInstanceOutputFrame(reader *bufio.Reader) (string, []byte, error) {
-	if _, err := reader.Discard(len(":o:")); err != nil {
-		return "", nil, fmt.Errorf(msg.ReadDaemonInstanceOutputPrefixFailedFmt, err)
-	}
-	instance, err := readDaemonIPCUntil(reader, ':', msg.DaemonInstanceOutputInstanceField)
-	if err != nil {
-		return "", nil, err
-	}
-	if len(instance) == 0 {
-		return "", nil, errors.New(msg.DaemonInstanceOutputInstanceEmpty)
-	}
-	bodyLenText, err := readDaemonIPCUntil(reader, ':', msg.DaemonInstanceOutputBodyLengthField)
-	if err != nil {
-		return "", nil, err
-	}
-	bodyLen, err := parseDaemonIPCPositiveInt(bodyLenText)
-	if err != nil {
-		return "", nil, fmt.Errorf(msg.InvalidDaemonInstanceOutputBodyLengthFmt, err)
-	}
-	if err := validateDaemonIPCBodyLen(bodyLen); err != nil {
-		return "", nil, err
-	}
-	space, err := reader.ReadByte()
-	if err != nil {
-		return "", nil, fmt.Errorf(msg.ReadDaemonInstanceOutputBodySeparatorFailedFmt, err)
-	}
-	if space != ' ' {
-		return "", nil, errors.New(msg.InvalidDaemonInstanceOutputBodySeparator)
-	}
-	body := getDaemonOutputBuffer(bodyLen)
-	if bodyLen > 0 {
-		if _, err := io.ReadFull(reader, body); err != nil {
-			putDaemonOutputBuffer(body)
-			return "", nil, fmt.Errorf(msg.ReadDaemonInstanceOutputBodyFailedFmt, err)
-		}
-	}
-	return string(instance), body, nil
-}
-
-func isDaemonInstanceOutputPrefix(peek []byte) bool {
-	return len(peek) == 3 && peek[0] == ':' && peek[1] == 'o' && peek[2] == ':'
-}
-
-func readDaemonIPCResponse(reader *bufio.Reader) (daemonIPCResponse, error) {
-	line, err := readDaemonIPCHeaderLine(reader)
-	if err != nil {
-		return daemonIPCResponse{}, err
-	}
-	var resp daemonIPCResponse
-	if err := decodeDaemonIPCFrame(line, &resp); err != nil {
-		return daemonIPCResponse{}, err
-	}
-	if err := validateDaemonIPCBodyLen(resp.BodyLen); err != nil {
-		return daemonIPCResponse{}, err
-	}
-	if resp.BodyLen > 0 {
-		resp.Body = make([]byte, resp.BodyLen)
-		if _, err := io.ReadFull(reader, resp.Body); err != nil {
-			return daemonIPCResponse{}, err
-		}
-	}
-	return resp, nil
-}
-
 func (c *daemonIPCClient) readLoop() {
 	defer c.closeWithPendingError()
 	for {
 		peek, err := c.reader.Peek(len(":o:"))
-		if err == nil && isDaemonInstanceOutputPrefix(peek) {
-			instance, body, err := readDaemonInstanceOutputFrame(c.reader)
+		if err == nil && ipc.IsInstanceOutputPrefix(peek) {
+			instance, body, err := ipc.ReadInstanceOutputFrame(c.reader, getDaemonOutputBuffer, putDaemonOutputBuffer)
 			if err != nil {
 				return
 			}
 			handleDaemonInstanceOutputFrame(instance, body)
 			continue
 		}
-		resp, err := readDaemonIPCResponse(c.reader)
+		resp, err := ipc.ReadResponse(c.reader)
 		if err != nil {
 			return
 		}
@@ -412,10 +208,10 @@ func daemonRequest(req daemonIPCRequest) (daemonIPCResponse, error) {
 	defer client.unregisterPending(req.ID)
 
 	req.BodyLen = len(req.Body)
-	if err := validateDaemonIPCBodyLen(req.BodyLen); err != nil {
+	if err := ipc.ValidateBodyLen(req.BodyLen); err != nil {
 		return daemonIPCResponse{}, err
 	}
-	data, err := encodeDaemonIPCFrame(req.Type, req)
+	data, err := ipc.EncodeFrame(req.Type, req)
 	if err != nil {
 		return daemonIPCResponse{}, fmt.Errorf(msg.EncodeDaemonIPCRequestFailedFmt, err)
 	}
@@ -551,23 +347,18 @@ func writeDaemonInstanceInputFastPath(insName string, data []byte) error {
 	if strings.Contains(insName, ":") {
 		return errors.New(msg.DaemonInstanceInputInstanceContainsSeparator)
 	}
-	if err := validateDaemonIPCBodyLen(len(data)); err != nil {
-		return err
-	}
 	client := daemonClient
 	if client == nil {
 		return errors.New(msg.DaemonIPCNotConnected)
 	}
 
-	header := make([]byte, 0, len(":i:")+len(insName)+1+20+len(": "))
-	header = append(header, ":i:"...)
-	header = append(header, insName...)
-	header = append(header, ':')
-	header = strconv.AppendInt(header, int64(len(data)), 10)
-	header = append(header, ": "...)
+	header, err := ipc.BuildInputHeader(insName, len(data))
+	if err != nil {
+		return err
+	}
 
 	client.writeMu.Lock()
-	_, err := client.writer.Write(header)
+	_, err = client.writer.Write(header)
 	if err == nil {
 		_, err = client.writer.Write(data)
 	}

@@ -1,10 +1,11 @@
 import { mainModalOverlay, state } from "../ui.js";
 import { clearTimer, withActionsDisabled } from '../utils/utils.js';
-import { parseSSEJsonData, readSSEStream } from '../api/core.js';
 import { downloadFileArchive, streamFileBatchAction } from '../api/file.js';
 import { showAlert } from './dialog.js';
 import { InputValidation } from '../utils/inputValidation.js';
 import { setupAutoResizeTextarea } from '../utils/autoTextarea.js';
+import { readJsonSSEStream } from '../utils/sse.js';
+import { applyTabPageState, bindTabPageButtons } from '../utils/modalHelper.js';
 
 console.log('[模块] FileBatchActionModal 加载中...');
 
@@ -22,7 +23,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 					<button id="fileBatchTabDelete" class="filter-btn" type="button" data-page="delete">DELETE</button>
 				</div>
 				<div class="file-batch-action-body">
-					<div id="fileBatchPageCopy" class="file-batch-action-page active">
+					<div id="fileBatchPageCopy" class="modal-page file-batch-action-page active">
 						<div class="field-group">
 							<span>TARGET DIR</span>
 							<div id="fileBatchCopyTarget" class="file-action-static"></div>
@@ -43,7 +44,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 							</label>
 						</div>
 					</div>
-					<div id="fileBatchPageMove" class="file-batch-action-page">
+					<div id="fileBatchPageMove" class="modal-page file-batch-action-page">
 						<div class="field-group">
 							<span>TARGET DIR</span>
 							<div id="fileBatchMoveTarget" class="file-action-static"></div>
@@ -57,7 +58,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 							<span>覆盖已存在文件</span>
 						</label>
 					</div>
-					<div id="fileBatchPageDelete" class="file-batch-action-page">
+					<div id="fileBatchPageDelete" class="modal-page file-batch-action-page">
 						<div class="field-group">
 							<span>WARNING</span>
 							<div class="file-action-static file-delete-warning">此操作不可撤销, 确认删除已选对象</div>
@@ -129,6 +130,12 @@ const getCurrentDir = () => {
 	return '';
 };
 
+const fileBatchTabPages = [
+	{ name: 'copy', tab: dom.tabCopy, page: dom.pageCopy },
+	{ name: 'move', tab: dom.tabMove, page: dom.pageMove },
+	{ name: 'delete', tab: dom.tabDelete, page: dom.pageDelete },
+];
+
 const getActiveRulesBox = () => {
 	return modalState.page === 'move'
 		? dom.moveRules
@@ -148,12 +155,7 @@ const updateSubmitText = () => {
 
 const applyPage = (page) => {
 	modalState.page = page;
-	dom.tabCopy.classList.toggle('active', page === 'copy');
-	dom.tabMove.classList.toggle('active', page === 'move');
-	dom.tabDelete.classList.toggle('active', page === 'delete');
-	dom.pageCopy.classList.toggle('active', page === 'copy');
-	dom.pageMove.classList.toggle('active', page === 'move');
-	dom.pageDelete.classList.toggle('active', page === 'delete');
+	applyTabPageState(page, fileBatchTabPages);
 	if (page === 'copy' && dom.copyOverwrite) {
 		dom.copyOverwrite.checked = false;
 	}
@@ -340,28 +342,6 @@ const clearSelectionAfterRun = () => {
 	modalState.fileSelection?.clearSelection?.();
 };
 
-const decodeSse = async (res, handlers) => {
-	await readSSEStream(res, {
-		message: (event) => emitDecodedSseEvent(event, handlers),
-		progress: (event) => emitDecodedSseEvent(event, handlers),
-		fail: (event) => emitDecodedSseEvent(event, handlers),
-		end: (event) => emitDecodedSseEvent(event, handlers),
-	});
-};
-
-const emitDecodedSseEvent = (event, handlers) => {
-	if (typeof handlers?.onEvent !== 'function') {
-		return;
-	}
-	let payload = null;
-	try {
-		payload = parseSSEJsonData(event, '文件批量操作事件解析失败');
-	} catch {
-		payload = { raw: String(event.data || '').trim() };
-	}
-	handlers.onEvent(String(event.type || 'message'), payload);
-};
-
 const runBatch = async ({ action, overwrite }) => {
 	const instanceName = state.currentInstanceName;
 	if (!instanceName) {
@@ -391,31 +371,33 @@ const runBatch = async ({ action, overwrite }) => {
 	});
 
 	try {
-		await decodeSse(res, {
-		onEvent: (name, payload) => {
-			if (name === 'progress') {
-				setCounts({ ok: Number(payload?.ok || 0), fail: Number(payload?.fail || 0) });
-				return;
-			}
-			if (name === 'fail') {
-				appendFail(payload?.path, payload?.reason, payload?.is_dir, box);
-				return;
-			}
-			if (name === 'end') {
-				setCounts({ ok: Number(payload?.ok || 0), fail: Number(payload?.fail || 0) });
-				clearSelectionAfterRun();
-				if (modalState.failed.length > 0) {
-					modalState.submitMode = 'select_failed';
-					if (dom.submit) dom.submit.textContent = 'RECOVER SELECT';
+		await readJsonSSEStream(res, {
+			parseErrorMessage: '文件批量操作事件解析失败',
+			eventTypes: ['message', 'progress', 'fail', 'end'],
+			onEvent: (name, payload) => {
+				if (name === 'progress') {
+					setCounts({ ok: Number(payload?.ok || 0), fail: Number(payload?.fail || 0) });
 					return;
 				}
-				// Auto-close when everything succeeds.
-				if (typeof modalState.onRequestReload === 'function') {
-					modalState.onRequestReload();
+				if (name === 'fail') {
+					appendFail(payload?.path, payload?.reason, payload?.is_dir, box);
+					return;
 				}
-				close();
-			}
-		},
+				if (name === 'end') {
+					setCounts({ ok: Number(payload?.ok || 0), fail: Number(payload?.fail || 0) });
+					clearSelectionAfterRun();
+					if (modalState.failed.length > 0) {
+						modalState.submitMode = 'select_failed';
+						if (dom.submit) dom.submit.textContent = 'RECOVER SELECT';
+						return;
+					}
+					// Auto-close when everything succeeds.
+					if (typeof modalState.onRequestReload === 'function') {
+						modalState.onRequestReload();
+					}
+					close();
+				}
+			},
 		});
 	} catch (error) {
 		appendFail(getCurrentDir() || './', error?.message || '操作失败', true, box);
@@ -448,9 +430,7 @@ const bindEvents = () => {
 	dom.close.addEventListener('click', () => close());
 	dom.cancel.addEventListener('click', () => close());
 
-	dom.tabCopy.addEventListener('click', () => applyPage('copy'));
-	dom.tabMove.addEventListener('click', () => applyPage('move'));
-	dom.tabDelete.addEventListener('click', () => applyPage('delete'));
+	bindTabPageButtons(fileBatchTabPages, applyPage);
 	[dom.copyRules, dom.moveRules, dom.deleteRules].forEach((box) => {
 		setupAutoResizeTextarea(box);
 		box.addEventListener('blur', () => truncateRuleBox(box));

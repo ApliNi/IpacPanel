@@ -544,7 +544,7 @@ func (ins *DaemonInstance) readOutput(proxy *terminal.Proxy, proxySeq uint64, ru
 			if outputCh != nil {
 				releaseData := data
 				select {
-				case outputCh <- IPCResponse{Type: "o", Instance: runtimeID, Body: data, release: func() { putDaemonOutputBuffer(releaseData) }}:
+				case outputCh <- IPCResponse{Type: "o", Instance: runtimeID, Body: data, ReleaseFunc: func() { putDaemonOutputBuffer(releaseData) }}:
 				default:
 					putDaemonOutputBuffer(data)
 				}

@@ -4,8 +4,10 @@
     --terminal-bg-color: #0a0a0a;
     --text-color: #dededf;
     --text-subtle-color: #999;
+    --text-muted-color: var(--text-subtle-color);
     --text-faint-color: #666;
     --border-color: #333;
+    --primary-color: var(--green);
     --green: #00ff00;
     --blue: #00d2ff;
     --red: #f44b2b;
@@ -1470,20 +1472,12 @@ button:active,
 	font-size: 0.8rem;
 }
 
-.file-batch-action-page {
-	display: none;
-	flex-direction: column;
-	gap: 14px;
-}
-
-.file-batch-action-page.active {
-	display: flex;
-}
-
 /* 弹窗页卡片通用显示状态 */
+.modal-page,
 .file-create-page,
 .user-manage-page,
 .panel-settings-page,
+.file-batch-action-page,
 .file-action-page,
 .instance-group-page,
 .instance-modal-page {
@@ -1492,13 +1486,19 @@ button:active,
     gap: 16px;
 }
 
+.modal-page.active,
 .file-create-page.active,
 .user-manage-page.active,
 .panel-settings-page.active,
+.file-batch-action-page.active,
 .file-action-page.active,
 .instance-group-page.active,
 .instance-modal-page.active {
     display: flex;
+}
+
+.file-batch-action-page {
+	gap: 14px;
 }
 
 .field-group {
@@ -1790,9 +1790,6 @@ textarea {
     border: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(255, 255, 255, 0.02);
     padding: 12px;
-}
-
-.file-upload-item {
     display: flex;
     flex-direction: column;
     gap: 6px;
