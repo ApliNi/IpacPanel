@@ -1,16 +1,16 @@
 package api
 
 import (
+	"IpacPanel/controller/src/instancefs"
 	"IpacPanel/controller/src/msg"
 	web "IpacPanel/controller/src/web"
 	"IpacPanel/controller/src/web/authz"
 
-	"errors"
 	"fmt"
 	"mime"
 	"net/http"
-	"os"
 	"path/filepath"
+	"time"
 )
 
 func HandleApiFileRaw(w http.ResponseWriter, r *http.Request) {
@@ -24,34 +24,24 @@ func HandleApiFileRaw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rootPath, relativePath, err := resolveInstanceFilePath(sp, r.URL.Query().Get("path"))
+	fs, err := newInstanceFS(sp)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
-	if relativePath == "" {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathRequired, nil)
+	targetSafePath, _, err := fs.ResolveRequiredExistingFile(r.URL.Query().Get("path"))
+	if err != nil {
+		writeRequiredFileAccessError(w, err)
 		return
 	}
 
-	targetPath := filepath.Join(rootPath, filepath.FromSlash(relativePath))
-	info, err := os.Stat(targetPath)
+	targetPath := targetSafePath.AbsPath()
+	file, info, err := instancefs.OpenExistingFileSafe(fs.RootPath(), targetPath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			web.WriteAPIError(w, http.StatusNotFound, msg.FileNotFound, nil)
-			return
-		}
-		web.WriteAPIError(w, http.StatusBadRequest, msg.ReadFileInfoFailed, err)
-		return
-	}
-	if err := ensureResolvedPathWithinInstanceRoot(sp, targetPath); err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
-	if info.IsDir() {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.TargetIsDirectory, nil)
-		return
-	}
+	defer file.Close()
 
 	// Raw file responses are always served as downloads.
 	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(targetPath)})
@@ -60,5 +50,12 @@ func HandleApiFileRaw(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Disposition", disposition)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	http.ServeFile(w, r, targetPath)
+	http.ServeContent(w, r, filepath.Base(targetPath), fileModTime(info), file)
+}
+
+func fileModTime(info interface{ ModTime() time.Time }) time.Time {
+	if info == nil {
+		return time.Time{}
+	}
+	return info.ModTime()
 }

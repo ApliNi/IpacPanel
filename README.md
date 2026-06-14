@@ -149,12 +149,12 @@ go run ./build.go
 - SQLite 数据库: [`modernc.org/sqlite`]( https://pkg.go.dev/modernc.org/sqlite)
 - 文件解压: [`github.com/mholt/archives`](https://github.com/mholt/archives)
 - 压缩算法: [`github.com/klauspost/compress`](https://github.com/klauspost/compress)
+- Shell 命令解析: [`github.com/kballard/go-shellquote`](https://github.com/kballard/go-shellquote)
 
 **守护进程**
 - Golang, 及其标准库
 - Unix 终端: [`github.com/creack/pty`](https://github.com/creack/pty)
 - Windows 终端: [`github.com/UserExistsError/conpty`](https://github.com/UserExistsError/conpty)
-- Shell 命令解析: [`github.com/kballard/go-shellquote`](https://github.com/kballard/go-shellquote)
 
 
 ## 友链

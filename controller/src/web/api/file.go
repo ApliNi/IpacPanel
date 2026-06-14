@@ -1,6 +1,7 @@
 package api
 
 import (
+	"IpacPanel/controller/src/instancefs"
 	"IpacPanel/controller/src/msg"
 	process "IpacPanel/controller/src/process"
 	"IpacPanel/controller/src/web/authz"
@@ -9,6 +10,7 @@ import (
 	web "IpacPanel/controller/src/web"
 
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -98,6 +100,32 @@ func writeFileReadResponse(w http.ResponseWriter, relativePath string, targetPat
 	return err
 }
 
+func writeRequiredFileAccessError(w http.ResponseWriter, err error) {
+	var accessErr *instancefs.PathAccessError
+	if !errors.As(err, &accessErr) {
+		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
+		return
+	}
+	switch accessErr.Kind {
+	case instancefs.PathAccessErrorResolve:
+		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, accessErr.Err)
+	case instancefs.PathAccessErrorRequired:
+		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathRequired, nil)
+	case instancefs.PathAccessErrorStat:
+		if errors.Is(accessErr.Err, os.ErrNotExist) {
+			web.WriteAPIError(w, http.StatusNotFound, msg.FileNotFound, nil)
+			return
+		}
+		web.WriteAPIError(w, http.StatusBadRequest, msg.ReadFileInfoFailed, accessErr.Err)
+	case instancefs.PathAccessErrorWithinRoot:
+		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, accessErr.Err)
+	case instancefs.PathAccessErrorDirectory:
+		web.WriteAPIError(w, http.StatusBadRequest, msg.TargetIsDirectory, nil)
+	default:
+		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, fmt.Errorf("unknown path access error kind %q: %w", accessErr.Kind, accessErr.Err))
+	}
+}
+
 func HandleApiFileList(w http.ResponseWriter, r *http.Request) {
 	var req fileListRequest
 	if !web.DecodeJSONBody(w, r, &req) {
@@ -163,30 +191,17 @@ func HandleApiFileCreateFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rootPath, relativePath, err := resolveInstanceFilePath(sp, req.Path)
+	fs, err := newInstanceFS(sp)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
-
-	targetDir := rootPath
-	if relativePath != "" {
-		targetDir = filepath.Join(rootPath, filepath.FromSlash(relativePath))
-	}
-	dirInfo, err := os.Stat(targetDir)
+	parentPath, targetFilePath, err := fs.ResolveNewChild(req.Path, fileName)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
-	if !dirInfo.IsDir() {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, errors.New(msg.PathNotDirectory))
-		return
-	}
-	if err := ensureResolvedPathWithinInstanceRoot(sp, targetDir); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
-		return
-	}
-	targetPath := filepath.Join(targetDir, fileName)
+	targetPath := targetFilePath.AbsPath()
 	if !req.Overwrite {
 		if _, err := os.Stat(targetPath); err == nil {
 			web.WriteAPIError(w, http.StatusConflict, msg.FileObjectAlreadyExists, nil)
@@ -205,7 +220,7 @@ func HandleApiFileCreateFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := buildFileListResponse(sp, relativePath, 1, "")
+	resp, err := buildFileListResponse(sp, parentPath.RelSlash(), 1, "")
 	if err != nil {
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.ReadFileListFailed, err)
 		return
@@ -230,36 +245,27 @@ func HandleApiFileCreateDir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rootPath, relativePath, err := resolveInstanceFilePath(sp, req.Path)
+	fs, err := newInstanceFS(sp)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
-
-	targetDir := rootPath
-	if relativePath != "" {
-		targetDir = filepath.Join(rootPath, filepath.FromSlash(relativePath))
-	}
-	dirInfo, err := os.Stat(targetDir)
+	parentPath, targetDirPath, err := fs.ResolveNewChild(req.Path, dirName)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
-	if !dirInfo.IsDir() {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, errors.New(msg.PathNotDirectory))
-		return
-	}
-	if err := ensureResolvedPathWithinInstanceRoot(sp, targetDir); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
-		return
-	}
-	targetPath := filepath.Join(targetDir, dirName)
+	targetPath := targetDirPath.AbsPath()
 
-	if err := os.Mkdir(targetPath, 0755); err != nil {
+	if err := instancefs.EnsureDirectoryStepwise(fs.RootPath(), targetPath, 0755); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			targetInfo, statErr := os.Stat(targetPath)
+			targetInfo, statErr := os.Lstat(targetPath)
 			if statErr != nil {
 				web.WriteAPIError(w, http.StatusBadRequest, msg.CreateDirectoryFailed, statErr)
+				return
+			}
+			if targetInfo.Mode()&os.ModeSymlink != 0 {
+				web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, instancefs.ErrPathOutsideInstanceRoot)
 				return
 			}
 			if !targetInfo.IsDir() {
@@ -270,7 +276,7 @@ func HandleApiFileCreateDir(w http.ResponseWriter, r *http.Request) {
 				web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 				return
 			}
-			resp, err := buildFileListResponse(sp, relativePath, 1, "")
+			resp, err := buildFileListResponse(sp, parentPath.RelSlash(), 1, "")
 			if err != nil {
 				web.WriteAPIError(w, http.StatusInternalServerError, msg.ReadFileListFailed, err)
 				return
@@ -283,12 +289,11 @@ func HandleApiFileCreateDir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := ensureCreatedPathWithinInstanceRoot(sp, targetPath); err != nil {
-		_ = os.Remove(targetPath)
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
 
-	resp, err := buildFileListResponse(sp, relativePath, 1, "")
+	resp, err := buildFileListResponse(sp, parentPath.RelSlash(), 1, "")
 	if err != nil {
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.ReadFileListFailed, err)
 		return
@@ -313,22 +318,19 @@ func HandleApiFileRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rootPath, relativePath, err := resolveInstanceFilePath(sp, req.Path)
+	fs, err := newInstanceFS(sp)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
-	if relativePath == "" {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathRequired, nil)
+	oldSafePath, err := fs.ResolveRequiredWithinRoot(req.Path)
+	if err != nil {
+		writeRequiredFileAccessError(w, err)
 		return
 	}
 
-	oldPath := filepath.Join(rootPath, filepath.FromSlash(relativePath))
-	if err := ensureResolvedPathWithinInstanceRoot(sp, oldPath); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
-		return
-	}
-	parentRelative := filepath.ToSlash(filepath.Dir(filepath.FromSlash(relativePath)))
+	oldPath := oldSafePath.AbsPath()
+	parentRelative := filepath.ToSlash(filepath.Dir(filepath.FromSlash(oldSafePath.RelSlash())))
 	if parentRelative == "." {
 		parentRelative = ""
 	}
@@ -375,48 +377,36 @@ func HandleApiFileRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rootPath, relativePath, err := resolveInstanceFilePath(sp, req.Path)
+	fs, err := newInstanceFS(sp)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
-	if relativePath == "" {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathRequired, nil)
+	targetSafePath, info, err := fs.ResolveRequiredExistingFile(req.Path)
+	if err != nil {
+		writeRequiredFileAccessError(w, err)
 		return
 	}
 
-	targetPath := filepath.Join(rootPath, filepath.FromSlash(relativePath))
-	info, err := os.Stat(targetPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			web.WriteAPIError(w, http.StatusNotFound, msg.FileNotFound, nil)
-			return
-		}
-		web.WriteAPIError(w, http.StatusBadRequest, msg.ReadFileInfoFailed, err)
-		return
-	}
-	if err := ensureResolvedPathWithinInstanceRoot(sp, targetPath); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
-		return
-	}
-	if info.IsDir() {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.TargetIsDirectory, nil)
-		return
-	}
+	targetPath := targetSafePath.AbsPath()
 	allowLarge := req.AllowLarge
 	if info.Size() > maxOpenFileSize && !allowLarge {
 		web.WriteAPIError(w, http.StatusRequestEntityTooLarge, msg.FileSizeExceeds10MB, nil)
 		return
 	}
 
-	file, err := os.Open(targetPath)
+	file, openedInfo, err := instancefs.OpenExistingFileSafe(fs.RootPath(), targetPath)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.ReadFileFailed, err)
 		return
 	}
 	defer file.Close()
+	if openedInfo.Size() > maxOpenFileSize && !allowLarge {
+		web.WriteAPIError(w, http.StatusRequestEntityTooLarge, msg.FileSizeExceeds10MB, nil)
+		return
+	}
 
-	if err := writeFileReadResponse(w, relativePath, targetPath, file); err != nil {
+	if err := writeFileReadResponse(w, targetSafePath.RelSlash(), targetPath, file); err != nil {
 		web.MarkAPIError(w, http.StatusInternalServerError, msg.ReadFileFailed, err)
 	}
 }
@@ -435,42 +425,39 @@ func HandleApiFileSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rootPath, relativePath, err := resolveInstanceFilePath(sp, req.Path)
+	fs, err := newInstanceFS(sp)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
-	if relativePath == "" {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathRequired, nil)
+	targetSafePath, info, err := fs.ResolveRequiredExistingFile(req.Path)
+	if err != nil {
+		writeRequiredFileAccessError(w, err)
 		return
 	}
 
-	targetPath := filepath.Join(rootPath, filepath.FromSlash(relativePath))
-	info, err := os.Stat(targetPath)
+	targetPath := targetSafePath.AbsPath()
+	openedFile, openedInfo, err := instancefs.OpenExistingFileSafe(fs.RootPath(), targetPath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			web.WriteAPIError(w, http.StatusNotFound, msg.FileNotFound, nil)
-			return
-		}
-		web.WriteAPIError(w, http.StatusBadRequest, msg.ReadFileInfoFailed, err)
-		return
-	}
-	if err := ensureResolvedPathWithinInstanceRoot(sp, targetPath); err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
-	if info.IsDir() {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.TargetIsDirectory, nil)
+	if err := openedFile.Close(); err != nil {
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.SaveFileFailed, err)
+		return
+	}
+	if !os.SameFile(info, openedInfo) {
+		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, instancefs.ErrPathOutsideInstanceRoot)
 		return
 	}
 
-	if err := writeFileAtomic(rootPath, targetPath, []byte(req.Content), info.Mode()); err != nil {
+	if err := writeFileAtomic(fs.RootPath(), targetPath, []byte(req.Content), info.Mode()); err != nil {
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.SaveFileFailed, err)
 		return
 	}
 
 	web.WriteOK(w, &fileContentResponse{
-		Path:    relativePath,
+		Path:    targetSafePath.RelSlash(),
 		Name:    filepath.Base(targetPath),
 		Content: req.Content,
 	})
@@ -486,44 +473,27 @@ func HandleApiFileDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rootPath, relativePath, err := resolveInstanceFilePath(sp, req.Path)
+	fs, err := newInstanceFS(sp)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
-	if relativePath == "" {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathRequired, nil)
-		return
-	}
-
-	targetPath := filepath.Join(rootPath, filepath.FromSlash(relativePath))
-	if err := ensureResolvedPathWithinInstanceRoot(sp, targetPath); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
-		return
-	}
-	info, err := os.Stat(targetPath)
+	targetSafePath, isDir, err := fs.DeleteExisting(req.Path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			web.WriteAPIError(w, http.StatusNotFound, msg.FileNotFound, nil)
+		var accessErr *instancefs.PathAccessError
+		if errors.As(err, &accessErr) {
+			writeRequiredFileAccessError(w, err)
 			return
 		}
-		web.WriteAPIError(w, http.StatusBadRequest, msg.ReadFileInfoFailed, err)
-		return
-	}
-
-	if info.IsDir() {
-		if err := os.RemoveAll(targetPath); err != nil {
+		if isDir {
 			web.WriteAPIError(w, http.StatusInternalServerError, msg.DeleteDirectoryFailed, err)
 			return
 		}
-	} else {
-		if err := os.Remove(targetPath); err != nil {
-			web.WriteAPIError(w, http.StatusInternalServerError, msg.DeleteFileFailed, err)
-			return
-		}
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.DeleteFileFailed, err)
+		return
 	}
 
-	parentRelative := filepath.ToSlash(filepath.Dir(relativePath))
+	parentRelative := filepath.ToSlash(filepath.Dir(targetSafePath.RelSlash()))
 	if parentRelative == "." {
 		parentRelative = ""
 	}

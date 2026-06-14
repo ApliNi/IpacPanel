@@ -2,8 +2,8 @@ package api
 
 import (
 	cfg "IpacPanel/controller/src/config"
+	"IpacPanel/controller/src/instancefs"
 	"IpacPanel/controller/src/msg"
-	process "IpacPanel/controller/src/process"
 	web "IpacPanel/controller/src/web"
 	"IpacPanel/controller/src/web/authz"
 
@@ -35,11 +35,6 @@ type fileArchiveRequest struct {
 	Exclude  []fileBatchRule `json:"exclude"`
 }
 
-type fileArchiveResolvedRule struct {
-	Path  string
-	IsDir bool
-}
-
 type fileArchiveCreateResponse struct {
 	DownloadURL string `json:"download_url"`
 	Filename    string `json:"filename"`
@@ -52,8 +47,8 @@ type fileArchiveDownloadToken struct {
 	RootReal    string
 	ArchiveBase string
 	Filename    string
-	Include     []fileArchiveResolvedRule
-	Exclude     []fileArchiveResolvedRule
+	Include     []instancefs.ArchiveRule
+	Exclude     []instancefs.ArchiveRule
 	ExpiresAt   time.Time
 }
 
@@ -142,18 +137,19 @@ func HandleApiFileArchive(w http.ResponseWriter, r *http.Request) {
 	}
 	web.MarkRequestAction(w, "archive")
 
-	rootPath, err := getInstanceRootPath(sp)
+	fs, err := newInstanceFS(sp)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
-	rootReal, err := filepath.EvalSymlinks(rootPath)
+	rootPath := fs.RootPath()
+	rootReal, err := fs.EvalRootReal()
 	if err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, fmt.Errorf(msg.InstanceRootPathInvalidFmt, err))
+		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
 
-	include, err := resolveArchiveRules(sp, req.Include, true)
+	include, err := fs.ResolveArchiveRules(toInstanceArchiveRules(req.Include), true)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
@@ -162,13 +158,13 @@ func HandleApiFileArchive(w http.ResponseWriter, r *http.Request) {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathRequired, nil)
 		return
 	}
-	exclude, err := resolveArchiveRules(sp, req.Exclude, false)
+	exclude, err := fs.ResolveArchiveRules(toInstanceArchiveRules(req.Exclude), false)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
 	}
 
-	archiveBase, archiveName, err := resolveArchiveLayout(rootPath, sp.InstanceSnapshot().Name, include)
+	archiveBase, archiveName, err := fs.ResolveArchiveLayout(sp.InstanceSnapshot().Name, include)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 		return
@@ -204,7 +200,23 @@ func HandleApiFileArchiveDownload(w http.ResponseWriter, r *http.Request) {
 		web.WriteAPIError(w, http.StatusNotFound, msg.TargetNotFound, nil)
 		return
 	}
-	if _, ok := web.RequireInstanceProcessByName(w, authedUser, archive.Instance); !ok {
+	sp, ok := web.RequireInstanceProcessByName(w, authedUser, archive.Instance)
+	if !ok {
+		return
+	}
+	fs, err := newInstanceFS(sp)
+	if err != nil {
+		web.WriteAPIError(w, http.StatusNotFound, msg.TargetNotFound, nil)
+		return
+	}
+	currentRootPath := fs.RootPath()
+	currentRootReal, err := fs.EvalRootReal()
+	if err != nil {
+		web.WriteAPIError(w, http.StatusNotFound, msg.TargetNotFound, nil)
+		return
+	}
+	if !instancefs.SameCleanPath(currentRootPath, archive.RootPath) || !instancefs.SameCleanPath(currentRootReal, archive.RootReal) {
+		web.WriteAPIError(w, http.StatusNotFound, msg.TargetNotFound, nil)
 		return
 	}
 	web.MarkRequestAction(w, "archive-download")
@@ -254,90 +266,20 @@ func HandleApiFileArchiveDownload(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func resolveArchiveRules(sp *process.InstanceProcess, rules []fileBatchRule, requireExisting bool) ([]fileArchiveResolvedRule, error) {
-	resolved := make([]fileArchiveResolvedRule, 0, len(rules))
+func toInstanceArchiveRules(rules []fileBatchRule) []instancefs.ArchiveRule {
+	converted := make([]instancefs.ArchiveRule, 0, len(rules))
 	for _, rule := range rules {
-		rootPath, relPath, err := resolveInstanceFilePath(sp, rule.Path)
-		if err != nil {
-			return nil, err
-		}
-		if relPath == "" {
-			return nil, errors.New(msg.FilePathRequired)
-		}
-		absPath := filepath.Join(rootPath, filepath.FromSlash(relPath))
-		if err := ensurePathComponentsWithinRoot(rootPath, absPath, false); err != nil {
-			return nil, err
-		}
-		if requireExisting {
-			info, err := os.Lstat(absPath)
-			if err != nil {
-				return nil, err
-			}
-			if info.Mode()&os.ModeSymlink != 0 {
-				continue
-			}
-			if err := ensureResolvedPathWithinInstanceRoot(sp, absPath); err != nil {
-				return nil, err
-			}
-			resolved = append(resolved, fileArchiveResolvedRule{Path: filepath.Clean(absPath), IsDir: info.IsDir()})
-			continue
-		}
-		resolved = append(resolved, fileArchiveResolvedRule{Path: filepath.Clean(absPath), IsDir: rule.IsDir})
+		converted = append(converted, instancefs.ArchiveRule{Path: rule.Path, IsDir: rule.IsDir})
 	}
-	return resolved, nil
+	return converted
 }
 
-func newFileBatchExcludeMatcherFromResolved(exclude []fileArchiveResolvedRule) fileBatchExcludeMatcher {
+func newFileBatchExcludeMatcherFromResolved(exclude []instancefs.ArchiveRule) fileBatchExcludeMatcher {
 	rules := make([]fileBatchRule, 0, len(exclude))
 	for _, rule := range exclude {
 		rules = append(rules, fileBatchRule{Path: rule.Path, IsDir: rule.IsDir})
 	}
-	return newFileBatchExcludeMatcher(rules)
-}
-
-func resolveArchiveLayout(rootPath string, instanceName string, include []fileArchiveResolvedRule) (string, string, error) {
-	if len(include) == 0 {
-		return "", "", errors.New(msg.FilePathRequired)
-	}
-	if len(include) == 1 && include[0].IsDir {
-		base := filepath.Dir(include[0].Path)
-		return base, safeArchiveDownloadName(filepath.Base(include[0].Path)), nil
-	}
-	commonParent := filepath.Dir(include[0].Path)
-	for _, rule := range include[1:] {
-		commonParent = commonArchiveParent(commonParent, filepath.Dir(rule.Path))
-	}
-	rootClean := filepath.Clean(rootPath)
-	if filepath.Clean(commonParent) == rootClean {
-		return commonParent, safeArchiveDownloadName(instanceName), nil
-	}
-	return commonParent, safeArchiveDownloadName(filepath.Base(commonParent)), nil
-}
-
-func commonArchiveParent(a string, b string) string {
-	a = filepath.Clean(a)
-	b = filepath.Clean(b)
-	for {
-		if isPathWithinRoot(a, b) {
-			return a
-		}
-		parent := filepath.Dir(a)
-		if parent == a {
-			return parent
-		}
-		a = parent
-	}
-}
-
-func safeArchiveDownloadName(name string) string {
-	name = strings.TrimSpace(name)
-	name = strings.ReplaceAll(name, "\x00", "")
-	name = strings.ReplaceAll(name, "/", "_")
-	name = strings.ReplaceAll(name, "\\", "_")
-	if name == "" || name == "." || name == ".." {
-		name = "archive"
-	}
-	return name + ".zip"
+	return newFileBatchExcludeMatcherFromAbsoluteRules(rules)
 }
 
 func writeArchiveDirectory(r *http.Request, w http.ResponseWriter, zw *zip.Writer, buffer []byte, rootReal string, archiveBase string, dirPath string, excludes fileBatchExcludeMatcher) error {
@@ -396,7 +338,7 @@ func writeArchiveDirectory(r *http.Request, w http.ResponseWriter, zw *zip.Write
 }
 
 func writeArchiveDirEntry(w http.ResponseWriter, zw *zip.Writer, archiveBase string, dirPath string, info os.FileInfo) error {
-	entryName, ok := safeArchiveEntryName(archiveBase, dirPath)
+	entryName, ok := instancefs.SafeArchiveEntryName(archiveBase, dirPath)
 	if !ok {
 		archiveDebugLogf(msg.ArchiveSkippedUnsafeDirectoryEntryLogFmt, dirPath)
 		return nil
@@ -431,7 +373,7 @@ func writeArchiveFile(w http.ResponseWriter, zw *zip.Writer, buffer []byte, root
 }
 
 func writeArchiveFileWithInfo(w http.ResponseWriter, zw *zip.Writer, buffer []byte, rootReal string, archiveBase string, filePath string, info os.FileInfo) error {
-	if err := ensureArchiveFileWithinRoot(rootReal, filePath); err != nil {
+	if err := instancefs.EnsureArchiveFileWithinRootStatic(rootReal, filePath); err != nil {
 		archiveDebugLogf(msg.ArchiveSkippedEscapedFilePathLogFmt, filePath, err)
 		return nil
 	}
@@ -455,11 +397,11 @@ func writeArchiveFileWithInfo(w http.ResponseWriter, zw *zip.Writer, buffer []by
 		archiveDebugLogf(msg.ArchiveSkippedChangedOrNonRegularFileLogFmt, filePath)
 		return nil
 	}
-	if err := ensureArchiveFileWithinRoot(rootReal, filePath); err != nil {
+	if err := instancefs.EnsureArchiveFileWithinRootStatic(rootReal, filePath); err != nil {
 		archiveDebugLogf(msg.ArchiveSkippedEscapedOpenedFilePathLogFmt, filePath, err)
 		return nil
 	}
-	entryName, ok := safeArchiveEntryName(archiveBase, filePath)
+	entryName, ok := instancefs.SafeArchiveEntryName(archiveBase, filePath)
 	if !ok {
 		archiveDebugLogf(msg.ArchiveSkippedUnsafeFileEntryLogFmt, filePath)
 		return nil
@@ -483,38 +425,4 @@ func writeArchiveFileWithInfo(w http.ResponseWriter, zw *zip.Writer, buffer []by
 		return err
 	}
 	return nil
-}
-
-func ensureArchiveFileWithinRoot(rootReal string, filePath string) error {
-	realPath, err := filepath.EvalSymlinks(filePath)
-	if err != nil {
-		return err
-	}
-	if !isPathWithinRoot(rootReal, realPath) {
-		return errors.New(msg.PathOutsideInstanceRoot)
-	}
-	return nil
-}
-
-func safeArchiveEntryName(basePath string, targetPath string) (string, bool) {
-	if filepath.VolumeName(targetPath) != filepath.VolumeName(basePath) {
-		return "", false
-	}
-	rel, err := filepath.Rel(filepath.Clean(basePath), filepath.Clean(targetPath))
-	if err != nil || rel == "." || rel == "" {
-		return "", false
-	}
-	if filepath.IsAbs(rel) || filepath.VolumeName(rel) != "" || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", false
-	}
-	name := filepath.ToSlash(rel)
-	if strings.Contains(name, "\x00") || strings.HasPrefix(name, "/") {
-		return "", false
-	}
-	for _, part := range strings.Split(name, "/") {
-		if part == "" || part == "." || part == ".." || filepath.VolumeName(part) != "" {
-			return "", false
-		}
-	}
-	return name, true
 }

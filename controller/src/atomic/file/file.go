@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"IpacPanel/controller/src/compat"
 	"IpacPanel/controller/src/msg"
@@ -25,12 +26,8 @@ var (
 	registryPath string
 )
 
-type tempDirRegistry struct {
-	AtomicDirs []tempDirRegistryEntry `yaml:"atomic_dirs"`
-}
-
-type tempDirRegistryEntry struct {
-	Path string `yaml:"path"`
+type tempRegistry struct {
+	AtomicTemps []string `yaml:"atomic_temps"`
 }
 
 type Options struct {
@@ -55,6 +52,10 @@ func SetRegistryPath(path string) {
 }
 
 func CreateTempDir(parent string, mode os.FileMode) (string, error) {
+	return CreateRegisteredTempDir(parent, mode)
+}
+
+func CreateRegisteredTempDir(parent string, mode os.FileMode) (string, error) {
 	parent = strings.TrimSpace(parent)
 	if parent == "" {
 		parent = "."
@@ -76,7 +77,7 @@ func CreateTempDir(parent string, mode os.FileMode) (string, error) {
 			}
 			return "", err
 		}
-		if err := RegisterTempDir(tempDir); err != nil {
+		if err := RegisterTempPath(tempDir); err != nil {
 			removeErr := os.RemoveAll(tempDir)
 			return "", errors.Join(err, removeErr)
 		}
@@ -85,9 +86,16 @@ func CreateTempDir(parent string, mode os.FileMode) (string, error) {
 }
 
 func RegisterTempDir(path string) error {
+	return RegisterTempPath(path)
+}
+
+func RegisterTempPath(path string) error {
 	path = cleanRegistryPath(path)
 	if path == "" {
 		return errors.New(msg.TempDirectoryPathEmpty)
+	}
+	if !IsAtomicTempRegistryPath(path) {
+		return nil
 	}
 	registryMu.Lock()
 	defer registryMu.Unlock()
@@ -95,20 +103,24 @@ func RegisterTempDir(path string) error {
 	if err != nil {
 		return err
 	}
-	registry, err := loadTempDirRegistryLocked(registryFile)
+	registry, err := loadTempRegistryLocked(registryFile)
 	if err != nil {
 		return err
 	}
-	for _, entry := range registry.AtomicDirs {
-		if cleanRegistryPath(entry.Path) == path {
-			return writeTempDirRegistryLocked(registryFile, registry)
+	for _, registeredPath := range registry.AtomicTemps {
+		if cleanRegistryPath(registeredPath) == path {
+			return writeTempRegistryLocked(registryFile, registry)
 		}
 	}
-	registry.AtomicDirs = append(registry.AtomicDirs, tempDirRegistryEntry{Path: path})
-	return writeTempDirRegistryLocked(registryFile, registry)
+	registry.AtomicTemps = append(registry.AtomicTemps, path)
+	return writeTempRegistryLocked(registryFile, registry)
 }
 
 func UnregisterTempDir(path string) error {
+	return UnregisterTempPath(path)
+}
+
+func UnregisterTempPath(path string) error {
 	path = cleanRegistryPath(path)
 	if path == "" {
 		return errors.New(msg.TempDirectoryPathEmpty)
@@ -119,51 +131,65 @@ func UnregisterTempDir(path string) error {
 	if err != nil {
 		return err
 	}
-	registry, err := loadTempDirRegistryLocked(registryFile)
+	registry, err := loadTempRegistryLocked(registryFile)
 	if err != nil {
 		return err
 	}
-	registry.AtomicDirs = filterTempDirRegistryEntries(registry.AtomicDirs, path)
-	return writeTempDirRegistryLocked(registryFile, registry)
+	registry.AtomicTemps = filterTempRegistryPaths(registry.AtomicTemps, path)
+	return writeTempRegistryLocked(registryFile, registry)
 }
 
 func RemoveRegisteredTempDir(path string) error {
+	return RemoveRegisteredTempPath(path)
+}
+
+func RemoveRegisteredTempPath(path string) error {
 	path = cleanRegistryPath(path)
 	if path == "" {
 		return errors.New(msg.TempDirectoryPathEmpty)
 	}
-	if err := os.RemoveAll(path); err != nil {
+	if !IsAtomicTempRegistryPath(path) {
+		return UnregisterTempPath(path)
+	}
+	if err := removeAtomicTempPath(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return UnregisterTempDir(path)
+	return UnregisterTempPath(path)
 }
 
 func CleanupRegisteredAtomicTempDirs() error {
+	return CleanupRegisteredAtomicTemps()
+}
+
+func CleanupRegisteredAtomicTemps() error {
 	registryMu.Lock()
 	defer registryMu.Unlock()
 	registryFile, err := requireRegistryPathLocked()
 	if err != nil {
 		return err
 	}
-	registry, err := loadTempDirRegistryLocked(registryFile)
+	registry, err := loadTempRegistryLocked(registryFile)
 	if err != nil {
 		return err
 	}
-	remaining := make([]tempDirRegistryEntry, 0, len(registry.AtomicDirs))
+	remaining := make([]string, 0, len(registry.AtomicTemps))
 	var cleanupErr error
-	for _, entry := range registry.AtomicDirs {
-		path := cleanRegistryPath(entry.Path)
-		if path == "" {
+	for _, registeredPath := range registry.AtomicTemps {
+		path := cleanRegistryPath(registeredPath)
+		if path == "" || !IsAtomicTempRegistryPath(path) {
 			continue
 		}
-		if err := os.RemoveAll(path); err != nil {
-			remaining = append(remaining, tempDirRegistryEntry{Path: path})
+		if err := removeAtomicTempPath(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			remaining = append(remaining, path)
 			cleanupErr = errors.Join(cleanupErr, err)
 			continue
 		}
 	}
-	registry.AtomicDirs = remaining
-	writeErr := writeTempDirRegistryLocked(registryFile, registry)
+	registry.AtomicTemps = remaining
+	writeErr := writeTempRegistryLocked(registryFile, registry)
 	return errors.Join(cleanupErr, writeErr)
 }
 
@@ -188,6 +214,19 @@ func OpenTempForTarget(targetPath string, mode os.FileMode) (*os.File, string, e
 			return nil, "", err
 		}
 	}
+}
+
+func CreateRegisteredTempFileForTarget(targetPath string, mode os.FileMode) (*os.File, string, error) {
+	tmp, tmpPath, err := OpenTempForTarget(targetPath, mode)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := RegisterTempPath(tmpPath); err != nil {
+		closeErr := tmp.Close()
+		removeErr := os.Remove(tmpPath)
+		return nil, "", errors.Join(err, closeErr, removeErr)
+	}
+	return tmp, tmpPath, nil
 }
 
 func CommitTemp(tempPath string, targetPath string, overwrite bool, syncDir bool) error {
@@ -377,24 +416,29 @@ func cleanRegistryPath(path string) string {
 	return filepath.Clean(path)
 }
 
-func loadTempDirRegistryLocked(path string) (tempDirRegistry, error) {
+func loadTempRegistryLocked(path string) (tempRegistry, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return tempDirRegistry{}, nil
+			return tempRegistry{}, nil
 		}
-		return tempDirRegistry{}, err
+		return tempRegistry{}, err
 	}
-	var registry tempDirRegistry
-	if err := yaml.Unmarshal(data, &registry); err != nil {
-		return tempDirRegistry{}, err
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		backupPath := nextCorruptBackupPath(path)
+		if renameErr := os.Rename(path, backupPath); renameErr != nil {
+			return tempRegistry{}, renameErr
+		}
+		return tempRegistry{}, nil
 	}
-	registry.AtomicDirs = normalizeTempDirRegistryEntries(registry.AtomicDirs)
+	registry := parseTempRegistryNode(&root)
+	registry.AtomicTemps = normalizeTempRegistryPaths(registry.AtomicTemps)
 	return registry, nil
 }
 
-func writeTempDirRegistryLocked(path string, registry tempDirRegistry) error {
-	registry.AtomicDirs = normalizeTempDirRegistryEntries(registry.AtomicDirs)
+func writeTempRegistryLocked(path string, registry tempRegistry) error {
+	registry.AtomicTemps = normalizeTempRegistryPaths(registry.AtomicTemps)
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
@@ -408,39 +452,103 @@ func writeTempDirRegistryLocked(path string, registry tempDirRegistry) error {
 	return WriteFile(path, buf.Bytes(), Options{Overwrite: true, Mode: 0644, SyncDir: true})
 }
 
-func normalizeTempDirRegistryEntries(entries []tempDirRegistryEntry) []tempDirRegistryEntry {
-	seen := make(map[string]struct{}, len(entries))
-	normalized := make([]tempDirRegistryEntry, 0, len(entries))
-	for _, entry := range entries {
-		path := cleanRegistryPath(entry.Path)
-		if path == "" {
+func parseTempRegistryNode(root *yaml.Node) tempRegistry {
+	if root == nil {
+		return tempRegistry{}
+	}
+	node := root
+	if node.Kind == yaml.DocumentNode {
+		if len(node.Content) == 0 {
+			return tempRegistry{}
+		}
+		node = node.Content[0]
+	}
+	if node.Kind != yaml.MappingNode {
+		return tempRegistry{}
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		value := node.Content[i+1]
+		if key.Kind != yaml.ScalarNode || key.Value != "atomic_temps" || value.Kind != yaml.SequenceNode {
+			continue
+		}
+		paths := make([]string, 0, len(value.Content))
+		for _, item := range value.Content {
+			if item.Kind != yaml.ScalarNode {
+				continue
+			}
+			paths = append(paths, item.Value)
+		}
+		return tempRegistry{AtomicTemps: paths}
+	}
+	return tempRegistry{}
+}
+
+func normalizeTempRegistryPaths(paths []string) []string {
+	seen := make(map[string]struct{}, len(paths))
+	normalized := make([]string, 0, len(paths))
+	for _, registeredPath := range paths {
+		path := cleanRegistryPath(registeredPath)
+		if path == "" || !IsAtomicTempRegistryPath(path) {
 			continue
 		}
 		if _, ok := seen[path]; ok {
 			continue
 		}
 		seen[path] = struct{}{}
-		normalized = append(normalized, tempDirRegistryEntry{Path: path})
+		normalized = append(normalized, path)
 	}
 	return normalized
 }
 
-func filterTempDirRegistryEntries(entries []tempDirRegistryEntry, removePath string) []tempDirRegistryEntry {
+func filterTempRegistryPaths(paths []string, removePath string) []string {
 	removePath = cleanRegistryPath(removePath)
-	filtered := make([]tempDirRegistryEntry, 0, len(entries))
-	seen := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
-		path := cleanRegistryPath(entry.Path)
-		if path == "" || path == removePath {
+	filtered := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, registeredPath := range paths {
+		path := cleanRegistryPath(registeredPath)
+		if path == "" || path == removePath || !IsAtomicTempRegistryPath(path) {
 			continue
 		}
 		if _, ok := seen[path]; ok {
 			continue
 		}
 		seen[path] = struct{}{}
-		filtered = append(filtered, tempDirRegistryEntry{Path: path})
+		filtered = append(filtered, path)
 	}
 	return filtered
+}
+
+func IsAtomicTempRegistryPath(path string) bool {
+	base := filepath.Base(cleanRegistryPath(path))
+	matched, err := filepath.Match(tempPrefix+"-*", base)
+	return err == nil && matched
+}
+
+func removeAtomicTempPath(path string) error {
+	path = cleanRegistryPath(path)
+	if path == "" || !IsAtomicTempRegistryPath(path) {
+		return nil
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return os.RemoveAll(path)
+	}
+	return os.Remove(path)
+}
+
+func nextCorruptBackupPath(path string) string {
+	base := path + ".corrupt." + time.Now().Format("20060102150405")
+	backupPath := base
+	for i := 1; ; i++ {
+		if _, err := os.Lstat(backupPath); errors.Is(err, os.ErrNotExist) {
+			return backupPath
+		}
+		backupPath = base + "." + strconv.Itoa(i)
+	}
 }
 
 func cleanupTemp(path string, committed *bool) {

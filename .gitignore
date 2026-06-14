@@ -1,6 +1,7 @@
 *.log
 test/
 _test/
+*_test.go
 
 # Go build outputs
 build/
@@ -20,3 +21,6 @@ build/
 # OS files
 .DS_Store
 Thumbs.db
+
+# OpenCode deepwork state
+.slim/deepwork/

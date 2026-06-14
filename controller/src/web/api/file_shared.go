@@ -2,24 +2,25 @@ package api
 
 import (
 	"IpacPanel/controller/src/atomic/file"
+	"IpacPanel/controller/src/compat"
 	cfg "IpacPanel/controller/src/config"
+	"IpacPanel/controller/src/instancefs"
 	"IpacPanel/controller/src/msg"
 	"container/heap"
+	"context"
 	"errors"
 
-	process "IpacPanel/controller/src/process"
-
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	process "IpacPanel/controller/src/process"
 )
 
 const (
-	maxFileNameLen     = 255
 	maxFileSearchLen   = 4096
 	maxFilePathTextLen = 4096
 )
@@ -28,255 +29,122 @@ func textTooLong(value string, maxLen int) bool {
 	return utf8.RuneCountInString(value) > maxLen
 }
 
-func isPathWithinRoot(rootPath string, targetPath string) bool {
-	rel, err := filepath.Rel(rootPath, targetPath)
-	if err != nil {
-		return false
-	}
-	if rel == "." {
-		return true
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return false
-	}
-	return !filepath.IsAbs(rel)
+func ensurePathComponentsWithinRoot(rootPath string, targetPath string, includeLeaf bool) error {
+	return instancefs.EnsurePathComponentsWithinRoot(rootPath, targetPath, includeLeaf)
 }
 
 func ensureResolvedPathWithinInstanceRoot(sp *process.InstanceProcess, targetPath string) error {
-	rootAbs, err := getInstanceRootPath(sp)
-	if err != nil {
-		return err
-	}
-	rootReal, err := filepath.EvalSymlinks(rootAbs)
-	if err != nil {
-		return fmt.Errorf(msg.InstanceRootPathInvalidFmt, err)
-	}
-	targetReal, err := filepath.EvalSymlinks(targetPath)
-	if err != nil {
-		return fmt.Errorf(msg.PathInvalidFmt, err)
-	}
-	if !isPathWithinRoot(rootReal, targetReal) {
-		return errors.New(msg.PathOutsideInstanceRoot)
-	}
-	return nil
+	return instancefs.EnsureResolvedPathWithinInstanceRoot(sp, targetPath)
 }
 
 func ensureNewPathWithinInstanceRoot(sp *process.InstanceProcess, targetPath string) error {
-	rootAbs, err := getInstanceRootPath(sp)
-	if err != nil {
-		return err
-	}
-	rootReal, err := filepath.EvalSymlinks(rootAbs)
-	if err != nil {
-		return fmt.Errorf(msg.InstanceRootPathInvalidFmt, err)
-	}
-
-	// targetPath may not exist yet (e.g. rename destination). Validate its parent.
-	parent := filepath.Dir(targetPath)
-	parentReal, err := filepath.EvalSymlinks(parent)
-	if err != nil {
-		return fmt.Errorf(msg.PathInvalidFmt, err)
-	}
-	if !isPathWithinRoot(rootReal, parentReal) {
-		return errors.New(msg.PathOutsideInstanceRoot)
-	}
-	return nil
+	return instancefs.EnsureNewPathWithinInstanceRoot(sp, targetPath)
 }
 
 func ensureCreatedPathWithinInstanceRoot(sp *process.InstanceProcess, targetPath string) error {
 	return ensureResolvedPathWithinInstanceRoot(sp, targetPath)
 }
 
-func ensurePathComponentsWithinRoot(rootPath string, targetPath string, includeLeaf bool) error {
-	rootReal, err := filepath.EvalSymlinks(rootPath)
-	if err != nil {
-		return fmt.Errorf(msg.InstanceRootPathInvalidFmt, err)
-	}
-	cleanRoot := filepath.Clean(rootReal)
-	cleanTarget := filepath.Clean(targetPath)
-	if cleanTarget == cleanRoot {
-		return nil
-	}
-	rel, err := filepath.Rel(cleanRoot, cleanTarget)
-	if err != nil {
-		return fmt.Errorf(msg.PathInvalidFmt, err)
-	}
-	if rel == "." {
-		return nil
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return errors.New(msg.PathOutsideInstanceRoot)
-	}
-	parts := strings.Split(rel, string(filepath.Separator))
-	if len(parts) == 0 {
-		return nil
-	}
-	limit := len(parts)
-	if !includeLeaf {
-		limit--
-	}
-	current := cleanRoot
-	for i := 0; i < limit; i++ {
-		part := strings.TrimSpace(parts[i])
-		if part == "" || part == "." {
-			continue
-		}
-		current = filepath.Join(current, part)
-		info, statErr := os.Lstat(current)
-		if statErr != nil {
-			if errors.Is(statErr, os.ErrNotExist) {
-				continue
-			}
-			return fmt.Errorf(msg.PathInvalidFmt, statErr)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return errors.New(msg.PathOutsideInstanceRoot)
-		}
-		realCurrent, realErr := filepath.EvalSymlinks(current)
-		if realErr != nil {
-			return fmt.Errorf(msg.PathInvalidFmt, realErr)
-		}
-		if !isPathWithinRoot(cleanRoot, realCurrent) {
-			return errors.New(msg.PathOutsideInstanceRoot)
-		}
-	}
-	return nil
-}
-
-func openAtomicTempFileWithinRoot(rootPath string, targetPath string, mode os.FileMode) (*os.File, string, error) {
-	targetPath = strings.TrimSpace(targetPath)
-	if targetPath == "" {
-		return nil, "", errors.New(msg.EmptyDest)
-	}
-	if err := ensurePathComponentsWithinRoot(rootPath, targetPath, false); err != nil {
-		return nil, "", err
-	}
-	dir := filepath.Dir(targetPath)
-	if dir == "" {
-		dir = "."
-	}
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, "", err
-	}
-	if err := ensurePathComponentsWithinRoot(rootPath, targetPath, false); err != nil {
-		return nil, "", err
-	}
-	tmp, tmpPath, err := file.OpenTempForTarget(targetPath, mode)
-	if err != nil {
-		return nil, "", err
-	}
-	if err := ensurePathComponentsWithinRoot(rootPath, tmpPath, true); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return nil, "", err
-	}
-	return tmp, tmpPath, nil
-}
-
-func commitAtomicTempFileWithinRoot(rootPath string, tempPath string, targetPath string, overwrite bool) error {
-	tempPath = strings.TrimSpace(tempPath)
-	targetPath = strings.TrimSpace(targetPath)
-	if tempPath == "" || targetPath == "" {
-		return errors.New(msg.EmptyDest)
-	}
-	if err := ensurePathComponentsWithinRoot(rootPath, tempPath, true); err != nil {
-		return err
-	}
-	if err := ensurePathComponentsWithinRoot(rootPath, targetPath, false); err != nil {
-		return err
-	}
-	if info, err := os.Lstat(targetPath); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return errors.New(msg.PathOutsideInstanceRoot)
-		}
-		if info.IsDir() {
-			return errors.New(msg.UploadTargetIsDirectory)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := file.CommitTemp(tempPath, targetPath, overwrite, true); err != nil {
-		return err
-	}
-	if err := ensurePathComponentsWithinRoot(rootPath, targetPath, true); err != nil {
-		_ = os.Remove(targetPath)
-		return err
-	}
-	return nil
-}
-
-func commitAtomicTempDirWithinRoot(rootPath string, tempDir string, targetPath string, overwrite bool) error {
-	tempDir = strings.TrimSpace(tempDir)
-	targetPath = strings.TrimSpace(targetPath)
-	if tempDir == "" || targetPath == "" {
-		return errors.New(msg.EmptyDest)
-	}
-	if err := ensurePathComponentsWithinRoot(rootPath, targetPath, false); err != nil {
-		return err
-	}
-	if info, err := os.Lstat(targetPath); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return errors.New(msg.PathOutsideInstanceRoot)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := file.CommitTempDir(tempDir, targetPath, file.DirOptions{Overwrite: overwrite, SyncDir: true}); err != nil {
-		return err
-	}
-	return ensurePathComponentsWithinRoot(rootPath, targetPath, true)
+func resolveInstanceFilePath(sp *process.InstanceProcess, relativePath string) (string, string, error) {
+	return instancefs.ResolveInstanceFilePath(sp, relativePath)
 }
 
 func ensureDirectoryWithinRoot(rootPath string, dirPath string) error {
-	dirPath = strings.TrimSpace(dirPath)
-	if dirPath == "" {
-		return errors.New(msg.EmptyDest)
-	}
-	if err := ensurePathComponentsWithinRoot(rootPath, dirPath, false); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dirPath, 0755); err != nil {
-		return err
-	}
-	return ensurePathComponentsWithinRoot(rootPath, dirPath, true)
+	return instancefs.EnsureDirectoryWithinRoot(rootPath, dirPath)
 }
 
 func copyFileAtomicWithinRoot(rootPath string, srcPath string, dstPath string, mode os.FileMode, overwrite bool) error {
-	tmp, tmpPath, err := openAtomicTempFileWithinRoot(rootPath, dstPath, mode)
-	if err != nil {
-		return err
-	}
-	committed := false
-	defer func() {
-		_ = tmp.Close()
-		if !committed {
-			_ = os.Remove(tmpPath)
-		}
-	}()
+	return instancefs.CopyFileAtomicWithinRoot(rootPath, srcPath, dstPath, mode, overwrite)
+}
 
-	src, err := os.Open(srcPath)
+func copyFileAtomicWithinRootContext(ctx context.Context, rootPath string, srcPath string, dstPath string, mode os.FileMode, overwrite bool) error {
+	return instancefs.CopyFileAtomicWithinRootContext(ctx, rootPath, srcPath, dstPath, mode, overwrite)
+}
+
+func writeFileAtomicWithinRoot(rootPath string, targetPath string, data []byte, overwrite bool, mode os.FileMode) error {
+	return instancefs.WriteFileAtomicWithinRoot(rootPath, targetPath, data, overwrite, mode)
+}
+
+func writeNewFileAtomic(sp *process.InstanceProcess, targetPath string, data []byte, overwrite bool, mode os.FileMode) error {
+	targetPath = strings.TrimSpace(targetPath)
+	if targetPath == "" {
+		return errors.New(msg.EmptyDest)
+	}
+	rootPath, err := instancefs.GetInstanceRootPath(sp)
 	if err != nil {
 		return err
 	}
-	defer src.Close()
-	if _, err := io.Copy(tmp, src); err != nil {
+	if err := instancefs.EnsureNewPathWithinInstanceRoot(sp, targetPath); err != nil {
 		return err
 	}
-	if err := tmp.Sync(); err != nil {
-		return err
+	return writeFileAtomicWithinRoot(rootPath, targetPath, data, overwrite, mode)
+}
+
+func writeFileAtomic(rootPath string, path string, data []byte, mode os.FileMode) error {
+	return writeFileAtomicWithinRoot(rootPath, path, data, true, mode)
+}
+
+func removeFileWithinRoot(rootPath string, targetPath string) error {
+	return instancefs.RemoveFileWithinRoot(rootPath, targetPath)
+}
+
+func removeEmptyDirectoryWithinRoot(rootPath string, targetPath string) error {
+	return instancefs.RemoveEmptyDirectoryWithinRoot(rootPath, targetPath)
+}
+
+func removeAllWithinRoot(rootPath string, targetPath string) error {
+	return instancefs.RemoveAllWithinRoot(rootPath, targetPath)
+}
+
+func newInstanceFS(sp *process.InstanceProcess) (*instancefs.InstanceFS, error) {
+	return instancefs.NewFromProcess(sp)
+}
+
+func ensureFileName(name string) (string, error) {
+	return instancefs.EnsureFileName(name)
+}
+
+func renameFileOnlyWithinRoot(rootPath string, srcPath string, dstPath string, overwrite bool) error {
+	return instancefs.RenameFileOnlyWithinRoot(rootPath, srcPath, dstPath, overwrite)
+}
+
+type moveFileCopiedRemoveSourceError struct {
+	SrcPath string
+	DstPath string
+	Err     error
+}
+
+func (err *moveFileCopiedRemoveSourceError) Error() string {
+	return "文件已复制, 删除源失败: " + err.Err.Error()
+}
+
+func (err *moveFileCopiedRemoveSourceError) Unwrap() error {
+	return err.Err
+}
+
+func moveFileWithinRoot(ctx context.Context, rootPath string, srcPath string, dstPath string, mode os.FileMode, overwrite bool) error {
+	if err := renameFileOnlyWithinRoot(rootPath, srcPath, dstPath, overwrite); err != nil {
+		if !compat.IsCrossDeviceRenameError(err) {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := copyFileAtomicWithinRootContext(ctx, rootPath, srcPath, dstPath, mode, overwrite); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := removeFileWithinRoot(rootPath, srcPath); err != nil {
+			return &moveFileCopiedRemoveSourceError{SrcPath: srcPath, DstPath: dstPath, Err: err}
+		}
 	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := commitAtomicTempFileWithinRoot(rootPath, tmpPath, dstPath, overwrite); err != nil {
-		return err
-	}
-	committed = true
 	return nil
 }
 
 func ensureFileMoveDestinationWithinRoot(rootPath string, dstPath string, noReplace bool) error {
-	if err := ensurePathComponentsWithinRoot(rootPath, dstPath, false); err != nil {
+	if err := instancefs.EnsurePathComponentsWithinRoot(rootPath, dstPath, false); err != nil {
 		return err
 	}
 	info, err := os.Lstat(dstPath)
@@ -293,13 +161,13 @@ func ensureFileMoveDestinationWithinRoot(rootPath string, dstPath string, noRepl
 		return errors.New(msg.PathOutsideInstanceRoot)
 	}
 	if info.IsDir() {
-		return errors.New(msg.UploadTargetIsDirectory)
+		return instancefs.ErrUploadTargetIsDirectory
 	}
 	return nil
 }
 
 func renameDirectoryWithinRoot(rootPath string, srcPath string, dstPath string) error {
-	if err := ensurePathComponentsWithinRoot(rootPath, dstPath, false); err != nil {
+	if err := instancefs.EnsurePathComponentsWithinRoot(rootPath, dstPath, false); err != nil {
 		return err
 	}
 	if info, err := os.Lstat(dstPath); err == nil {
@@ -315,56 +183,7 @@ func renameDirectoryWithinRoot(rootPath string, srcPath string, dstPath string) 
 	if err := file.SyncDir(filepath.Dir(dstPath)); err != nil {
 		return err
 	}
-	return ensurePathComponentsWithinRoot(rootPath, dstPath, true)
-}
-
-func removeFileWithinRoot(rootPath string, targetPath string) error {
-	if err := ensurePathComponentsWithinRoot(rootPath, targetPath, true); err != nil {
-		return err
-	}
-	info, err := os.Lstat(targetPath)
-	if err != nil {
-		return err
-	}
-	if info.IsDir() {
-		return errors.New(msg.UploadTargetIsDirectory)
-	}
-	return os.Remove(targetPath)
-}
-
-func removeEmptyDirectoryWithinRoot(rootPath string, targetPath string) error {
-	if err := ensurePathComponentsWithinRoot(rootPath, targetPath, true); err != nil {
-		return err
-	}
-	info, err := os.Lstat(targetPath)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() {
-		return errors.New(msg.DestinationNotDirectory)
-	}
-	return os.Remove(targetPath)
-}
-
-func removeAllWithinRoot(rootPath string, targetPath string) error {
-	if err := ensurePathComponentsWithinRoot(rootPath, targetPath, true); err != nil {
-		return err
-	}
-	if err := filepath.WalkDir(targetPath, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ensurePathComponentsWithinRoot(rootPath, path, true); err != nil {
-			return err
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return errors.New(msg.PathOutsideInstanceRoot)
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	return os.RemoveAll(targetPath)
+	return instancefs.EnsurePathComponentsWithinRoot(rootPath, dstPath, true)
 }
 
 func ensureUploadRelativePath(path string) (string, error) {
@@ -389,7 +208,7 @@ func ensureUploadRelativePath(path string) (string, error) {
 		if part == "" || part == "." || part == ".." {
 			return "", errors.New(msg.FileNameInvalid)
 		}
-		if _, err := ensureFileName(part); err != nil {
+		if _, err := instancefs.EnsureFileName(part); err != nil {
 			return "", err
 		}
 		normalizedParts = append(normalizedParts, part)
@@ -398,78 +217,6 @@ func ensureUploadRelativePath(path string) (string, error) {
 		return "", errors.New(msg.FileNameRequired)
 	}
 	return strings.Join(normalizedParts, "/"), nil
-}
-
-func writeFileAtomicWithinRoot(rootPath string, targetPath string, data []byte, overwrite bool, mode os.FileMode) error {
-	targetPath = strings.TrimSpace(targetPath)
-	if targetPath == "" {
-		return errors.New(msg.EmptyDest)
-	}
-	tmp, tmpPath, err := openAtomicTempFileWithinRoot(rootPath, targetPath, mode)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}()
-	if len(data) > 0 {
-		if _, err := tmp.Write(data); err != nil {
-			return err
-		}
-	}
-	if err := tmp.Sync(); err != nil {
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return commitAtomicTempFileWithinRoot(rootPath, tmpPath, targetPath, overwrite)
-}
-
-func writeNewFileAtomic(sp *process.InstanceProcess, targetPath string, data []byte, overwrite bool, mode os.FileMode) error {
-	targetPath = strings.TrimSpace(targetPath)
-	if targetPath == "" {
-		return errors.New(msg.EmptyDest)
-	}
-	rootPath, err := getInstanceRootPath(sp)
-	if err != nil {
-		return err
-	}
-	if err := ensureNewPathWithinInstanceRoot(sp, targetPath); err != nil {
-		return err
-	}
-	return writeFileAtomicWithinRoot(rootPath, targetPath, data, overwrite, mode)
-}
-
-func renameOrCopyFile(srcPath string, dstPath string, mode os.FileMode, noReplace bool) error {
-	if noReplace {
-		if err := file.CommitTemp(srcPath, dstPath, false, true); err == nil {
-			return nil
-		}
-	} else {
-		if err := os.Rename(srcPath, dstPath); err == nil {
-			return file.SyncDir(filepath.Dir(dstPath))
-		}
-	}
-	if err := file.CopyFile(srcPath, dstPath, file.Options{Overwrite: !noReplace, Mode: mode, SyncDir: true}); err != nil {
-		return err
-	}
-	return os.Remove(srcPath)
-}
-
-func renameOrCopyFileWithinRoot(rootPath string, srcPath string, dstPath string, mode os.FileMode, noReplace bool) error {
-	if err := ensureFileMoveDestinationWithinRoot(rootPath, dstPath, noReplace); err != nil {
-		return err
-	}
-	if err := copyFileAtomicWithinRoot(rootPath, srcPath, dstPath, mode, !noReplace); err != nil {
-		return err
-	}
-	return removeFileWithinRoot(rootPath, srcPath)
-}
-
-func writeFileAtomic(rootPath string, path string, data []byte, mode os.FileMode) error {
-	return writeFileAtomicWithinRoot(rootPath, path, data, true, mode)
 }
 
 type fileEntry struct {
@@ -565,135 +312,6 @@ type fileExtractRequest struct {
 	TargetPath  string `json:"target_path"`
 	ExtractHere bool   `json:"extract_here"`
 	Overwrite   bool   `json:"overwrite"`
-}
-
-func getInstanceRootPath(sp *process.InstanceProcess) (string, error) {
-	if sp == nil {
-		return "", errors.New(msg.InstanceNotFound)
-	}
-	ins := sp.InstanceSnapshot()
-	if strings.TrimSpace(ins.Name) == "" {
-		return "", errors.New(msg.InstanceNotFound)
-	}
-
-	root := strings.TrimSpace(ins.Path)
-	absRoot, err := cfg.ResolveInstancePath(root)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Clean(absRoot), nil
-}
-
-func normalizeRelativeFilePath(p string) string {
-	p = strings.ReplaceAll(strings.TrimSpace(p), "\\", "/")
-	p = strings.TrimPrefix(p, "/")
-	p = filepath.Clean(strings.ReplaceAll(p, "/", string(filepath.Separator)))
-	if p == "." {
-		return ""
-	}
-	return p
-}
-
-func resolveInstanceFilePath(sp *process.InstanceProcess, relativePath string) (string, string, error) {
-	rootPath, err := getInstanceRootPath(sp)
-	if err != nil {
-		return "", "", err
-	}
-
-	relativePath = strings.TrimSpace(relativePath)
-	if textTooLong(relativePath, maxFilePathTextLen) {
-		return "", "", errors.New(msg.PathTooLong)
-	}
-	if relativePath != "" {
-		osPath := strings.ReplaceAll(relativePath, "\\", string(filepath.Separator))
-		osPath = strings.ReplaceAll(osPath, "/", string(filepath.Separator))
-		if filepath.IsAbs(osPath) || isWindowsAbsolutePath(relativePath) || strings.HasPrefix(relativePath, "/") || strings.HasPrefix(relativePath, "\\") {
-			return "", "", errors.New(msg.PathOutsideInstanceRoot)
-		}
-	}
-
-	relativePath = normalizeRelativeFilePath(relativePath)
-	targetPath := rootPath
-	if relativePath != "" {
-		targetPath = filepath.Join(rootPath, relativePath)
-	}
-	targetPath = filepath.Clean(targetPath)
-
-	relToRoot, err := filepath.Rel(rootPath, targetPath)
-	if err != nil {
-		return "", "", err
-	}
-	if relToRoot == ".." || strings.HasPrefix(relToRoot, ".."+string(filepath.Separator)) {
-		return "", "", errors.New(msg.PathOutsideInstanceRoot)
-	}
-
-	normalizedRelative := ""
-	if relToRoot != "." {
-		normalizedRelative = filepath.ToSlash(relToRoot)
-	}
-
-	return rootPath, normalizedRelative, nil
-}
-
-func resolveFileListJumpPath(sp *process.InstanceProcess, requestedPath string) (string, string, error) {
-	requestedPath = strings.TrimSpace(requestedPath)
-	if textTooLong(requestedPath, maxFilePathTextLen) {
-		return "", "", errors.New(msg.PathTooLong)
-	}
-	if requestedPath == "" {
-		return resolveInstanceFilePath(sp, "")
-	}
-
-	osPath := strings.ReplaceAll(requestedPath, "\\", string(filepath.Separator))
-	osPath = strings.ReplaceAll(osPath, "/", string(filepath.Separator))
-	windowsAbsolute := isWindowsAbsolutePath(requestedPath)
-	if windowsAbsolute && !filepath.IsAbs(osPath) {
-		return "", "", errors.New(msg.PathOutsideInstanceRoot)
-	}
-	if !filepath.IsAbs(osPath) {
-		return resolveInstanceFilePath(sp, requestedPath)
-	}
-
-	rootPath, err := getInstanceRootPath(sp)
-	if err != nil {
-		return "", "", err
-	}
-	targetPath := filepath.Clean(osPath)
-	if err := ensureResolvedPathWithinInstanceRoot(sp, targetPath); err != nil {
-		return "", "", err
-	}
-
-	rootReal, err := filepath.EvalSymlinks(rootPath)
-	if err != nil {
-		return "", "", fmt.Errorf(msg.InstanceRootPathInvalidFmt, err)
-	}
-	targetReal, err := filepath.EvalSymlinks(targetPath)
-	if err != nil {
-		return "", "", fmt.Errorf(msg.PathInvalidFmt, err)
-	}
-	relToRoot, err := filepath.Rel(rootReal, targetReal)
-	if err != nil {
-		return "", "", err
-	}
-	if relToRoot == "." {
-		return rootPath, "", nil
-	}
-	return rootPath, filepath.ToSlash(relToRoot), nil
-}
-
-func isWindowsAbsolutePath(p string) bool {
-	p = strings.TrimSpace(p)
-	if strings.HasPrefix(p, `\\`) {
-		return true
-	}
-	if len(p) < 3 {
-		return false
-	}
-	drive := p[0]
-	if !((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) {
-		return false
-	}
-	return p[1] == ':' && (p[2] == '\\' || p[2] == '/')
 }
 
 func ensureTrailingSlash(p string) string {
@@ -901,12 +519,12 @@ func scanFileListPage(targetPath string, page int, query string, pageSize int) (
 }
 
 func buildFileListResponse(sp *process.InstanceProcess, relativePath string, page int, query string) (*fileListResponse, error) {
-	rootPath, normalizedPath, err := resolveInstanceFilePath(sp, relativePath)
+	rootPath, normalizedPath, err := instancefs.ResolveInstanceFilePath(sp, relativePath)
 	return buildFileListResponseFromResolvedPath(sp, rootPath, normalizedPath, page, query, err)
 }
 
 func buildFileListJumpResponse(sp *process.InstanceProcess, requestedPath string, page int, query string) (*fileListResponse, error) {
-	rootPath, normalizedPath, err := resolveFileListJumpPath(sp, requestedPath)
+	rootPath, normalizedPath, err := instancefs.ResolveFileListJumpPath(sp, requestedPath)
 	return buildFileListResponseFromResolvedPath(sp, rootPath, normalizedPath, page, query, err)
 }
 
@@ -916,7 +534,7 @@ func buildFileListResponseFromResolvedPath(sp *process.InstanceProcess, rootPath
 	}
 
 	rootPath = filepath.Clean(rootPath)
-	normalizedPath = normalizeRelativeFilePath(normalizedPath)
+	normalizedPath = instancefs.NormalizeRelativeFilePath(normalizedPath)
 	targetPath := rootPath
 	if normalizedPath != "" {
 		targetPath = filepath.Join(rootPath, filepath.FromSlash(normalizedPath))
@@ -927,9 +545,9 @@ func buildFileListResponseFromResolvedPath(sp *process.InstanceProcess, rootPath
 
 func buildFileListResponseFromTargetPath(sp *process.InstanceProcess, targetPath string, normalizedPath string, page int, query string) (*fileListResponse, error) {
 	targetPath = filepath.Clean(targetPath)
-	normalizedPath = normalizeRelativeFilePath(normalizedPath)
+	normalizedPath = instancefs.NormalizeRelativeFilePath(normalizedPath)
 
-	if err := ensureResolvedPathWithinInstanceRoot(sp, targetPath); err != nil {
+	if err := instancefs.EnsureResolvedPathWithinInstanceRoot(sp, targetPath); err != nil {
 		return nil, err
 	}
 	info, err := os.Stat(targetPath)
@@ -940,7 +558,7 @@ func buildFileListResponseFromTargetPath(sp *process.InstanceProcess, targetPath
 		return nil, errors.New(msg.PathNotDirectory)
 	}
 
-	if err := ensureResolvedPathWithinInstanceRoot(sp, targetPath); err != nil {
+	if err := instancefs.EnsureResolvedPathWithinInstanceRoot(sp, targetPath); err != nil {
 		return nil, err
 	}
 	items, totalCount, totalPages, page, err := scanFileListPage(targetPath, page, query, fileListPageSize)
@@ -959,21 +577,4 @@ func buildFileListResponseFromTargetPath(sp *process.InstanceProcess, targetPath
 		HasPrev:    page > 1,
 		HasNext:    totalPages > 0 && page < totalPages,
 	}, nil
-}
-
-func ensureFileName(name string) (string, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return "", errors.New(msg.FileNameRequired)
-	}
-	if textTooLong(name, maxFileNameLen) {
-		return "", errors.New(msg.FileNameTooLong)
-	}
-	if name == "." || name == ".." {
-		return "", errors.New(msg.FileNameInvalid)
-	}
-	if strings.ContainsAny(name, `\\/:*?"<>|`) {
-		return "", errors.New(msg.FileNameInvalidChars)
-	}
-	return name, nil
 }

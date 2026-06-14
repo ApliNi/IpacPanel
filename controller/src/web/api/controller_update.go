@@ -506,8 +506,8 @@ func copyControllerUpdateDocFile(sourcePath string, targetPath string, mode os.F
 	return nil
 }
 
-func prepareControllerUpdateBinary(uploadPath string, tempDir string) (string, *controllerUpdateVersionInfo, error) {
-	extractDir := filepath.Join(tempDir, "extracted-controller")
+func prepareControllerUpdateBinary(uploadPath string, workDir string) (string, *controllerUpdateVersionInfo, error) {
+	extractDir := filepath.Join(workDir, "extracted-controller")
 	extractedPath := filepath.Join(extractDir, controllerBinaryName())
 	if err := extractControllerFromZip(uploadPath, extractedPath); err != nil {
 		return "", nil, fmt.Errorf(msg.ControllerUpdatePackageInvalidFmt, err)
@@ -530,11 +530,11 @@ func requireControllerUpdateSession(session *fileUploadSession, ownerUser string
 }
 
 func cleanupControllerUpdateUploadSession(ownerUser string) {
-	tempDir, _, err := cancelUploadSession(controllerUpdateUploadID, func(session *fileUploadSession) error {
+	cleanupPath, _, err := cancelUploadSession(controllerUpdateUploadID, func(session *fileUploadSession) error {
 		return requireControllerUpdateSession(session, ownerUser)
 	})
-	if err == nil && tempDir != "" {
-		_ = file.RemoveRegisteredTempDir(tempDir)
+	if err == nil && cleanupPath != "" {
+		_ = file.RemoveRegisteredTempPath(cleanupPath)
 	}
 }
 
@@ -615,20 +615,49 @@ func HandleApiControllerUpdateUploadInit(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	tempDir, err := file.CreateTempDir(updateDir, 0700)
+	stageFile, stagePath, err := file.CreateRegisteredTempFileForTarget(filepath.Join(updateDir, strings.TrimSpace(req.Name)), 0644)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.CreateUploadTempDirFailed, err)
 		return
 	}
-	stagePath := filepath.Join(tempDir, "controller-update.zip.stage")
+	stageClosed := false
+	stageCommitted := false
+	defer func() {
+		if !stageClosed {
+			_ = stageFile.Close()
+		}
+		if !stageCommitted {
+			_ = file.RemoveRegisteredTempPath(stagePath)
+		}
+	}()
+	if err := stageFile.Truncate(req.Size); err != nil {
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.CreateUploadTempDirFailed, err)
+		return
+	}
+	if err := stageFile.Sync(); err != nil {
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.CreateUploadTempDirFailed, err)
+		return
+	}
+	if err := stageFile.Close(); err != nil {
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.CreateUploadTempDirFailed, err)
+		return
+	}
+	stageClosed = true
+	stageInfo, err := os.Lstat(stagePath)
+	if err != nil {
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.CreateUploadTempDirFailed, err)
+		return
+	}
 	session := &fileUploadSession{
 		UploadID:       controllerUpdateUploadID,
 		Scope:          uploadScopeControllerUpdate,
 		OwnerUser:      authedUser.User,
 		FileName:       strings.TrimSpace(req.Name),
 		TargetPath:     controllerUpdateBinaryPath(),
-		TempDir:        tempDir,
+		StageRoot:      updateDir,
 		StagePath:      stagePath,
+		CleanupPath:    stagePath,
+		StageInfo:      stageInfo,
 		Size:           req.Size,
 		ChunkSize:      chunkSize,
 		ChunkCount:     chunkCount,
@@ -641,8 +670,9 @@ func HandleApiControllerUpdateUploadInit(w http.ResponseWriter, r *http.Request)
 		CompleteDone:   make(chan struct{}),
 	}
 	old := replaceUploadSession(session)
+	stageCommitted = true
 	if old != nil {
-		removeUploadTempDirIfIdle(old)
+		removeUploadCleanupPathIfIdle(old)
 	}
 	web.WriteOK(w, map[string]string{"upload_id": controllerUpdateUploadID})
 }
@@ -693,7 +723,19 @@ func HandleApiControllerUpdateUploadChunk(w http.ResponseWriter, r *http.Request
 	alreadyReceived := isUploadChunkReceivedLocked(session, index)
 	uploads.mu.RUnlock()
 	if alreadyReceived {
-		drainUploadRequestBody(r.Body)
+		if err := validateUploadStageFileIdentity(session); err != nil {
+			web.WriteAPIError(w, http.StatusBadRequest, msg.UploadSessionInvalid, err)
+			return
+		}
+		if err := drainUploadRequestBodyLimited(r.Body, plan.Size); err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				web.WriteAPIError(w, http.StatusRequestEntityTooLarge, msg.UploadChunkTooLarge, nil)
+				return
+			}
+			web.WriteAPIError(w, http.StatusBadRequest, msg.ReadUploadChunkFailed, err)
+			return
+		}
 		web.WriteOK(w, map[string]bool{"ok": true})
 		return
 	}
@@ -791,7 +833,7 @@ func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Requ
 		writeUploadCanceled(w)
 		return
 	}
-	if err := syncUploadStageFile(session.StagePath, session.Size); err != nil {
+	if err := syncUploadStageFile(session, session.Size); err != nil {
 		completionStatus = uploadSessionActive
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.SaveUploadFileFailed, err)
 		return
@@ -801,7 +843,19 @@ func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Requ
 		writeUploadCanceled(w)
 		return
 	}
-	updateBinaryPath, versionInfo, err := prepareControllerUpdateBinary(session.StagePath, session.TempDir)
+	workDir, err := file.CreateRegisteredTempDir(controllerUpdateDir(), 0700)
+	if err != nil {
+		completionStatus = uploadSessionActive
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.CreateUploadTempDirFailed, err)
+		return
+	}
+	workDirRemoved := false
+	defer func() {
+		if !workDirRemoved {
+			_ = file.RemoveRegisteredTempPath(workDir)
+		}
+	}()
+	updateBinaryPath, versionInfo, err := prepareControllerUpdateBinary(session.StagePath, workDir)
 	if err != nil {
 		completionStatus = uploadSessionActive
 		web.WriteAPIError(w, http.StatusBadRequest, controllerUpdatePrepareUserMessage(err), err)
@@ -829,12 +883,16 @@ func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Requ
 	}
 	uploads.mu.Unlock()
 	if !currentActive {
+		_ = file.RemoveRegisteredTempPath(workDir)
+		workDirRemoved = true
 		cleanupControllerUpdateDocsStaging()
 		completionStatus = uploadSessionCanceled
 		writeUploadCanceled(w)
 		return
 	}
 	if err != nil {
+		_ = file.RemoveRegisteredTempPath(workDir)
+		workDirRemoved = true
 		cleanupControllerUpdateDocsStaging()
 		completionStatus = uploadSessionActive
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.CommitControllerUpdateFileFailed, err)
@@ -850,8 +908,12 @@ func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	signalUploadCompletion(session)
-	if session.TempDir != "" {
-		_ = file.RemoveRegisteredTempDir(session.TempDir)
+	_ = file.RemoveRegisteredTempPath(workDir)
+	workDirRemoved = true
+	if session.CleanupPath != "" {
+		if err := file.RemoveRegisteredTempPath(session.CleanupPath); err != nil {
+			log.Printf("清理控制器更新临时文件失败: %v", err)
+		}
 	}
 	completionStatus = uploadSessionCommitted
 	web.WriteOK(w, map[string]interface{}{
@@ -886,15 +948,15 @@ func HandleApiControllerUpdateUploadAbort(w http.ResponseWriter, r *http.Request
 		web.WriteAPIError(w, http.StatusNotFound, msg.UploadSessionNotFound, nil)
 		return
 	}
-	tempDir, _, err := cancelUploadSession(controllerUpdateUploadID, func(session *fileUploadSession) error {
+	cleanupPath, _, err := cancelUploadSession(controllerUpdateUploadID, func(session *fileUploadSession) error {
 		return requireControllerUpdateSession(session, authedUser.User)
 	})
 	if err != nil {
 		writeControllerUpdateSessionError(w, err)
 		return
 	}
-	if tempDir != "" {
-		_ = file.RemoveRegisteredTempDir(tempDir)
+	if cleanupPath != "" {
+		_ = file.RemoveRegisteredTempPath(cleanupPath)
 	}
 	cleanupControllerUpdateDocsStaging()
 	web.WriteOK(w, map[string]bool{"ok": true})

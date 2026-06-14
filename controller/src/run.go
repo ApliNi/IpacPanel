@@ -200,8 +200,8 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 	}
 	process.RestoreDaemonRuntimeStates(runtimeStates)
 	file.SetRegistryPath(cfg.ResolveDataPath("temp.yml"))
-	if err := file.CleanupRegisteredAtomicTempDirs(); err != nil {
-		return err
+	if err := file.CleanupRegisteredAtomicTemps(); err != nil {
+		log.Printf("cleanup registered atomic temps failed: %v", err)
 	}
 	api.CleanupUploadTempDir()
 	process.InitTaskScheduler()
@@ -342,7 +342,7 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 		}
 		serverErr := waitControllerServerExit(serverErrCh)
 		api.CleanupUploadTempDir()
-		if err := file.CleanupRegisteredAtomicTempDirs(); err != nil {
+		if err := file.CleanupRegisteredAtomicTemps(); err != nil {
 			return err
 		}
 		if shutdownErr != nil {
@@ -351,7 +351,7 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 		return serverErr
 	case serverErr := <-serverErrCh:
 		api.CleanupUploadTempDir()
-		if err := file.CleanupRegisteredAtomicTempDirs(); err != nil {
+		if err := file.CleanupRegisteredAtomicTemps(); err != nil {
 			return err
 		}
 		return serverErr

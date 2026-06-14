@@ -1,6 +1,6 @@
 import { mainModalOverlay, state } from "../ui.js";
 import { DEFAULT_UI_REFRESH_INTERVAL_MS, clearTimer, closeAnimatedModal, formatFileSize, getUploadErrorText, openAnimatedModal, setActionsDisabled, withActionsDisabled } from '../utils/utils.js';
-import { abortFileUpload, createDirectory, createTextFileAdaptive, initFileUpload, uploadFileChunk, uploadFileSingle } from '../api/file.js';
+import { abortFileUpload, completeFileUploadWithRetry, createDirectory, createTextFileAdaptive, initFileUpload, uploadFileChunk } from '../api/file.js';
 import { showAlert, showConfirm } from './dialog.js';
 import { applyFileUploadFolderGroupView, applyFileUploadItemView, buildFileUploadFolderGroupNode, buildFileUploadItemNode, ceilTo, computeFolderGroupAggregates, renderFileUploadSummaryText } from './fileUploadView.js';
 import { InputValidation } from '../utils/inputValidation.js';
@@ -111,7 +111,7 @@ const truncateInputValue = (input, maxLength) => {
 	return value;
 };
 
-const getUploadItemId = (itemOrId) => typeof itemOrId === 'string' ? itemOrId : String(itemOrId?.id || '');
+const getUploadItemId = (itemOrId) => typeof itemOrId === 'string' ? itemOrId : String((itemOrId && itemOrId.id) || '');
 
 const rememberUploadItem = (item) => {
 	const id = getUploadItemId(item);
@@ -132,7 +132,7 @@ const forgetUploadItem = (itemOrId) => {
 	}
 	// 如果是文件夹组，递归清理子项
 	const item = modalState.fileUploadItemById.get(id);
-	if (item?.kind === 'folder-group' && item.children) {
+	if (item && item.kind === 'folder-group' && item.children) {
 		item.children.forEach((c) => forgetUploadItem(c.id));
 	}
 	modalState.fileUploadItemById.delete(id);
@@ -527,7 +527,7 @@ const clearFileUploadDomUpdateTimer = () => {
 };
 
 const clearFileUploadDoneClearTimers = () => {
-	if (!modalState.fileUploadDoneClearTimers?.size) {
+	if (!modalState.fileUploadDoneClearTimers.size) {
 		return;
 	}
 	modalState.fileUploadDoneClearTimers.forEach((timer) => {
@@ -619,7 +619,7 @@ const queueFileUploadDomUpdate = (id) => {
             // 同步更新父文件夹组聚合
             if (item.parentId) {
                 const parent = modalState.fileUploadItemById.get(item.parentId);
-                if (parent?.kind === 'folder-group') {
+                if (parent && parent.kind === 'folder-group') {
                     updateFolderGroupAggregates(parent);
                 }
             }
@@ -649,14 +649,14 @@ const resetFileUploadState = () => {
 	clearFileUploadDoneClearTimers();
 	modalState.fileUploadRunToken += 1;
 
-	const activeContexts = Array.from(modalState.fileUploadActiveContexts?.values?.() || []);
-	const orphanControllers = Array.from(modalState.fileUploadAbortControllers?.entries?.() || [])
+	const activeContexts = Array.from(modalState.fileUploadActiveContexts.values() || []);
+	const orphanControllers = Array.from(modalState.fileUploadAbortControllers.entries() || [])
 		.filter(([id]) => !modalState.fileUploadActiveContexts.has(id));
 
     // 终止所有仍在进行的上传
 	orphanControllers.forEach(([, controller]) => {
 		try {
-			controller?.abort?.();
+			controller.abort();
 		} catch (e) {
 			// ignore
 		}
@@ -668,8 +668,8 @@ const resetFileUploadState = () => {
 		});
 	});
 	modalState.fileUploadAbortControllers.clear();
-    modalState.fileUploadActiveContexts?.clear?.();
-    modalState.fileUploadRemovedIds?.clear?.();
+    modalState.fileUploadActiveContexts.clear();
+    modalState.fileUploadRemovedIds.clear();
     modalState.fileUploadItems = [];
 	modalState.fileUploadItemById.clear();
 	modalState.fileUploadRowById.clear();
@@ -736,11 +736,11 @@ const cleanupFileUploadContext = async (ctx, options = {}) => {
 	}
 	const abortController = options.abortController === true;
 	const abortRemote = options.abortRemote === true;
-	const itemId = ctx.item?.id;
+	const itemId = ctx.item && ctx.item.id;
 	if (abortController && !ctx.controllerAborted) {
 		ctx.controllerAborted = true;
 		try {
-			ctx.controller?.abort?.();
+			ctx.controller.abort();
 		} catch (e) {
 			// ignore
 		}
@@ -749,7 +749,7 @@ const cleanupFileUploadContext = async (ctx, options = {}) => {
 		modalState.fileUploadAbortControllers.delete(itemId);
 		modalState.fileUploadActiveContexts.delete(itemId);
 	}
-	if (!abortRemote || ctx.remoteAbortRequested || ctx.completed || ctx.mode === 'single') {
+	if (!abortRemote || ctx.remoteAbortRequested || ctx.completed) {
 		return;
 	}
 	ctx.remoteAbortRequested = true;
@@ -793,12 +793,12 @@ const createFileEntry = async (type, name, content = '', overwrite = false) => {
 	const result = type === 'dir'
 		? await createDirectory(instanceName, getCurrentDir(), name)
 		: await createTextFileAdaptive(instanceName, getCurrentDir(), name, content, overwrite);
-	if (!result?.ok || !result.data) {
-		if (result?.unauthorized) {
+	if (!(result && result.ok) || !result.data) {
+		if (result && result.unauthorized) {
 			return null;
 		}
 		const actionText = type === 'dir' ? '创建目录' : '创建文件';
-		await showAlert(`${actionText}失败: ${result?.error || '操作失败'}`, { title: 'ERROR', tone: 'danger' });
+		await showAlert(`${actionText}失败: ${result && result.error || '操作失败'}`, { title: 'ERROR', tone: 'danger' });
 		return null;
 	}
 	if (typeof modalState.onApplyFileList === 'function') {
@@ -836,7 +836,7 @@ const updateFolderGroupAggregates = (group) => {
 const updateParentFolderGroup = (item) => {
 	if (!item || !item.parentId) return;
 	const parent = modalState.fileUploadItemById.get(item.parentId);
-	if (parent?.kind === 'folder-group') {
+	if (parent && parent.kind === 'folder-group') {
 		updateFolderGroupAggregates(parent);
 	}
 };
@@ -882,7 +882,7 @@ const setFileUploadProgress = (id, payload = {}) => {
 			if (current.parentId) {
 				// 文件夹组子项：只删除 DOM 行，保留数据保证聚合稳定
 				const parent = modalState.fileUploadItemById.get(current.parentId);
-				if (parent?.kind === 'folder-group') {
+				if (parent && parent.kind === 'folder-group') {
 					const removed = removeFileUploadItemRow(id);
 					if (!removed) {
 						renderFileUploadList();
@@ -964,10 +964,15 @@ const getUploadPathWithoutRoot = (path) => {
 	return parts.slice(1).join('/');
 };
 
+const getClosestFolderGroupId = (element) => {
+	const group = element.closest('.file-upload-folder-group');
+	return group ? (group.dataset.id || '') : '';
+};
+
 const getUploadFileSignature = (file) => [
-	String(file?.name || ''),
-	String(file?.size || 0),
-	String(file?.lastModified || 0),
+	String((file && file.name) || ''),
+	String((file && file.size) || 0),
+	String((file && file.lastModified) || 0),
 ].join('\u0000');
 
 const isLikelyDroppedDirectoryPlaceholder = (file) => {
@@ -1132,7 +1137,7 @@ const scanEntryTree = async (entry, groupItem) => {
 	const dirsFound = new Set();
 
 	while (queue.length > 0) {
-		if (controller?.signal.aborted) break;
+		if (controller && controller.signal && controller.signal.aborted) break;
 
 		const current = queue.shift();
 		if (current.entry.isFile) {
@@ -1172,7 +1177,7 @@ const scanHandleTree = async (handle, groupItem) => {
 	const dirsFound = new Set();
 
 	while (queue.length > 0) {
-		if (controller?.signal.aborted) break;
+		if (controller && controller.signal && controller.signal.aborted) break;
 
 		const current = queue.shift();
 		if (current.handle.kind === 'file') {
@@ -1218,7 +1223,7 @@ const createFolderGroupItem = (pickedFiles, pickedDirs, index) => {
 	const sorted = Array.from(pickedFiles || [])
 		.map((entry) => ({
 			file: entry.file,
-			path: normalizeUploadRelativePath(entry.relativePath || entry.file?.name || ''),
+			path: normalizeUploadRelativePath(entry.relativePath || (entry.file && entry.file.name) || ''),
 		}))
 		.filter((entry) => entry.file && entry.path)
 		.sort((a, b) => compareUploadPath(a.path, b.path));
@@ -1250,7 +1255,7 @@ const createFolderGroupItem = (pickedFiles, pickedDirs, index) => {
 		});
 	});
 
-	const firstPath = sorted[0]?.path || '';
+	const firstPath = (sorted[0] && sorted[0].path) || '';
 	const groupName = getUploadRootName(firstPath, 'folder');
 	const totalSize = children.reduce((sum, c) => sum + (c.size || 0), 0);
 
@@ -1273,7 +1278,7 @@ const buildUploadItemsFromPickedEntries = (entries, dirs = []) => {
 	const groups = new Map();
 	const rootDirSeen = new Set();
 	Array.from(entries || []).forEach((entry) => {
-		if (!entry?.file) {
+		if (!(entry && entry.file)) {
 			return;
 		}
 		const relativePath = normalizeUploadRelativePath(entry.relativePath || entry.file.webkitRelativePath || entry.file.name);
@@ -1340,7 +1345,7 @@ const readAllDirectoryEntries = async (reader) => {
 };
 
 const readDataTransferItemHandle = async (item) => {
-	const getAsFileSystemHandle = item?.getAsFileSystemHandle;
+	const getAsFileSystemHandle = item && item.getAsFileSystemHandle;
 	if (typeof getAsFileSystemHandle !== 'function') {
 		return null;
 	}
@@ -1348,8 +1353,8 @@ const readDataTransferItemHandle = async (item) => {
 };
 
 const readDroppedUploadItems = async (dataTransfer) => {
-	const items = Array.from(dataTransfer?.items || []);
-	const fallbackFiles = Array.from(dataTransfer?.files || []);
+	const items = Array.from(dataTransfer && dataTransfer.items || []);
+	const fallbackFiles = Array.from(dataTransfer && dataTransfer.files || []);
 	if (!items.length) {
 		return buildUploadItemsFromPickedEntries(fallbackFiles.map((file) => ({ file })));
 	}
@@ -1362,11 +1367,11 @@ const readDroppedUploadItems = async (dataTransfer) => {
 		}
 		const getAsEntry = item.getAsEntry || item.webkitGetAsEntry;
 		const entry = typeof getAsEntry === 'function' ? getAsEntry.call(item) : null;
-		const file = entry ? null : item.getAsFile?.();
+		const file = entry ? null : (typeof item.getAsFile === 'function' ? item.getAsFile() : null);
 		const isDirectoryPlaceholder = !entry && isLikelyDroppedDirectoryPlaceholder(file);
-		if (entry?.isDirectory || isDirectoryPlaceholder) {
+		if ((entry && entry.isDirectory) || isDirectoryPlaceholder) {
 			hasTopLevelDirectory = true;
-		} else if (entry?.isFile || file) {
+		} else if (entry && entry.isFile || file) {
 			hasTopLevelFile = true;
 		}
 		droppedItems.push({ item, entry, file, isDirectoryPlaceholder });
@@ -1379,7 +1384,7 @@ const readDroppedUploadItems = async (dataTransfer) => {
 	const scanJobs = [];
 
 	for (const dropped of droppedItems) {
-		if (shouldSkipDirectories && (dropped.entry?.isDirectory || dropped.isDirectoryPlaceholder)) {
+		if (shouldSkipDirectories && ((dropped.entry && dropped.entry.isDirectory) || dropped.isDirectoryPlaceholder)) {
 			continue;
 		}
 		if (dropped.entry) {
@@ -1434,7 +1439,7 @@ const readDroppedUploadItems = async (dataTransfer) => {
 
 	// 为每个目录创建扫描占位并启动后台扫描
 	for (const job of scanJobs) {
-		const name = job.entry?.name || job.handle?.name || 'folder';
+		const name = job.entry && job.entry.name || job.handle && job.handle.name || 'folder';
 		const groupItem = createScanningFolderGroup(name);
 		resultItems.push(groupItem);
 
@@ -1446,7 +1451,7 @@ const readDroppedUploadItems = async (dataTransfer) => {
 			: () => scanHandleTree(job.handle, groupItem);
 
 		const scanPromise = scanFn().catch((error) => {
-			if (error?.name === 'AbortError') return;
+			if (error && error.name === 'AbortError') return;
 			console.error('[控制台页] 文件夹扫描失败:', error);
 			if (groupItem.scanState === 'scanning') {
 				handleFolderScanComplete(groupItem);
@@ -1473,7 +1478,7 @@ const uploadFileChunkWithRetry = async (instanceName, uploadId, index, chunk, on
 			return await uploadFileChunk(instanceName, uploadId, index, chunk, onProgress, options);
         } catch (error) {
             lastError = error;
-            if (error?.name === 'AbortError') {
+            if (error && error.name === 'AbortError') {
                 throw error;
             }
             if (attempt >= maxAttempts) {
@@ -1491,18 +1496,18 @@ const initFileUploadContext = async (instanceName, currentPath, item, overwrite,
 	const file = item.file;
 	const uploadSize = file.size;
 	const uploadPath = [currentPath, item.path].filter(Boolean).join('/');
-	const useSingleUpload = uploadSize <= modalState.fileUploadChunkSize;
+	const chunkSize = uploadSize > modalState.fileUploadChunkSize ? modalState.fileUploadChunkSize : Math.max(uploadSize, 1);
+	const chunkCount = Math.max(1, Math.ceil(uploadSize / chunkSize));
 	const controller = new AbortController();
 	const ctx = {
 		item,
 		file,
 		instanceName,
 		runToken,
-		mode: useSingleUpload ? 'single' : 'chunked',
 		uploadId: '',
-		chunkSize: uploadSize > modalState.fileUploadChunkSize ? modalState.fileUploadChunkSize : Math.max(uploadSize, 1),
-		chunkCount: useSingleUpload ? 0 : 1,
-		chunkProgress: useSingleUpload ? [0] : null,
+		chunkSize,
+		chunkCount,
+		chunkProgress: new Array(chunkCount).fill(0),
 		totalLoaded: 0,
 		nextChunkIndex: 0,
 		refreshProgress: null,
@@ -1522,35 +1527,6 @@ const initFileUploadContext = async (instanceName, currentPath, item, overwrite,
 	modalState.fileUploadAbortControllers.set(item.id, ctx.controller);
 	modalState.fileUploadActiveContexts.set(item.id, ctx);
 
-	if (useSingleUpload) {
-		ctx.uploadFile = async () => {
-			if (ctx.failed || ctx.removed) {
-				return;
-			}
-			const result = await uploadFileSingle(instanceName, uploadPath, item.name, ctx.file, overwrite, (loaded) => {
-				const safeLoaded = Math.max(0, Math.min(uploadSize, loaded || 0));
-				const delta = safeLoaded - (ctx.totalLoaded || 0);
-				ctx.totalLoaded = safeLoaded;
-				recordFileUploadBytes(delta);
-				ctx.refreshProgress('UPLOADING');
-			}, { signal: ctx.controller.signal });
-			if (!result || typeof result !== 'object' || result.completed !== true) {
-				throw new Error('上传协议异常: 缺少完成响应');
-			}
-			ctx.completeResult = result;
-			const delta = uploadSize - (ctx.totalLoaded || 0);
-			if (delta !== 0) {
-				ctx.totalLoaded = uploadSize;
-				recordFileUploadBytes(delta);
-			}
-			ctx.nextChunkIndex = 1;
-			ctx.refreshProgress('UPLOADING');
-		};
-		ctx.refreshProgress('UPLOADING');
-		return ctx;
-	}
-	const chunkSize = uploadSize > modalState.fileUploadChunkSize ? modalState.fileUploadChunkSize : Math.max(uploadSize, 1);
-	const chunkCount = Math.max(1, Math.ceil(file.size / chunkSize));
 	const initResult = await initFileUpload(instanceName, {
 		path: uploadPath,
 		name: item.name,
@@ -1559,14 +1535,11 @@ const initFileUploadContext = async (instanceName, currentPath, item, overwrite,
 		chunk_count: chunkCount,
 		overwrite,
 	});
-	if (!initResult?.upload_id) {
+	if (!(initResult && initResult.upload_id)) {
 		throw new Error('UPLOAD INIT FAILED');
 	}
 
 	ctx.uploadId = initResult.upload_id;
-	ctx.chunkSize = chunkSize;
-	ctx.chunkCount = chunkCount;
-	ctx.chunkProgress = new Array(chunkCount).fill(0);
 
 	if (ctx.removed) {
 		// init 已经创建了后端临时文件，立即通知后端清理
@@ -1630,9 +1603,6 @@ const uploadFileGroupChunks = async (contexts, limit, options = {}) => {
 		if (!ctx || ctx.failed || ctx.removed) {
 			return false;
 		}
-		if (ctx.mode === 'single') {
-			return ctx.nextChunkIndex < 1;
-		}
 		return ctx.nextChunkIndex < ctx.chunkCount;
 	};
 
@@ -1647,7 +1617,7 @@ const uploadFileGroupChunks = async (contexts, limit, options = {}) => {
 		if (pending > 0) {
 			return;
 		}
-		const totalParts = ctx.mode === 'single' ? 1 : ctx.chunkCount;
+		const totalParts = ctx.chunkCount;
 		if (ctx.nextChunkIndex < totalParts) {
 			return;
 		}
@@ -1672,7 +1642,7 @@ const uploadFileGroupChunks = async (contexts, limit, options = {}) => {
 		}
 		const idx = ctx.nextChunkIndex;
 		ctx.nextChunkIndex += 1;
-		const p = ctx.mode === 'single' ? ctx.uploadFile() : ctx.uploadChunk(idx);
+		const p = ctx.uploadChunk(idx);
 		inFlight.set(p, ctx);
 		ctxInFlightCount.set(ctx, (ctxInFlightCount.get(ctx) || 0) + 1);
 		return true;
@@ -1686,7 +1656,7 @@ const uploadFileGroupChunks = async (contexts, limit, options = {}) => {
 				continue;
 			}
 			const pending = ctxInFlightCount.get(ctx) || 0;
-			const totalParts = ctx.mode === 'single' ? 1 : ctx.chunkCount;
+			const totalParts = ctx.chunkCount;
 			if (pending > 0 || ctx.nextChunkIndex < totalParts) {
 				count += 1;
 			}
@@ -1766,7 +1736,7 @@ const uploadFileGroupChunks = async (contexts, limit, options = {}) => {
 
 		if (settled.status === 'rejected') {
 			if (!ctx.removed && !ctx.failed) {
-				if (settled.reason?.name === 'AbortError') {
+				if (settled.reason && settled.reason.name === 'AbortError') {
 					ctx.failed = true;
 					setFileUploadProgress(ctx.item.id, {
 						loaded: ctx.item.loaded || 0,
@@ -1780,7 +1750,7 @@ const uploadFileGroupChunks = async (contexts, limit, options = {}) => {
 					});
 				} else {
 					ctx.failed = true;
-					console.error(`[控制台页] 上传文件 ${ctx.item?.name || ''} 分片失败:`, settled.reason);
+					console.error(`[控制台页] 上传文件 ${ctx.item && ctx.item.name || ''} 分片失败:`, settled.reason);
 					setFileUploadProgress(ctx.item.id, {
 						loaded: ctx.item.loaded || 0,
 						progress: ctx.item.progress || 0,
@@ -1957,18 +1927,25 @@ const uploadSelectedFiles = async (overwrite) => {
 					return;
 				}
 				try {
-					updateUploadItemProgress(ctx.item, ctx.item.size || ctx.file?.size || 0, 'MERGING');
+					updateUploadItemProgress(ctx.item, ctx.item.size || (ctx.file && ctx.file.size) || 0, 'MERGING');
+					if (!ctx.completeResult || ctx.completeResult.completed !== true) {
+						ctx.completeResult = await completeFileUploadWithRetry(ctx.instanceName, ctx.uploadId, {
+							retryCount: modalState.fileUploadChunkRetryCount,
+							retryDelay: modalState.fileUploadChunkRetryDelay,
+							signal: ctx.controller.signal,
+						});
+					}
 					if (!ctx.completeResult || ctx.completeResult.completed !== true) {
 						throw new Error('上传协议异常: 缺少完成响应');
 					}
 					hasFinished = true;
 					ctx.completed = true;
-					updateUploadItemProgress(ctx.item, ctx.item.size || ctx.file?.size || 0, 'DONE');
+					updateUploadItemProgress(ctx.item, ctx.item.size || (ctx.file && ctx.file.size) || 0, 'DONE');
 					hasSuccess = true;
 					modalState.fileUploadAbortControllers.delete(ctx.item.id);
 					modalState.fileUploadActiveContexts.delete(ctx.item.id);
 				} catch (e) {
-					if (e?.name === 'AbortError') {
+					if (e && e.name === 'AbortError') {
 						ctx.failed = true;
 						setFileUploadProgress(ctx.item.id, {
 							loaded: ctx.item.loaded || 0,
@@ -1984,7 +1961,7 @@ const uploadSelectedFiles = async (overwrite) => {
 					}
 					hasFinished = true;
 					ctx.failed = true;
-					console.error(`[控制台页] 上传文件 ${ctx.item?.name || ''} 合并失败:`, e);
+					console.error(`[控制台页] 上传文件 ${ctx.item && ctx.item.name || ''} 合并失败:`, e);
 					setFileUploadProgress(ctx.item.id, {
 						loaded: ctx.item.loaded || 0,
 						progress: ctx.item.progress || 0,
@@ -2081,7 +2058,7 @@ const appendFileUploadItemsWithItems = (items) => {
 		const key = getUploadItemDedupKey(newItem);
 		const existing = dedupMap.get(key);
 
-		if (newItem.kind === 'folder-group' && existing?.kind === 'folder-group') {
+		if (newItem.kind === 'folder-group' && existing && existing.kind === 'folder-group') {
 			// 同名文件夹组：合并子项；如果新组正在扫描则中止
 			if (newItem.scanState === 'scanning') {
 				abortFolderScan(newItem.id);
@@ -2159,7 +2136,7 @@ const cancelFolderGroupChildren = (group) => {
 
 const removeFileUploadItem = (id) => {
     const item = findUploadItemInTree(modalState.fileUploadItems, id);
-    if (item?.kind === 'folder-group') {
+    if (item && item.kind === 'folder-group') {
 		abortFolderScan(item.id);
 		cancelFolderGroupChildren(item);
     }
@@ -2350,7 +2327,7 @@ const open = (options = {}) => {
 	if (dom.fileCreateOverwrite) {
 		dom.fileCreateOverwrite.checked = false;
 	}
-	const initialType = String(options?.type || '').trim() === 'upload' ? 'upload' : 'file';
+	const initialType = String(options && options.type || '').trim() === 'upload' ? 'upload' : 'file';
 	modalState.currentFileCreateType = initialType;
     resetFileUploadState();
 	resetFileCreateActionsState();
@@ -2437,7 +2414,7 @@ const bindEvents = () => {
             if (modalState.fileUploadLocked) {
                 return;
             }
-			if (event?.shiftKey) {
+			if (event && event.shiftKey) {
 				dom.fileUploadDirectoryInput.click();
 				return;
 			}
@@ -2507,7 +2484,7 @@ const bindEvents = () => {
             const toggleBtn = event.target.closest('.file-upload-folder-header');
             if (toggleBtn) {
                 const folderId = toggleBtn.dataset.folderId
-                    || toggleBtn.closest('.file-upload-folder-group')?.dataset?.id
+                    || getClosestFolderGroupId(toggleBtn)
                     || '';
                 if (!folderId) return;
                 const group = modalState.fileUploadItemById.get(folderId);

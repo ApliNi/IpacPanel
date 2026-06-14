@@ -2,6 +2,7 @@ package api
 
 import (
 	"IpacPanel/controller/src/msg"
+	process "IpacPanel/controller/src/process"
 	"IpacPanel/controller/src/web/authz"
 
 	web "IpacPanel/controller/src/web"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -22,17 +24,29 @@ type fileBatchExcludeMatcher struct {
 	files map[string]struct{}
 }
 
+func (m fileBatchExcludeMatcher) empty() bool {
+	return len(m.dirs) == 0 && len(m.files) == 0
+}
+
 func cleanAndEnsureDirSlash(p string) string {
 	pp := strings.TrimSpace(p)
 	if pp == "" {
 		return ""
 	}
-	pp = filepath.Clean(pp)
+	pp = cleanFileBatchMatcherPath(pp)
 	sep := string(filepath.Separator)
 	if !strings.HasSuffix(pp, sep) {
 		pp += sep
 	}
 	return pp
+}
+
+func cleanFileBatchMatcherPath(p string) string {
+	clean := filepath.Clean(p)
+	if runtime.GOOS == "windows" {
+		clean = strings.ToLower(clean)
+	}
+	return clean
 }
 
 func isSameOrSubDir(parentDir string, candidateDir string) bool {
@@ -44,33 +58,96 @@ func isSameOrSubDir(parentDir string, candidateDir string) bool {
 	return strings.HasPrefix(cand, parent)
 }
 
-func applyExcludeRules(path string, isDir bool, exclude []fileBatchRule) bool {
-	matcher := newFileBatchExcludeMatcher(exclude)
-	return matcher.excludes(path, isDir)
-}
-
-func newFileBatchExcludeMatcher(exclude []fileBatchRule) fileBatchExcludeMatcher {
+func newFileBatchExcludeMatcherFromAbsoluteRules(exclude []fileBatchRule) fileBatchExcludeMatcher {
 	matcher := fileBatchExcludeMatcher{files: make(map[string]struct{})}
 	for _, r := range exclude {
 		rp := strings.TrimSpace(r.Path)
 		if rp == "" {
 			continue
 		}
-		rp = filepath.Clean(rp)
+		rp = cleanFileBatchMatcherPath(rp)
 		if r.IsDir {
 			matcher.dirs = append(matcher.dirs, cleanAndEnsureDirSlash(rp))
 			continue
 		}
-		matcher.files[filepath.Clean(rp)] = struct{}{}
+		matcher.files[cleanFileBatchMatcherPath(rp)] = struct{}{}
 	}
 	return matcher
+}
+
+func resolveFileBatchExcludeAbsolutePath(sp *process.InstanceProcess, rootPath string, rulePath string) (string, error) {
+	rulePath = strings.TrimSpace(rulePath)
+	if rulePath == "" {
+		return "", errors.New(msg.FilePathRequired)
+	}
+	if textTooLong(rulePath, maxFilePathTextLen) {
+		return "", errors.New(msg.PathTooLong)
+	}
+
+	osPath := strings.ReplaceAll(rulePath, "\\", string(filepath.Separator))
+	osPath = strings.ReplaceAll(osPath, "/", string(filepath.Separator))
+	if !filepath.IsAbs(osPath) {
+		_, rel, err := resolveInstanceFilePath(sp, rulePath)
+		if err != nil {
+			return "", err
+		}
+		excludeAbs := rootPath
+		if rel != "" {
+			excludeAbs = filepath.Join(rootPath, filepath.FromSlash(rel))
+		}
+		if err := ensurePathComponentsWithinRoot(rootPath, excludeAbs, false); err != nil {
+			return "", err
+		}
+		return filepath.Clean(excludeAbs), nil
+	}
+
+	excludeAbs := filepath.Clean(osPath)
+	if !filepath.IsAbs(excludeAbs) {
+		return "", errors.New(msg.PathOutsideInstanceRoot)
+	}
+	if !isCleanPathWithinRoot(rootPath, excludeAbs) {
+		return "", errors.New(msg.PathOutsideInstanceRoot)
+	}
+	if err := ensurePathComponentsWithinRoot(rootPath, excludeAbs, true); err != nil {
+		return "", err
+	}
+	return excludeAbs, nil
+}
+
+func isCleanPathWithinRoot(rootPath string, targetPath string) bool {
+	root := filepath.Clean(rootPath)
+	target := filepath.Clean(targetPath)
+	if runtime.GOOS == "windows" {
+		root = strings.ToLower(root)
+		target = strings.ToLower(target)
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+func resolveFileBatchExcludeMatcher(sp *process.InstanceProcess, rootPath string, exclude []fileBatchRule) (fileBatchExcludeMatcher, error) {
+	resolved := make([]fileBatchRule, 0, len(exclude))
+	for _, rule := range exclude {
+		excludeAbs, err := resolveFileBatchExcludeAbsolutePath(sp, rootPath, rule.Path)
+		if err != nil {
+			return fileBatchExcludeMatcher{}, err
+		}
+		resolved = append(resolved, fileBatchRule{Path: excludeAbs, IsDir: rule.IsDir})
+	}
+	return newFileBatchExcludeMatcherFromAbsoluteRules(resolved), nil
 }
 
 func (m fileBatchExcludeMatcher) excludes(path string, isDir bool) bool {
 	if path == "" {
 		return false
 	}
-	clean := filepath.Clean(path)
+	clean := cleanFileBatchMatcherPath(path)
 	if isDir {
 		clean = cleanAndEnsureDirSlash(clean)
 	}
@@ -79,7 +156,7 @@ func (m fileBatchExcludeMatcher) excludes(path string, isDir bool) bool {
 			return true
 		}
 	}
-	_, ok := m.files[filepath.Clean(clean)]
+	_, ok := m.files[cleanFileBatchMatcherPath(clean)]
 	if ok {
 		return true
 	}
@@ -142,6 +219,134 @@ func resolveCopyDirectoryDestination(path string, createDuplicate bool) (string,
 	return "", errors.New(msg.TargetAlreadyExists)
 }
 
+func fileBatchMoveFailReason(err error) string {
+	var partialErr *moveFileCopiedRemoveSourceError
+	if errors.As(err, &partialErr) {
+		return partialErr.Error()
+	}
+	return err.Error()
+}
+
+func removeEmptyDirectoryTreeWithinRoot(ctx context.Context, rootPath string, targetPath string) error {
+	dirs := make([]string, 0)
+	if err := filepath.WalkDir(targetPath, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := ensurePathComponentsWithinRoot(rootPath, path, true); err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return errors.New(msg.PathOutsideInstanceRoot)
+		}
+		if entry.IsDir() {
+			dirs = append(dirs, path)
+		}
+		return nil
+	}); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(dirs[i])
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if len(entries) > 0 {
+			continue
+		}
+		if err := removeEmptyDirectoryWithinRoot(rootPath, dirs[i]); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func removeMovedDirectorySourceWithinRoot(ctx context.Context, rootPath string, targetPath string, hasExcludeRules bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if hasExcludeRules {
+		return removeEmptyDirectoryTreeWithinRoot(ctx, rootPath, targetPath)
+	}
+	return removeAllWithinRoot(rootPath, targetPath)
+}
+
+func removeDirectoryWithinRootRespectingExcludes(ctx context.Context, rootPath string, targetPath string, excludes fileBatchExcludeMatcher) error {
+	if excludes.empty() {
+		return removeAllWithinRoot(rootPath, targetPath)
+	}
+
+	dirs := make([]string, 0)
+	if err := filepath.WalkDir(targetPath, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := ensurePathComponentsWithinRoot(rootPath, path, true); err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return errors.New(msg.PathOutsideInstanceRoot)
+		}
+
+		isDir := entry.IsDir()
+		if path != targetPath && excludes.excludes(path, isDir) {
+			if isDir {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if isDir {
+			dirs = append(dirs, path)
+			return nil
+		}
+		return removeFileWithinRoot(rootPath, path)
+	}); err != nil {
+		return err
+	}
+
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(dirs[i])
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if len(entries) > 0 {
+			continue
+		}
+		if err := removeEmptyDirectoryWithinRoot(rootPath, dirs[i]); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
+}
+
 func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 	var req fileBatchActionRequest
 	if !web.DecodeJSONBody(w, r, &req) {
@@ -197,6 +402,11 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 			web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
 			return
 		}
+	}
+	excludes, err := resolveFileBatchExcludeMatcher(sp, rootPath, req.Exclude)
+	if err != nil {
+		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)
+		return
 	}
 
 	// SSE-like response.
@@ -296,7 +506,6 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 		reportSseErr(sse.SendEvent("fail", map[string]interface{}{"path": path, "reason": reason, "is_dir": isDir}))
 		sendProgress(false)
 	}
-
 	success := func() {
 		if sseFailed.Load() {
 			return
@@ -304,8 +513,6 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 		okCount += 1
 		sendProgress(false)
 	}
-
-	excludes := newFileBatchExcludeMatcher(req.Exclude)
 
 	iter := 0
 	for _, rule := range req.Include {
@@ -334,13 +541,17 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 			fail(rule.Path, msg.FilePathInvalid, rule.IsDir)
 			continue
 		}
-		info, err := os.Stat(srcAbs)
+		info, err := os.Lstat(srcAbs)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				fail(rule.Path, msg.TargetNotFound, rule.IsDir)
 			} else {
 				fail(rule.Path, err.Error(), rule.IsDir)
 			}
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			fail(rule.Path, msg.PathOutsideInstanceRoot, rule.IsDir)
 			continue
 		}
 
@@ -383,7 +594,10 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if isDir {
-				if err := removeAllWithinRoot(rootPath, srcAbs); err != nil {
+				if err := removeDirectoryWithinRootRespectingExcludes(r.Context(), rootPath, srcAbs, excludes); err != nil {
+					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+						return
+					}
 					fail(rule.Path, err.Error(), true)
 					continue
 				}
@@ -391,7 +605,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if err := removeFileWithinRoot(rootPath, srcAbs); err != nil {
-				fail(rule.Path, err.Error(), false)
+				fail(rule.Path, fileBatchMoveFailReason(err), false)
 				continue
 			}
 			success()
@@ -407,6 +621,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Merge directories.
+			dirFailCountBeforeMove := failCount
 			err = filepath.WalkDir(srcAbs, func(p string, d os.DirEntry, walkErr error) error {
 				iter++
 				if !checkSseOrCanceled(iter) {
@@ -445,6 +660,13 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 				}
 				srcPath := p
 				srcIsDir := d.IsDir()
+				if d.Type()&os.ModeSymlink != 0 {
+					fail(filepath.ToSlash(srcPath), msg.PathOutsideInstanceRoot, false)
+					if sseFailed.Load() {
+						return getSseErr()
+					}
+					return nil
+				}
 				if excludes.excludes(srcPath, srcIsDir) {
 					if srcIsDir {
 						return filepath.SkipDir
@@ -474,7 +696,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 				}
 				st, err := d.Info()
 				if err != nil {
-					fail(filepath.ToSlash(srcPath), err.Error(), false)
+					fail(filepath.ToSlash(srcPath), fileBatchMoveFailReason(err), false)
 					if sseFailed.Load() {
 						return getSseErr()
 					}
@@ -497,7 +719,12 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 						return nil
 					}
 				}
-				if err := copyFileAtomicWithinRoot(rootPath, srcPath, dstPath, st.Mode(), req.Overwrite && !req.CopyDuplicate); err != nil {
+				if action == "copy" {
+					err = copyFileAtomicWithinRoot(rootPath, srcPath, dstPath, st.Mode(), req.Overwrite && !req.CopyDuplicate)
+				} else {
+					err = moveFileWithinRoot(r.Context(), rootPath, srcPath, dstPath, st.Mode(), req.Overwrite)
+				}
+				if err != nil {
 					if errors.Is(err, os.ErrExist) {
 						fail(filepath.ToSlash(srcPath), msg.TargetAlreadyExists, false)
 						if sseFailed.Load() {
@@ -505,20 +732,11 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 						}
 						return nil
 					}
-					fail(filepath.ToSlash(srcPath), err.Error(), false)
+					fail(filepath.ToSlash(srcPath), fileBatchMoveFailReason(err), false)
 					if sseFailed.Load() {
 						return getSseErr()
 					}
 					return nil
-				}
-				if action == "move" {
-					if err := removeFileWithinRoot(rootPath, srcPath); err != nil {
-						fail(filepath.ToSlash(srcPath), err.Error(), false)
-						if sseFailed.Load() {
-							return getSseErr()
-						}
-						return nil
-					}
 				}
 				success()
 				if sseFailed.Load() {
@@ -538,8 +756,16 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if action == "move" {
-				// Remove the root directory if empty.
-				_ = removeEmptyDirectoryWithinRoot(rootPath, srcAbs)
+				if failCount != dirFailCountBeforeMove {
+					continue
+				}
+				if err := removeMovedDirectorySourceWithinRoot(r.Context(), rootPath, srcAbs, len(req.Exclude) > 0); err != nil {
+					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+						return
+					}
+					fail(rule.Path, err.Error(), true)
+					continue
+				}
 			}
 			continue
 		}
@@ -565,7 +791,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 					fail(rule.Path, msg.TargetAlreadyExists, false)
 					continue
 				}
-				fail(rule.Path, err.Error(), false)
+				fail(rule.Path, fileBatchMoveFailReason(err), false)
 				continue
 			}
 			success()
@@ -586,7 +812,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 				fail(rule.Path, err.Error(), false)
 				continue
 			}
-			if err := renameOrCopyFileWithinRoot(rootPath, srcAbs, dstAbs, info.Mode(), !req.Overwrite); err != nil {
+			if err := moveFileWithinRoot(r.Context(), rootPath, srcAbs, dstAbs, info.Mode(), req.Overwrite); err != nil {
 				if errors.Is(err, os.ErrExist) {
 					fail(rule.Path, msg.TargetAlreadyExists, false)
 					continue
