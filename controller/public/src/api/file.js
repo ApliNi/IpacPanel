@@ -4,6 +4,7 @@ import {
 	dispatchUnauthorized,
 	buildXhrUploadErrorMessage,
 	getXhrJsonResponseData,
+	createHttpError,
 	postEventStream,
 	parseJsonData,
 	withApiResult,
@@ -71,6 +72,33 @@ const splitFilePath = (path) => {
 		dir: normalized.slice(0, slash),
 		name: normalized.slice(slash + 1),
 	};
+};
+
+const readEncodedFileHeader = (headers, headerName) => {
+	const raw = headers.get(headerName);
+	if (raw === null || raw === '') {
+		throw new Error(`读取文件响应头缺少 ${headerName}`);
+	}
+	try {
+		return decodeURIComponent(raw);
+	} catch (error) {
+		throw new Error(`读取文件响应头 ${headerName} 失败: ${error.message || String(error)}`);
+	}
+};
+
+const readFileSizeHeader = (headers, buffer) => {
+	const raw = headers.get('X-File-Size');
+	if (raw === null || raw === '') {
+		throw new Error('读取文件响应头缺少 X-File-Size');
+	}
+	const size = Number(raw);
+	if (!Number.isSafeInteger(size) || size < 0) {
+		throw new Error(`读取文件响应头 X-File-Size 失败: ${raw}`);
+	}
+	if (size !== buffer.byteLength) {
+		throw new Error(`读取文件大小不一致: 响应头 ${size}, 实际 ${buffer.byteLength}`);
+	}
+	return size;
 };
 
 const isAbortError = (error) => error && error.name === 'AbortError';
@@ -271,7 +299,23 @@ export const readFileContent = async (name, path, options = {}) => {
 				allow_large: !!(options && options.allowLarge),
 			}),
 		});
-		return await parseJsonData(res);
+		if (!res.ok) {
+			throw await createHttpError(res);
+		}
+		const buffer = await res.arrayBuffer().catch((error) => {
+			throw new Error(`读取文件内容失败: ${error.message || String(error)}`);
+		});
+		const responsePath = readEncodedFileHeader(res.headers, 'X-File-Path');
+		const responseName = readEncodedFileHeader(res.headers, 'X-File-Name');
+		if (!responseName) {
+			throw new Error('读取文件响应头缺少文件名');
+		}
+		return {
+			path: responsePath,
+			name: responseName,
+			size: readFileSizeHeader(res.headers, buffer),
+			content: new TextDecoder('utf-8', { fatal: false }).decode(buffer),
+		};
 	}, {
 		logMessage: `[API] 读取文件 ${path} 失败:`,
 	});

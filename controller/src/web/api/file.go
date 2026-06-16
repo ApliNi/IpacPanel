@@ -5,19 +5,18 @@ import (
 	"IpacPanel/controller/src/msg"
 	process "IpacPanel/controller/src/process"
 	"IpacPanel/controller/src/web/authz"
-	"bufio"
 
 	web "IpacPanel/controller/src/web"
 
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"IpacPanel/controller/src/compat"
 )
@@ -48,55 +47,29 @@ func requireFileRequestInstance(w http.ResponseWriter, r *http.Request, instance
 	return sp, name, true
 }
 
-func writeJSONStringChunk(w io.Writer, text string, escapeBuf *[]byte) error {
-	quoted := strconv.AppendQuote((*escapeBuf)[:0], text)
-	*escapeBuf = quoted
-	if len(quoted) <= 2 {
-		return nil
-	}
-	_, err := w.Write(quoted[1 : len(quoted)-1])
-	return err
-}
-
-func writeFileReadResponse(w http.ResponseWriter, relativePath string, targetPath string, file *os.File) error {
+func writeFileReadResponse(w http.ResponseWriter, relativePath string, targetPath string, file *os.File, size int64) error {
 	if w == nil || file == nil {
 		return errors.New(msg.EmptyDest)
 	}
 
-	bufWriter := bufio.NewWriterSize(w, 32*1024)
-	defer bufWriter.Flush()
+	fileName := filepath.Base(targetPath)
+	disposition := mime.FormatMediaType("inline", map[string]string{"filename": fileName})
+	if disposition == "" {
+		return errors.New("格式化文件响应头失败")
+	}
 
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", size))
+	w.Header().Set("Content-Disposition", disposition)
+	w.Header().Set("X-File-Path", url.PathEscape(relativePath))
+	w.Header().Set("X-File-Name", url.PathEscape(fileName))
+	w.Header().Set("X-File-Size", fmt.Sprintf("%d", size))
 	w.WriteHeader(http.StatusOK)
 
-	pathJSON := strconv.Quote(relativePath)
-	nameJSON := strconv.Quote(filepath.Base(targetPath))
-	if _, err := io.WriteString(bufWriter, `{"ok":true,"data":{"path":`+pathJSON+`,"name":`+nameJSON+`,"content":"`); err != nil {
-		return err
-	}
-
-	reader := bufio.NewReaderSize(file, 32*1024)
-	escapeBuf := make([]byte, 0, 64*1024)
-	for {
-		chunk, err := reader.ReadString('\n')
-		if chunk != "" {
-			if !utf8.ValidString(chunk) {
-				chunk = strings.ToValidUTF8(chunk, string(utf8.RuneError))
-			}
-			if err := writeJSONStringChunk(bufWriter, chunk, &escapeBuf); err != nil {
-				return err
-			}
-		}
-		if err == nil {
-			continue
-		}
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		return err
-	}
-
-	_, err := io.WriteString(bufWriter, `"}}`)
+	buf := make([]byte, 32*1024)
+	_, err := io.CopyBuffer(w, file, buf)
 	return err
 }
 
@@ -390,6 +363,10 @@ func HandleApiFileRead(w http.ResponseWriter, r *http.Request) {
 
 	targetPath := targetSafePath.AbsPath()
 	allowLarge := req.AllowLarge
+	if !info.Mode().IsRegular() {
+		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, errors.New("目标不是普通文件"))
+		return
+	}
 	if info.Size() > maxOpenFileSize && !allowLarge {
 		web.WriteAPIError(w, http.StatusRequestEntityTooLarge, msg.FileSizeExceeds10MB, nil)
 		return
@@ -401,12 +378,16 @@ func HandleApiFileRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
+	if !openedInfo.Mode().IsRegular() {
+		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, errors.New("目标不是普通文件"))
+		return
+	}
 	if openedInfo.Size() > maxOpenFileSize && !allowLarge {
 		web.WriteAPIError(w, http.StatusRequestEntityTooLarge, msg.FileSizeExceeds10MB, nil)
 		return
 	}
 
-	if err := writeFileReadResponse(w, targetSafePath.RelSlash(), targetPath, file); err != nil {
+	if err := writeFileReadResponse(w, targetSafePath.RelSlash(), targetPath, file, openedInfo.Size()); err != nil {
 		web.MarkAPIError(w, http.StatusInternalServerError, msg.ReadFileFailed, err)
 	}
 }

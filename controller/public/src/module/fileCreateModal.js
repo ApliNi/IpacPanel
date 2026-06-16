@@ -975,8 +975,12 @@ const getUploadFileSignature = (file) => [
 	String((file && file.lastModified) || 0),
 ].join('\u0000');
 
-const isLikelyDroppedDirectoryPlaceholder = (file) => {
+const isZeroSizeUntypedFile = (file) => {
 	return !!file && Number(file.size || 0) === 0 && !String(file.type || '').trim();
+};
+
+const isLikelyDroppedDirectoryPlaceholder = (file) => {
+	return isZeroSizeUntypedFile(file) && Number(file.lastModified || 0) === 0;
 };
 
 /** 文件夹扫描每批处理多少文件后向 UI 报告 */
@@ -1359,8 +1363,6 @@ const readDroppedUploadItems = async (dataTransfer) => {
 		return buildUploadItemsFromPickedEntries(fallbackFiles.map((file) => ({ file })));
 	}
 	const droppedItems = [];
-	let hasTopLevelFile = false;
-	let hasTopLevelDirectory = false;
 	for (const item of items) {
 		if (item.kind !== 'file') {
 			continue;
@@ -1369,44 +1371,47 @@ const readDroppedUploadItems = async (dataTransfer) => {
 		const entry = typeof getAsEntry === 'function' ? getAsEntry.call(item) : null;
 		const file = entry ? null : (typeof item.getAsFile === 'function' ? item.getAsFile() : null);
 		const isDirectoryPlaceholder = !entry && isLikelyDroppedDirectoryPlaceholder(file);
-		if ((entry && entry.isDirectory) || isDirectoryPlaceholder) {
-			hasTopLevelDirectory = true;
-		} else if (entry && entry.isFile || file) {
-			hasTopLevelFile = true;
-		}
 		droppedItems.push({ item, entry, file, isDirectoryPlaceholder });
 	}
-	const shouldSkipDirectories = hasTopLevelFile && hasTopLevelDirectory;
 
 	// 直接读取的文件（非目录项）
 	const directFiles = [];
 	// 需要后台扫描的目录项
 	const scanJobs = [];
+	const scannedTopLevelDirectoryNames = new Set();
+	const addDirectoryScanJob = (job) => {
+		const name = normalizeUploadRelativePath(job.entry && job.entry.name || job.handle && job.handle.name || '');
+		if (name) {
+			scannedTopLevelDirectoryNames.add(name);
+		}
+		scanJobs.push(job);
+	};
+	const isKnownScannedDirectoryPlaceholder = (file) => {
+		if (!isZeroSizeUntypedFile(file)) {
+			return false;
+		}
+		const name = normalizeUploadRelativePath(file.name || '');
+		return !!name && scannedTopLevelDirectoryNames.has(name);
+	};
 
 	for (const dropped of droppedItems) {
-		if (shouldSkipDirectories && ((dropped.entry && dropped.entry.isDirectory) || dropped.isDirectoryPlaceholder)) {
-			continue;
-		}
 		if (dropped.entry) {
 			if (dropped.entry.isFile) {
 				const file = await readEntryFile(dropped.entry);
 				directFiles.push({ file, relativePath: dropped.entry.name });
 			} else if (dropped.entry.isDirectory) {
-				scanJobs.push({ type: 'entry', entry: dropped.entry });
+				addDirectoryScanJob({ type: 'entry', entry: dropped.entry });
 			}
 			continue;
 		}
 		try {
 			const handle = await readDataTransferItemHandle(dropped.item);
 			if (handle) {
-				if (shouldSkipDirectories && handle.kind === 'directory') {
-					continue;
-				}
 				if (handle.kind === 'file') {
 					const file = await handle.getFile();
 					directFiles.push({ file, relativePath: handle.name });
 				} else {
-					scanJobs.push({ type: 'handle', handle });
+					addDirectoryScanJob({ type: 'handle', handle });
 				}
 				continue;
 			}
@@ -1414,25 +1419,37 @@ const readDroppedUploadItems = async (dataTransfer) => {
 			console.warn('[控制台页] 读取拖拽文件系统句柄失败, 将回退到 DataTransferItem:', error);
 		}
 		if (dropped.file) {
-			if (shouldSkipDirectories && dropped.isDirectoryPlaceholder) {
+			if (isKnownScannedDirectoryPlaceholder(dropped.file)) {
 				continue;
 			}
-			directFiles.push({ file: dropped.file, relativePath: dropped.file.name, maybeDirectoryPlaceholder: dropped.isDirectoryPlaceholder });
+			directFiles.push({
+				file: dropped.file,
+				relativePath: dropped.file.name,
+				maybeDirectoryPlaceholder: dropped.isDirectoryPlaceholder,
+			});
 		}
 	}
 
-	// 回退：用 DataTransfer.files 补充缺失的文件
-	if (!scanJobs.length && fallbackFiles.length > directFiles.length) {
-		const seen = new Set(directFiles.map((entry) => getUploadFileSignature(entry.file)));
-		fallbackFiles.forEach((file) => {
-			const signature = getUploadFileSignature(file);
-			if (seen.has(signature)) {
-				return;
-			}
-			seen.add(signature);
-			directFiles.push({ file, relativePath: file.name });
+	// 回退：用 DataTransfer.files 补充缺失的明确顶层文件，避免目录扫描路径重复补入目录内部文件
+	const seen = new Set(directFiles.map((entry) => getUploadFileSignature(entry.file)));
+	fallbackFiles.forEach((file) => {
+		if (file.webkitRelativePath) {
+			return;
+		}
+		if (isKnownScannedDirectoryPlaceholder(file)) {
+			return;
+		}
+		const signature = getUploadFileSignature(file);
+		if (seen.has(signature)) {
+			return;
+		}
+		seen.add(signature);
+		directFiles.push({
+			file,
+			relativePath: file.name,
+			maybeDirectoryPlaceholder: isLikelyDroppedDirectoryPlaceholder(file),
 		});
-	}
+	});
 
 	// 从直接文件创建立即显示的项
 	const resultItems = buildUploadItemsFromPickedEntries(directFiles, []);

@@ -17,7 +17,7 @@
 ::selection { background: #34beff33; }
 
 /* 滚动条 */
-::-webkit-scrollbar { width: 7px; }
+::-webkit-scrollbar { width: 7px; height: 7px; }
 ::-webkit-scrollbar-thumb { background: var(--border-color); }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb:hover { background: #555; cursor: default; }
