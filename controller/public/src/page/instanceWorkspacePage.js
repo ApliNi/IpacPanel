@@ -1133,6 +1133,18 @@ export const bootTerminalPage = (options = {}) => {
 				openEditInstanceModal(svc);
 			}
 		},
+		onInstanceMissing: async (instanceName) => {
+			if (state.currentInstanceName !== instanceName) {
+				return;
+			}
+			if (!controller) {
+				throw new Error('实例页面控制器未初始化');
+			}
+			closeTerminalPage();
+			controller.updateUrl(null);
+			controller.showInstanceListPage();
+			await controller.loadInstances();
+		},
 		onToggleSelectAllCurrentDir: () => fileManager?.toggleSelectAllCurrentDir?.(),
 	});
     fileEditorModal = bootFileEditorModal({

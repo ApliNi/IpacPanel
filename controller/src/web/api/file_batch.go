@@ -219,6 +219,43 @@ func resolveCopyDirectoryDestination(path string, createDuplicate bool) (string,
 	return "", errors.New(msg.TargetAlreadyExists)
 }
 
+func resolveFileBatchActionDestination(rootPath string, destAbs string, srcAbs string, isDir bool, action string, copyDuplicate bool) (string, error) {
+	dstAbs := destAbs
+	if action != "copy" && action != "move" {
+		return dstAbs, nil
+	}
+
+	dstAbs = filepath.Join(destAbs, filepath.Base(srcAbs))
+	if action == "copy" && copyDuplicate {
+		var err error
+		if isDir {
+			dstAbs, err = resolveCopyDirectoryDestination(dstAbs, true)
+		} else {
+			dstAbs, err = resolveCopyFileDestination(dstAbs, true)
+		}
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if err := ensurePathComponentsWithinRoot(rootPath, dstAbs, false); err != nil {
+		return "", err
+	}
+
+	// Prevent copying/moving onto itself after copy_duplicate has had a chance to pick name_1/name_2.
+	if filepath.Clean(srcAbs) == filepath.Clean(dstAbs) {
+		return "", errors.New(msg.TargetSameAsSource)
+	}
+
+	// Apply directory subdir protection after duplicate destination is resolved.
+	// In-place duplicate directory copy must target a sibling copy (name_1), not a child of source.
+	if isDir && isSameOrSubDir(srcAbs, dstAbs) {
+		return "", errors.New(msg.TargetDirectoryInsideSource)
+	}
+
+	return dstAbs, nil
+}
+
 func fileBatchMoveFailReason(err error) string {
 	var partialErr *moveFileCopiedRemoveSourceError
 	if errors.As(err, &partialErr) {
@@ -556,35 +593,11 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 		}
 
 		isDir := info.IsDir()
-		baseName := filepath.Base(srcAbs)
 		dstAbs := destAbs
 		if action == "copy" || action == "move" {
-			dstAbs = filepath.Join(destAbs, baseName)
-			if action == "copy" && req.CopyDuplicate && isDir {
-				dstAbs, err = resolveCopyDirectoryDestination(dstAbs, true)
-				if err != nil {
-					fail(rule.Path, err.Error(), true)
-					continue
-				}
-			}
-			if err := ensurePathComponentsWithinRoot(rootPath, dstAbs, false); err != nil {
-				fail(rule.Path, msg.FilePathInvalid, isDir)
-				continue
-			}
-		}
-
-		// Apply subdir protection for directory rules in copy/move after final destination is known.
-		if (action == "copy" || action == "move") && isDir {
-			if isSameOrSubDir(srcAbs, dstAbs) {
-				fail(rule.Path, msg.TargetDirectoryInsideSource, true)
-				continue
-			}
-		}
-
-		// Prevent copying/moving onto itself (especially dangerous for directories).
-		if action == "copy" || action == "move" {
-			if filepath.Clean(srcAbs) == filepath.Clean(dstAbs) {
-				fail(rule.Path, msg.TargetSameAsSource, isDir)
+			dstAbs, err = resolveFileBatchActionDestination(rootPath, destAbs, srcAbs, isDir, action, req.CopyDuplicate)
+			if err != nil {
+				fail(rule.Path, err.Error(), isDir)
 				continue
 			}
 		}
@@ -775,17 +788,6 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if action == "copy" {
-			if req.CopyDuplicate {
-				dstAbs, err = resolveCopyFileDestination(dstAbs, true)
-				if err != nil {
-					fail(rule.Path, err.Error(), false)
-					continue
-				}
-			}
-			if err := ensurePathComponentsWithinRoot(rootPath, dstAbs, false); err != nil {
-				fail(rule.Path, err.Error(), false)
-				continue
-			}
 			if err := copyFileAtomicWithinRoot(rootPath, srcAbs, dstAbs, info.Mode(), req.Overwrite && !req.CopyDuplicate); err != nil {
 				if errors.Is(err, os.ErrExist) {
 					fail(rule.Path, msg.TargetAlreadyExists, false)

@@ -1,6 +1,6 @@
 import { mainContainer, state } from "../ui.js";
 import { DEFAULT_UI_REFRESH_INTERVAL_MS, clearTimer } from '../utils/utils.js';
-import { controlInstance, createWebSocket } from '../api/instance.js';
+import { controlInstance, createWebSocket, fetchInstance } from '../api/instance.js';
 import { normalizeTerminalMode, terminalMode } from '../utils/enum.js';
 import { icons } from '../utils/icon.js';
 import { InputValidation } from '../utils/inputValidation.js';
@@ -91,8 +91,10 @@ const cardState = {
     socket: null,
 	wsDisconnectCount: 0,
 	wsReconnectAttempt: 0,
+	instanceMissingCheckSeq: 0,
 	currentSvc: null,
 	onEditInstance: null,
+	onInstanceMissing: null,
 	fileSelection: null,
 	onToggleSelectAllCurrentDir: null,
 	isBound: false,
@@ -157,6 +159,32 @@ const getByteLength = (data) => {
 		return data.byteLength;
 	}
 	return 0;
+};
+
+const isInstanceNotFoundResult = (result) => {
+	if (!result || result.ok) {
+		return false;
+	}
+	return String(result.error || '').trim() === '实例不存在';
+};
+
+const checkInstanceStillExists = async (instanceName) => {
+	const name = String(instanceName || '').trim();
+	if (!name) {
+		throw new Error('缺少实例名称');
+	}
+	const result = await fetchInstance(name);
+	if (result.ok) {
+		return true;
+	}
+	if (isInstanceNotFoundResult(result)) {
+		return false;
+	}
+	if (result.unauthorized) {
+		return true;
+	}
+	console.error(`[WebSocket] 检查实例 ${name} 是否存在失败:`, result.error || '未知错误');
+	return true;
 };
 
 const createTerminalWriteEntry = (data, afterWrite = null) => {
@@ -924,6 +952,7 @@ const sendResize = (force = false) => {
 
 const closeTerminalSocket = () => {
 	cardState.reconnectTimer = clearTimer(cardState.reconnectTimer);
+	cardState.instanceMissingCheckSeq += 1;
 	cardState.inputDrainTimer = clearTimer(cardState.inputDrainTimer);
 	cardState.inputChunks.length = 0;
 	cardState.inputPendingBytes = 0;
@@ -1150,7 +1179,33 @@ const connectWebSocket = (svc, options = {}) => {
 				const reconnectDelay = getWsReconnectDelay(cardState.wsReconnectAttempt);
 				console.log(`[WebSocket] 将在 ${reconnectDelay}ms 后尝试重连 ${instanceName}...`);
 				cardState.reconnectTimer = setTimeout(() => {
-					connectWebSocket(svc, { resetCounters: false });
+					const checkSeq = cardState.instanceMissingCheckSeq + 1;
+					cardState.instanceMissingCheckSeq = checkSeq;
+					checkInstanceStillExists(instanceName).then((exists) => {
+						if (checkSeq !== cardState.instanceMissingCheckSeq || state.currentInstanceName !== instanceName || !hasActiveTerminal()) {
+							return;
+						}
+						if (!exists) {
+							console.warn(`[WebSocket] 实例 ${instanceName} 不存在, 返回实例列表`);
+							cardState.reconnectTimer = clearTimer(cardState.reconnectTimer);
+							cardState.wsDisconnectCount = 0;
+							cardState.wsReconnectAttempt = 0;
+							if (typeof cardState.onInstanceMissing !== 'function') {
+								throw new Error('实例不存在处理器未初始化');
+							}
+							Promise.resolve(cardState.onInstanceMissing(instanceName)).catch((error) => {
+								console.error(`[WebSocket] 处理实例 ${instanceName} 不存在失败:`, error);
+							});
+							return;
+						}
+						connectWebSocket(svc, { resetCounters: false });
+					}).catch((error) => {
+						console.error(`[WebSocket] 检查实例 ${instanceName} 是否存在失败:`, error);
+						if (checkSeq !== cardState.instanceMissingCheckSeq || state.currentInstanceName !== instanceName || !hasActiveTerminal()) {
+							return;
+						}
+						connectWebSocket(svc, { resetCounters: false });
+					});
 				}, reconnectDelay);
 			}
 		}
@@ -1285,6 +1340,7 @@ const close = () => {
 
 export const bootTerminalWorkspace = (options = {}) => {
     cardState.onEditInstance = options.onEditInstance || null;
+	cardState.onInstanceMissing = options.onInstanceMissing || null;
 	cardState.fileSelection = options.fileSelection || null;
 	cardState.onToggleSelectAllCurrentDir = options.onToggleSelectAllCurrentDir || null;
     bindCardEvents();
