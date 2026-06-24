@@ -4,10 +4,8 @@
     --terminal-bg-color: #0a0a0a;
     --text-color: #dededf;
     --text-subtle-color: #999;
-    --text-muted-color: var(--text-subtle-color);
     --text-faint-color: #666;
     --border-color: #333;
-    --primary-color: var(--green);
     --green: #00ff00;
     --blue: #00d2ff;
     --red: #f44b2b;
@@ -1119,7 +1117,7 @@ input[type="password"] {
 }
 
 .file-search-input.active {
-	border-color: var(--primary-color) !important;
+	border-color: var(--green) !important;
 }
 
 .file-current-path {
@@ -2429,7 +2427,7 @@ input[type="radio"]:checked { border: 6px double var(--text-subtle-color); }
 .terminal-disabled-notice {
 	padding: 18px 16px;
 	border-bottom: 1px solid var(--border-color);
-	color: var(--text-muted-color);
+	color: var(--text-subtle-color);
 	line-height: 1.5;
 }
 
