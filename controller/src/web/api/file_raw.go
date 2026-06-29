@@ -10,7 +10,6 @@ import (
 	"mime"
 	"net/http"
 	"path/filepath"
-	"time"
 )
 
 func HandleApiFileRaw(w http.ResponseWriter, r *http.Request) {
@@ -50,12 +49,5 @@ func HandleApiFileRaw(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Disposition", disposition)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	http.ServeContent(w, r, filepath.Base(targetPath), fileModTime(info), file)
-}
-
-func fileModTime(info interface{ ModTime() time.Time }) time.Time {
-	if info == nil {
-		return time.Time{}
-	}
-	return info.ModTime()
+	http.ServeContent(w, r, filepath.Base(targetPath), info.ModTime(), file)
 }

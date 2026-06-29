@@ -37,7 +37,7 @@ const postFileActionSilent = async (url, payload, options = {}) => {
 	return await parseJsonData(res);
 };
 
-const triggerSilentDownload = (url) => {
+export const triggerSilentDownload = (url) => {
 	const downloadUrl = String(url || '').trim();
 	if (!downloadUrl) {
 		throw new Error('下载地址为空');

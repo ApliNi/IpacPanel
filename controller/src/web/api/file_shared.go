@@ -92,10 +92,6 @@ func removeEmptyDirectoryWithinRoot(rootPath string, targetPath string) error {
 	return instancefs.RemoveEmptyDirectoryWithinRoot(rootPath, targetPath)
 }
 
-func removeAllWithinRoot(rootPath string, targetPath string) error {
-	return instancefs.RemoveAllWithinRoot(rootPath, targetPath)
-}
-
 func newInstanceFS(sp *process.InstanceProcess) (*instancefs.InstanceFS, error) {
 	return instancefs.NewFromProcess(sp)
 }

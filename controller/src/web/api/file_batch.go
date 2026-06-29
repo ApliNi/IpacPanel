@@ -1,6 +1,7 @@
 package api
 
 import (
+	"IpacPanel/controller/src/instancefs"
 	"IpacPanel/controller/src/msg"
 	process "IpacPanel/controller/src/process"
 	"IpacPanel/controller/src/web/authz"
@@ -320,27 +321,46 @@ func removeMovedDirectorySourceWithinRoot(ctx context.Context, rootPath string, 
 	if hasExcludeRules {
 		return removeEmptyDirectoryTreeWithinRoot(ctx, rootPath, targetPath)
 	}
-	return removeAllWithinRoot(rootPath, targetPath)
+	return removeDirectoryWithinRootRespectingExcludes(ctx, rootPath, targetPath, fileBatchExcludeMatcher{})
 }
 
 func removeDirectoryWithinRootRespectingExcludes(ctx context.Context, rootPath string, targetPath string, excludes fileBatchExcludeMatcher) error {
-	if excludes.empty() {
-		return removeAllWithinRoot(rootPath, targetPath)
+	if err := ensurePathComponentsWithinRoot(rootPath, targetPath, true); err != nil {
+		return err
 	}
 
-	dirs := make([]string, 0)
+	type deleteEntry struct {
+		path  string
+		isDir bool
+	}
+	entries := make([]deleteEntry, 0)
+	partial := &instancefs.PartialDeleteError{}
+
 	if err := filepath.WalkDir(targetPath, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return walkErr
+			isDir := entry != nil && entry.IsDir()
+			partial.Failures = append(partial.Failures, instancefs.DeleteFailure{Path: instancefs.RelativeDeleteFailurePath(rootPath, path), IsDir: isDir, Reason: walkErr})
+			if entry != nil && entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if err := ensurePathComponentsWithinRoot(rootPath, path, true); err != nil {
-			return err
+			partial.Failures = append(partial.Failures, instancefs.DeleteFailure{Path: instancefs.RelativeDeleteFailurePath(rootPath, path), IsDir: entry.IsDir(), Reason: err})
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			return errors.New(msg.PathOutsideInstanceRoot)
+			partial.Failures = append(partial.Failures, instancefs.DeleteFailure{Path: instancefs.RelativeDeleteFailurePath(rootPath, path), IsDir: entry.IsDir(), Reason: errors.New(msg.PathOutsideInstanceRoot)})
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 
 		isDir := entry.IsDir()
@@ -351,37 +371,67 @@ func removeDirectoryWithinRootRespectingExcludes(ctx context.Context, rootPath s
 			return nil
 		}
 
-		if isDir {
-			dirs = append(dirs, path)
-			return nil
-		}
-		return removeFileWithinRoot(rootPath, path)
+		entries = append(entries, deleteEntry{path: path, isDir: isDir})
+		return nil
 	}); err != nil {
 		return err
 	}
 
-	for i := len(dirs) - 1; i >= 0; i-- {
+	for i := len(entries) - 1; i >= 0; i-- {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		entries, err := os.ReadDir(dirs[i])
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
+		entry := entries[i]
+		if entry.isDir {
+			dirEntries, err := os.ReadDir(entry.path)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				partial.Failures = append(partial.Failures, instancefs.DeleteFailure{Path: instancefs.RelativeDeleteFailurePath(rootPath, entry.path), IsDir: true, Reason: err})
 				continue
 			}
-			return err
-		}
-		if len(entries) > 0 {
+			if len(dirEntries) > 0 && excludes.empty() {
+				partial.Failures = append(partial.Failures, instancefs.DeleteFailure{Path: instancefs.RelativeDeleteFailurePath(rootPath, entry.path), IsDir: true, Reason: errors.New(msg.PartialDeleteFailed)})
+				continue
+			}
+			if len(dirEntries) > 0 {
+				continue
+			}
+			if err := removeEmptyDirectoryWithinRoot(rootPath, entry.path); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				partial.Failures = append(partial.Failures, instancefs.DeleteFailure{Path: instancefs.RelativeDeleteFailurePath(rootPath, entry.path), IsDir: true, Reason: err})
+			}
 			continue
 		}
-		if err := removeEmptyDirectoryWithinRoot(rootPath, dirs[i]); err != nil {
+		if err := removeFileWithinRoot(rootPath, entry.path); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return err
+			partial.Failures = append(partial.Failures, instancefs.DeleteFailure{Path: instancefs.RelativeDeleteFailurePath(rootPath, entry.path), Reason: err})
 		}
 	}
+	if len(partial.Failures) > 0 {
+		return partial
+	}
 	return nil
+}
+
+func failPartialDelete(fail func(string, string, bool), fallbackPath string, fallbackIsDir bool, err error) {
+	var partialErr *instancefs.PartialDeleteError
+	if !errors.As(err, &partialErr) || partialErr == nil || len(partialErr.Failures) == 0 {
+		fail(fallbackPath, deleteFailureReason(err), fallbackIsDir)
+		return
+	}
+	for _, failure := range partialErr.Failures {
+		failurePath := failure.Path
+		if strings.TrimSpace(failurePath) == "" {
+			failurePath = fallbackPath
+		}
+		fail(failurePath, deleteFailureReason(failure.Reason), failure.IsDir)
+	}
 }
 
 func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
@@ -583,7 +633,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 			if errors.Is(err, os.ErrNotExist) {
 				fail(rule.Path, msg.TargetNotFound, rule.IsDir)
 			} else {
-				fail(rule.Path, err.Error(), rule.IsDir)
+				fail(rule.Path, deleteFailureReason(err), rule.IsDir)
 			}
 			continue
 		}
@@ -611,14 +661,14 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 						return
 					}
-					fail(rule.Path, err.Error(), true)
+					failPartialDelete(fail, rule.Path, true, err)
 					continue
 				}
 				success()
 				continue
 			}
 			if err := removeFileWithinRoot(rootPath, srcAbs); err != nil {
-				fail(rule.Path, fileBatchMoveFailReason(err), false)
+				fail(rule.Path, deleteFailureReason(err), false)
 				continue
 			}
 			success()
@@ -776,7 +826,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 						return
 					}
-					fail(rule.Path, err.Error(), true)
+					fail(rule.Path, deleteFailureReason(err), true)
 					continue
 				}
 			}

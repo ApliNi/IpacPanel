@@ -690,6 +690,16 @@ const loadUsers = async () => {
 	});
 };
 
+const performLogoutAndRedirect = async () => {
+	setMeStatus('LOGGING OUT...');
+	const res = await logout();
+	if (!res?.ok) {
+		setMeStatus(res?.message || 'Logout failed', { error: true });
+		return;
+	}
+	clearAllStoredDataAndEnterUnauthorizedState();
+};
+
 const saveMe = async () => {
 	if (modalState.meLoading) return;
 	const name = dom.meName ? truncateText(dom.meName.value || '', USER_NAME_MAX_LENGTH).trim() : '';
@@ -712,6 +722,9 @@ const saveMe = async () => {
 		return;
 	}
 
+	const nameChanged = name !== (modalState.meUser || '');
+	const passChanged = hasPass;
+
 	setMeStatus('SAVING...');
 	await withActionsDisabled(dom.meActions, async () => {
 		const res = await updateMe({ name, pass: hasPass ? pass : '' });
@@ -724,6 +737,9 @@ const saveMe = async () => {
 		if (dom.mePass) dom.mePass.value = '';
 		if (dom.mePass2) dom.mePass2.value = '';
 		updatePassConfirmVisibility();
+		if (nameChanged || passChanged) {
+			await performLogoutAndRedirect();
+		}
 	});
 };
 
@@ -893,15 +909,7 @@ const bindEvents = () => {
 			if (!ok) {
 				return;
 			}
-			setMeStatus('LOGGING OUT...');
-			await withActionsDisabled(dom.meActions, async () => {
-				const res = await logout();
-				if (!res?.ok) {
-					setMeStatus(res?.message || 'Logout failed', { error: true });
-					return;
-				}
-				clearAllStoredDataAndEnterUnauthorizedState();
-			});
+			await withActionsDisabled(dom.meActions, performLogoutAndRedirect);
 		};
 	}
 	if (dom.resetToken) {

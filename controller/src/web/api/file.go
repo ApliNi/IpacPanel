@@ -73,6 +73,26 @@ func writeFileReadResponse(w http.ResponseWriter, relativePath string, targetPat
 	return err
 }
 
+func writePartialDeleteError(w http.ResponseWriter, partialErr *instancefs.PartialDeleteError) {
+	web.WriteAPIError(w, http.StatusInternalServerError, msg.PartialDeleteFailed, partialErr)
+}
+
+func deleteFailureReason(err error) string {
+	if err == nil {
+		return msg.PartialDeleteFailed
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return msg.PermissionDenied
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return msg.TargetNotFound
+	}
+	if errors.Is(err, instancefs.ErrPathOutsideInstanceRoot) {
+		return msg.PathOutsideInstanceRoot
+	}
+	return msg.DeleteFailed
+}
+
 func writeRequiredFileAccessError(w http.ResponseWriter, err error) {
 	var accessErr *instancefs.PathAccessError
 	if !errors.As(err, &accessErr) {
@@ -464,6 +484,11 @@ func HandleApiFileDelete(w http.ResponseWriter, r *http.Request) {
 		var accessErr *instancefs.PathAccessError
 		if errors.As(err, &accessErr) {
 			writeRequiredFileAccessError(w, err)
+			return
+		}
+		var partialErr *instancefs.PartialDeleteError
+		if errors.As(err, &partialErr) {
+			writePartialDeleteError(w, partialErr)
 			return
 		}
 		if isDir {

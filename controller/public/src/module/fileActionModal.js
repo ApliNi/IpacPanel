@@ -1,7 +1,7 @@
 import { mainModalOverlay, state } from "../ui.js";
 import { buildAuthedFileRawUrl } from '../api/core.js';
 import { clearTimer, formatFileSize, withActionsDisabled } from '../utils/utils.js';
-import { deleteFile, downloadFileArchive, renameFile, streamFileExtractAction } from '../api/file.js';
+import { deleteFile, downloadFileArchive, renameFile, streamFileExtractAction, triggerSilentDownload } from '../api/file.js';
 import { showAlert, showConfirm } from './dialog.js';
 import { getFileType } from '../utils/icon.js';
 import { InputValidation } from '../utils/inputValidation.js';
@@ -748,7 +748,7 @@ const openFileDownloadPage = () => {
 	if (!url) {
 		return;
 	}
-	window.open(url, '_blank', 'noopener');
+	triggerSilentDownload(url);
 };
 
 const normalizeArchiveRule = (entry) => {
