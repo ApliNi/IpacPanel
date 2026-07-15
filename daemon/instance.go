@@ -24,7 +24,6 @@ const (
 
 const daemonOutputReadBufferSize = 64 * 1024
 
-const daemonRuntimeEventSendTimeout = 5 * time.Second
 const daemonOutputDoneWaitTimeout = 2 * time.Second
 
 var daemonOutputBufferPool = sync.Pool{
@@ -75,6 +74,7 @@ type DaemonInstance struct {
 	CleanupTree        *terminal.ProcessTree
 	DevNull            *os.File
 	OutputCh           chan<- IPCResponse
+	EventCh            chan<- IPCResponse
 	runtimeID          string
 	proxySeq           uint64
 	outputDone         chan struct{}
@@ -212,7 +212,7 @@ func (ins *DaemonInstance) RuntimeSnapshot() InstanceRuntimeState {
 	return rt
 }
 
-func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse) error {
+func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse, eventCh chan<- IPCResponse) error {
 	ins.Mu.Lock()
 	defer ins.Mu.Unlock()
 
@@ -269,6 +269,7 @@ func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse) error {
 	ins.ProcessTree = processTree
 	ins.DevNull = devNull
 	ins.OutputCh = outputCh
+	ins.EventCh = eventCh
 	if proxy != nil {
 		ins.outputDone = make(chan struct{})
 	} else {
@@ -597,6 +598,7 @@ func (ins *DaemonInstance) finishProcessExit(proxy *terminal.Proxy, cmd *exec.Cm
 	ins.Runtime.PID = 0
 	ins.Runtime.ExitTime = time.Now()
 	outputCh := ins.OutputCh
+	eventCh := ins.EventCh
 	runtimeID := ins.runtimeID
 	if runtimeID == "" {
 		runtimeID = ins.Runtime.RuntimeAlias
@@ -617,7 +619,7 @@ func (ins *DaemonInstance) finishProcessExit(proxy *terminal.Proxy, cmd *exec.Cm
 			_ = devNull.Close()
 		}
 		cleanupProcessTree(runtimeID, processTree, "instance exit before cleanup command")
-		ins.runCleanupCommand(cleanupPath, cleanupArgv, outputCh, runtimeID)
+		ins.runCleanupCommand(cleanupPath, cleanupArgv, outputCh, eventCh, runtimeID)
 		ins.finishCleanupExit(proxySeq, runtime)
 		return
 	}
@@ -631,7 +633,7 @@ func (ins *DaemonInstance) finishProcessExit(proxy *terminal.Proxy, cmd *exec.Cm
 	}
 	cleanupProcessTree(runtimeID, processTree, "instance exit")
 
-	ins.sendRuntimeEvent(outputCh, IPCResponse{Type: "instance_exited", State: &runtime})
+	ins.sendRuntimeEvent(eventCh, IPCResponse{Type: "instance_exited", State: &runtime})
 }
 
 func cleanupProcessTree(runtimeID string, processTree *terminal.ProcessTree, context string) {
@@ -656,20 +658,20 @@ func waitDaemonOutputDone(runtimeID string, done <-chan struct{}) {
 	}
 }
 
-func (ins *DaemonInstance) runCleanupCommand(path string, argv []string, outputCh chan<- IPCResponse, runtimeID string) {
+func (ins *DaemonInstance) runCleanupCommand(path string, argv []string, outputCh chan<- IPCResponse, eventCh chan<- IPCResponse, runtimeID string) {
 	if len(argv) == 0 {
 		return
 	}
 	cmd, err := terminal.BuildCommand(path, argv)
 	if err != nil {
-		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageBuildFailed, err.Error())
+		ins.sendCleanupMessage(eventCh, runtimeID, cleanupMessageBuildFailed, err.Error())
 		return
 	}
 	terminal.PreventConsoleInheritance(cmd)
 	processTree, err := terminal.NewProcessTree()
 	if err != nil {
 		if terminal.IsProcessTreeRequired() {
-			ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStartFailed, err.Error())
+			ins.sendCleanupMessage(eventCh, runtimeID, cleanupMessageStartFailed, err.Error())
 			return
 		}
 		log.Printf("instance %s cleanup process tree unavailable: %v", runtimeID, err)
@@ -682,7 +684,7 @@ func (ins *DaemonInstance) runCleanupCommand(path string, argv []string, outputC
 		if processTree != nil {
 			_ = processTree.Close()
 		}
-		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStdoutFailed, err.Error())
+		ins.sendCleanupMessage(eventCh, runtimeID, cleanupMessageStdoutFailed, err.Error())
 		return
 	}
 	stderr, err := cmd.StderrPipe()
@@ -691,7 +693,7 @@ func (ins *DaemonInstance) runCleanupCommand(path string, argv []string, outputC
 		if processTree != nil {
 			_ = processTree.Close()
 		}
-		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStderrFailed, err.Error())
+		ins.sendCleanupMessage(eventCh, runtimeID, cleanupMessageStderrFailed, err.Error())
 		return
 	}
 	if err := cmd.Start(); err != nil {
@@ -700,7 +702,7 @@ func (ins *DaemonInstance) runCleanupCommand(path string, argv []string, outputC
 		if processTree != nil {
 			_ = processTree.Close()
 		}
-		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStartFailed, err.Error())
+		ins.sendCleanupMessage(eventCh, runtimeID, cleanupMessageStartFailed, err.Error())
 		return
 	}
 	if processTree != nil {
@@ -717,7 +719,7 @@ func (ins *DaemonInstance) runCleanupCommand(path string, argv []string, outputC
 					_ = stderr.Close()
 					_ = cmd.Process.Kill()
 					_ = cmd.Wait()
-					ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStartFailed, err.Error())
+					ins.sendCleanupMessage(eventCh, runtimeID, cleanupMessageStartFailed, err.Error())
 					return
 				}
 				log.Printf("instance %s cleanup process tree unavailable: %v", runtimeID, err)
@@ -737,14 +739,14 @@ func (ins *DaemonInstance) runCleanupCommand(path string, argv []string, outputC
 	wg.Add(2)
 	go ins.copyCleanupOutput(&wg, outputCh, runtimeID, stdout)
 	go ins.copyCleanupOutput(&wg, outputCh, runtimeID, stderr)
-	ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageStarted)
+	ins.sendCleanupMessage(eventCh, runtimeID, cleanupMessageStarted)
 	waitErr := cmd.Wait()
 	cleanupProcessTree(runtimeID, processTree, "cleanup command exit")
 	wg.Wait()
 	if waitErr != nil {
-		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageExited, waitErr.Error())
+		ins.sendCleanupMessage(eventCh, runtimeID, cleanupMessageExited, waitErr.Error())
 	} else {
-		ins.sendCleanupMessage(outputCh, runtimeID, cleanupMessageCompleted)
+		ins.sendCleanupMessage(eventCh, runtimeID, cleanupMessageCompleted)
 	}
 }
 
@@ -774,12 +776,12 @@ const (
 	cleanupMessageCompleted    = "cleanup_command.completed"
 )
 
-func (ins *DaemonInstance) sendCleanupMessage(outputCh chan<- IPCResponse, runtimeID string, placeholder string, args ...string) {
-	if outputCh == nil || runtimeID == "" || strings.TrimSpace(placeholder) == "" {
+func (ins *DaemonInstance) sendCleanupMessage(eventCh chan<- IPCResponse, runtimeID string, placeholder string, args ...string) {
+	if eventCh == nil || runtimeID == "" || strings.TrimSpace(placeholder) == "" {
 		return
 	}
 	select {
-	case outputCh <- IPCResponse{Type: "cleanup_message", Instance: runtimeID, Placeholder: placeholder, Args: args}:
+	case eventCh <- IPCResponse{Type: "cleanup_message", Instance: runtimeID, Placeholder: placeholder, Args: args}:
 	default:
 		log.Printf("instance %s cleanup message %s dropped", runtimeID, placeholder)
 	}
@@ -809,7 +811,7 @@ func (ins *DaemonInstance) finishCleanupExit(proxySeq uint64, runtime InstanceRu
 	ins.Runtime.PID = 0
 	ins.Runtime.ExitTime = time.Now()
 	runtime = ins.Runtime
-	outputCh := ins.OutputCh
+	eventCh := ins.EventCh
 	runtimeID := ins.runtimeID
 	if runtimeID == "" {
 		runtimeID = runtime.RuntimeAlias
@@ -822,27 +824,20 @@ func (ins *DaemonInstance) finishCleanupExit(proxySeq uint64, runtime InstanceRu
 		cleanupProcessTree(runtimeID, cleanupTree, "cleanup finalization")
 	}
 
-	ins.sendRuntimeEvent(outputCh, IPCResponse{Type: "instance_exited", State: &runtime})
+	ins.sendRuntimeEvent(eventCh, IPCResponse{Type: "instance_exited", State: &runtime})
 }
 
-func (ins *DaemonInstance) sendRuntimeEvent(outputCh chan<- IPCResponse, resp IPCResponse) {
-	if outputCh == nil {
+func (ins *DaemonInstance) sendRuntimeEvent(eventCh chan<- IPCResponse, resp IPCResponse) {
+	if eventCh == nil {
 		resp.Release()
 		return
 	}
-	timer := time.NewTimer(daemonRuntimeEventSendTimeout)
-	defer timer.Stop()
 	select {
-	case outputCh <- resp:
-	case <-timer.C:
+	case eventCh <- resp:
+	default:
 		instanceName := runtimeEventInstanceName(resp)
-		select {
-		case outputCh <- resp:
-			log.Printf("instance %s runtime event %s sent after waiting %s", instanceName, resp.Type, daemonRuntimeEventSendTimeout)
-		default:
-			resp.Release()
-			log.Printf("instance %s runtime event %s could not be queued after waiting %s; daemon state already converged and controller can recover via list_runtime", instanceName, resp.Type, daemonRuntimeEventSendTimeout)
-		}
+		resp.Release()
+		log.Printf("instance %s runtime event %s dropped (event channel full)", instanceName, resp.Type)
 	}
 }
 
@@ -877,6 +872,7 @@ func (ins *DaemonInstance) Shutdown() {
 	ins.State = instanceStopped
 	ins.Runtime.Lifecycle = InstanceLifecycleStopped
 	ins.OutputCh = nil
+	ins.EventCh = nil
 	ins.Mu.Unlock()
 	if proxy != nil {
 		if err := proxy.Kill(); err != nil {

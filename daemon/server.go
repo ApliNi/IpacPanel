@@ -16,14 +16,15 @@ const outputChannelSize = 256
 const (
 	ipcControlQueueSize       = 1024
 	ipcOutputFlushInterval    = 8 * time.Millisecond
-	ipcOutputMaxBatchBytes    = 512 * 1024
 	ipcOutputDrainMaxMessages = 128
+	eventChannelSize          = 64
 )
 
 type IPCServer struct {
 	Conn            *IPCConn
 	Instances       *InstanceManager
 	outputCh        chan IPCResponse
+	eventCh         chan IPCResponse
 	done            chan struct{}
 	closeOnce       sync.Once
 	serveDone       chan struct{}
@@ -39,12 +40,17 @@ func NewIPCServer(instances *InstanceManager) (*IPCServer, error) {
 	return &IPCServer{
 		Instances: instances,
 		outputCh:  make(chan IPCResponse, outputChannelSize),
+		eventCh:   make(chan IPCResponse, eventChannelSize),
 		done:      make(chan struct{}),
 	}, nil
 }
 
 func (s *IPCServer) OutputCh() chan<- IPCResponse {
 	return s.outputCh
+}
+
+func (s *IPCServer) EventCh() chan<- IPCResponse {
+	return s.eventCh
 }
 
 func (s *IPCServer) Bind(conn *IPCConn) {
@@ -73,6 +79,8 @@ func (s *IPCServer) drainOutput() {
 	for {
 		select {
 		case resp := <-s.outputCh:
+			resp.Release()
+		case resp := <-s.eventCh:
 			resp.Release()
 		default:
 			return
@@ -153,57 +161,7 @@ func (s *IPCServer) queueControlResponse(controlCh chan<- IPCResponse, forwardDo
 func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, connDone <-chan struct{}) {
 	ticker := time.NewTicker(ipcOutputFlushInterval)
 	defer ticker.Stop()
-	pending := make(map[string]IPCResponse)
-	pendingBytes := 0
-	releasePending := func() {
-		for _, resp := range pending {
-			resp.Release()
-		}
-		pending = make(map[string]IPCResponse)
-		pendingBytes = 0
-	}
-	flushPending := func(conn *IPCConn) bool {
-		if pendingBytes == 0 {
-			return true
-		}
-		for instance, resp := range pending {
-			delete(pending, instance)
-			pendingBytes -= len(resp.Body)
-			if err := conn.WriteInstanceOutputResponse(resp, false); err != nil {
-				log.Printf("IPC output write error: %v", err)
-				_ = conn.Close()
-				releasePending()
-				return false
-			}
-		}
-		if err := conn.Flush(); err != nil {
-			log.Printf("IPC output flush error: %v", err)
-			_ = conn.Close()
-			releasePending()
-			return false
-		}
-		return true
-	}
-	queueOutput := func(resp IPCResponse) {
-		if resp.Type != "o" || resp.Instance == "" || len(resp.Body) == 0 {
-			resp.Release()
-			return
-		}
-		current, ok := pending[resp.Instance]
-		if ok {
-			body := make([]byte, 0, len(current.Body)+len(resp.Body))
-			body = append(body, current.Body...)
-			body = append(body, resp.Body...)
-			pendingBytes += len(resp.Body)
-			current.Body = body
-			current.ReleaseFunc = mergeIPCRelease(current.ReleaseFunc, resp.ReleaseFunc)
-			resp.ReleaseFunc = nil
-			pending[resp.Instance] = current
-			return
-		}
-		pending[resp.Instance] = resp
-		pendingBytes += len(resp.Body)
-	}
+	needFlush := false
 	writeControl := func(conn *IPCConn, resp IPCResponse) bool {
 		if err := conn.WriteResponse(resp); err != nil {
 			log.Printf("IPC write error: %v", err)
@@ -212,10 +170,40 @@ func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, c
 		}
 		return true
 	}
+	writeOutput := func(conn *IPCConn, resp IPCResponse) bool {
+		if err := conn.WriteInstanceOutputResponse(resp, false); err != nil {
+			log.Printf("IPC output write error: %v", err)
+			_ = conn.Close()
+			return false
+		}
+		return true
+	}
+	flush := func(conn *IPCConn) bool {
+		if !needFlush {
+			return true
+		}
+		if err := conn.Flush(); err != nil {
+			log.Printf("IPC output flush error: %v", err)
+			_ = conn.Close()
+			return false
+		}
+		needFlush = false
+		return true
+	}
 	for {
+		// 优先排空 controlCh 和 eventCh
 		for i := 0; i < ipcOutputDrainMaxMessages; i++ {
 			select {
 			case resp := <-controlCh:
+				if !writeControl(conn, resp) {
+					return
+				}
+				continue
+			case resp := <-s.eventCh:
+				if !flush(conn) {
+					resp.Release()
+					return
+				}
 				if !writeControl(conn, resp) {
 					return
 				}
@@ -227,18 +215,24 @@ func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, c
 
 		select {
 		case <-s.done:
-			releasePending()
 			return
 		case <-connDone:
-			releasePending()
 			return
 		case resp := <-controlCh:
 			if !writeControl(conn, resp) {
 				return
 			}
+		case resp := <-s.eventCh:
+			if !flush(conn) {
+				resp.Release()
+				return
+			}
+			if !writeControl(conn, resp) {
+				return
+			}
 		case resp := <-s.outputCh:
 			if resp.Type != "o" {
-				if !flushPending(conn) {
+				if !flush(conn) {
 					resp.Release()
 					return
 				}
@@ -247,31 +241,15 @@ func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, c
 				}
 				continue
 			}
-			queueOutput(resp)
-			if pendingBytes < ipcOutputMaxBatchBytes {
-				continue
-			}
-			if !flushPending(conn) {
+			if !writeOutput(conn, resp) {
 				return
 			}
+			needFlush = true
 		case <-ticker.C:
-			if !flushPending(conn) {
+			if !flush(conn) {
 				return
 			}
 		}
-	}
-}
-
-func mergeIPCRelease(first func(), second func()) func() {
-	if first == nil {
-		return second
-	}
-	if second == nil {
-		return first
-	}
-	return func() {
-		first()
-		second()
 	}
 }
 
@@ -447,7 +425,7 @@ func (s *IPCServer) handleStartInstance(req *IPCRequest) *IPCResponse {
 	s.Instances.instances[req.Instance] = ins
 	s.Instances.Mu.Unlock()
 
-	if err := ins.Start(s.outputCh); err != nil {
+	if err := ins.Start(s.outputCh, s.eventCh); err != nil {
 		if created {
 			s.Instances.Delete(req.Instance)
 		}
