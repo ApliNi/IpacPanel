@@ -30,8 +30,9 @@ import (
 )
 
 type uploadManager struct {
-	mu       sync.RWMutex
-	sessions map[string]*fileUploadSession
+	mu             sync.RWMutex
+	sessions       map[string]*fileUploadSession
+	cleanupRunning bool
 }
 
 var uploads = &uploadManager{
@@ -57,8 +58,9 @@ func resetUploadSessions() {
 	}
 }
 
-func cleanupExpiredCommittedUploadSessions() {
+func cleanupExpiredCommittedUploadSessions() (hasRemaining bool) {
 	now := time.Now()
+	var idleSessions []*fileUploadSession
 	uploads.mu.Lock()
 	for id, session := range uploads.sessions {
 		if session == nil {
@@ -66,18 +68,37 @@ func cleanupExpiredCommittedUploadSessions() {
 			continue
 		}
 		status := session.Status
-		if status != uploadSessionCommitted {
-			continue
-		}
 		if atomic.LoadInt32(&session.ActiveRequests) != 0 {
+			hasRemaining = true
 			continue
 		}
-		if now.Sub(session.LastChunkAt) <= uploadCommittedKeepTTL {
+		if status == uploadSessionCommitted && now.Sub(session.LastChunkAt) > uploadSessionIdleTTL {
+			delete(uploads.sessions, id)
 			continue
 		}
-		delete(uploads.sessions, id)
+		if status == uploadSessionActive && now.Sub(session.LastChunkAt) > uploadSessionIdleTTL {
+			delete(uploads.sessions, id)
+			if session.CleanupPath != "" {
+				idleSessions = append(idleSessions, session)
+			}
+			log.Printf("upload session %s idle timeout, cleaned up", session.UploadID)
+			continue
+		}
+		if status == uploadSessionCanceled {
+			delete(uploads.sessions, id)
+			if session.CleanupPath != "" {
+				idleSessions = append(idleSessions, session)
+			}
+			log.Printf("upload session %s canceled, cleaned up", session.UploadID)
+			continue
+		}
+		hasRemaining = true
 	}
 	uploads.mu.Unlock()
+	for _, session := range idleSessions {
+		_ = file.RemoveRegisteredTempPath(session.CleanupPath)
+	}
+	return
 }
 
 func uploadSessionStatusSnapshot(session *fileUploadSession) (uploadSessionStatus, bool) {
@@ -96,19 +117,50 @@ func uploadSessionIsCommittedOrCompleting(session *fileUploadSession) bool {
 	return status == uploadSessionCommitted || status == uploadSessionCompleting
 }
 
+func ensureUploadCleanupTimerLocked() {
+	if uploads.cleanupRunning {
+		return
+	}
+	if len(uploads.sessions) == 0 {
+		return
+	}
+	uploads.cleanupRunning = true
+	go uploadCleanupLoop()
+}
+
+func uploadCleanupLoop() {
+	ticker := time.NewTicker(uploadCleanupCheckInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		hasRemaining := cleanupExpiredCommittedUploadSessions()
+		if !hasRemaining {
+			uploads.mu.Lock()
+			if len(uploads.sessions) > 0 {
+				// 新 session 在此期间被添加,继续运行
+				uploads.mu.Unlock()
+				continue
+			}
+			uploads.cleanupRunning = false
+			uploads.mu.Unlock()
+			return
+		}
+	}
+}
+
 func ResetUploadSessions() {
 	resetUploadSessions()
 }
 
 const (
-	maxOpenFileSize        = 10 * 1024 * 1024
-	maxUploadChunkSize     = 10 * 1024 * 1024
-	maxUploadChunkCount    = 4096
-	uploadChunkLockStripes = 64
-	uploadCommittedKeepTTL = 10 * time.Minute
-	uploadIDHeaderName     = "X-Ipac-Upload-Id"
-	uploadChunkHeaderName  = "X-Ipac-Chunk-Index"
-	uploadInstanceHeader   = "X-Ipac-Instance"
+	maxOpenFileSize            = 10 * 1024 * 1024
+	maxUploadChunkSize         = 10 * 1024 * 1024
+	maxUploadChunkCount        = 4096
+	uploadChunkLockStripes     = 64
+	uploadSessionIdleTTL       = 10 * time.Minute
+	uploadCleanupCheckInterval = 2 * time.Minute
+	uploadIDHeaderName         = "X-Ipac-Upload-Id"
+	uploadChunkHeaderName      = "X-Ipac-Chunk-Index"
+	uploadInstanceHeader       = "X-Ipac-Instance"
 )
 
 type uploadSessionStatus string
@@ -614,6 +666,7 @@ func setUploadSession(session *fileUploadSession) {
 	uploads.mu.Lock()
 	defer uploads.mu.Unlock()
 	uploads.sessions[session.UploadID] = session
+	ensureUploadCleanupTimerLocked()
 }
 
 func replaceUploadSession(session *fileUploadSession) *fileUploadSession {
@@ -631,6 +684,7 @@ func replaceUploadSession(session *fileUploadSession) *fileUploadSession {
 		signalUploadCompletionLocked(old)
 	}
 	uploads.sessions[session.UploadID] = session
+	ensureUploadCleanupTimerLocked()
 	return old
 }
 

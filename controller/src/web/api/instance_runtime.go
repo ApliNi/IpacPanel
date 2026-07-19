@@ -91,6 +91,9 @@ func subscribeInstanceListUpdates() *instanceListSubscriber {
 	sub := &instanceListSubscriber{ch: make(chan instanceEventSignal, 8)}
 	instanceEvents.mu.Lock()
 	instanceEvents.subs[sub] = struct{}{}
+	if len(instanceEvents.statusPending) > 0 {
+		startInstanceStatusTickerLocked()
+	}
 	instanceEvents.mu.Unlock()
 	return sub
 }
@@ -101,7 +104,11 @@ func unsubscribeInstanceListUpdates(sub *instanceListSubscriber) {
 	}
 	instanceEvents.mu.Lock()
 	delete(instanceEvents.subs, sub)
+	stopCh := stopInstanceStatusTickerIfIdleLocked()
 	instanceEvents.mu.Unlock()
+	if stopCh != nil {
+		close(stopCh)
+	}
 }
 
 func broadcastInstanceSignalLocked(signal instanceEventSignal) {
@@ -141,16 +148,23 @@ func BroadcastInstanceListUpdates() {
 	instanceEvents.mu.Unlock()
 }
 
-func startInstanceStatusTicker() {
-	instanceEvents.mu.Lock()
+func startInstanceStatusTickerLocked() {
 	if instanceEvents.statusTickerStop != nil {
-		instanceEvents.mu.Unlock()
 		return
 	}
 	stopCh := make(chan struct{})
 	instanceEvents.statusTickerStop = stopCh
-	instanceEvents.mu.Unlock()
 	go runInstanceStatusTicker(stopCh)
+}
+
+func stopInstanceStatusTickerIfIdleLocked() chan struct{} {
+	if len(instanceEvents.subs) > 0 {
+		return nil
+	}
+	stopCh := instanceEvents.statusTickerStop
+	instanceEvents.statusTickerStop = nil
+	clear(instanceEvents.statusPending)
+	return stopCh
 }
 
 func runInstanceStatusTicker(stopCh <-chan struct{}) {
@@ -173,6 +187,15 @@ func runInstanceStatusTicker(stopCh <-chan struct{}) {
 	defer ticker.Stop()
 	for {
 		flushInstanceStatusUpdates(time.Now())
+		instanceEvents.mu.Lock()
+		shouldStop := len(instanceEvents.subs) == 0 || len(instanceEvents.statusPending) == 0
+		if shouldStop && instanceEvents.statusTickerStop == stopCh {
+			instanceEvents.statusTickerStop = nil
+		}
+		instanceEvents.mu.Unlock()
+		if shouldStop {
+			return
+		}
 		select {
 		case <-ticker.C:
 		case <-stopCh:
@@ -198,11 +221,16 @@ func BroadcastInstanceStatusUpdate(instanceName string) {
 		BroadcastInstanceListUpdates()
 		return
 	}
-	startInstanceStatusTicker()
 	instanceEvents.mu.Lock()
+	if len(instanceEvents.subs) == 0 {
+		clear(instanceEvents.statusPending)
+		instanceEvents.mu.Unlock()
+		return
+	}
 	meta := instanceEvents.statusPending[name]
 	meta.changedAt = time.Now()
 	instanceEvents.statusPending[name] = meta
+	startInstanceStatusTickerLocked()
 	instanceEvents.mu.Unlock()
 }
 

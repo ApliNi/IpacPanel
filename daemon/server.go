@@ -57,6 +57,7 @@ func (s *IPCServer) Bind(conn *IPCConn) {
 	s.connMu.Lock()
 	oldConn := s.Conn
 	oldServeDone := s.serveDone
+	s.Conn = conn
 	s.connMu.Unlock()
 	if oldConn != nil {
 		_ = oldConn.Close()
@@ -70,7 +71,6 @@ func (s *IPCServer) Bind(conn *IPCConn) {
 	}
 	s.drainOutput()
 	s.connMu.Lock()
-	s.Conn = conn
 	s.serveDone = make(chan struct{})
 	s.connMu.Unlock()
 }
@@ -376,12 +376,7 @@ func validateDaemonOptionalArgv(argv []string, field string) error {
 }
 
 func hasNULByte(value string) bool {
-	for i := 0; i < len(value); i++ {
-		if value[i] == 0 {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(value, "\x00")
 }
 
 func (s *IPCServer) handleStartInstance(req *IPCRequest) *IPCResponse {

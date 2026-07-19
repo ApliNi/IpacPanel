@@ -143,6 +143,9 @@ func (r *encodingAwareReader) Read(p []byte) (int, error) {
 	return reader.Read(p)
 }
 
+// SetEncoding changes the output encoding. Note: switching encoding at runtime
+// may cause partial multi-byte characters in the old decoder's buffer to be lost,
+// potentially producing brief garbled output at the switch point.
 func (r *encodingAwareReader) SetEncoding(name string) {
 	normalized, ok := NormalizeTerminalEncoding(name)
 	if !ok {

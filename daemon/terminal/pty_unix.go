@@ -276,6 +276,12 @@ func (p *Proxy) Resize(cols, rows uint16) error {
 	if p.ptyFile == nil {
 		return nil
 	}
+	p.closeMu.Lock()
+	closed := p.closeCalled
+	p.closeMu.Unlock()
+	if closed {
+		return nil
+	}
 	cols, rows = normalizePTYSize(cols, rows)
 	return pty.Setsize(p.ptyFile, &pty.Winsize{Cols: cols, Rows: rows})
 }

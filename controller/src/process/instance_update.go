@@ -12,9 +12,14 @@ import (
 	"sync"
 )
 
+type pathLockEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
 var (
 	instanceStartPathMu    sync.Mutex
-	instanceStartPathLocks = make(map[string]*sync.Mutex)
+	instanceStartPathLocks = make(map[string]*pathLockEntry)
 	instanceUpdateSyncDir  = compat.SyncDirIfPossible
 	instanceUpdateRename   = os.Rename
 )
@@ -22,15 +27,24 @@ var (
 func lockInstanceStartPath(path string) func() {
 	path = filepath.Clean(strings.TrimSpace(path))
 	instanceStartPathMu.Lock()
-	mu, ok := instanceStartPathLocks[path]
+	entry, ok := instanceStartPathLocks[path]
 	if !ok {
-		mu = &sync.Mutex{}
-		instanceStartPathLocks[path] = mu
+		entry = &pathLockEntry{}
+		instanceStartPathLocks[path] = entry
 	}
+	entry.refs++
 	instanceStartPathMu.Unlock()
 
-	mu.Lock()
-	return mu.Unlock
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		instanceStartPathMu.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(instanceStartPathLocks, path)
+		}
+		instanceStartPathMu.Unlock()
+	}
 }
 
 func syncParentDir(path string) error {

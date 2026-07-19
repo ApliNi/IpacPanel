@@ -11,9 +11,20 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/klauspost/compress/zstd"
 )
+
+var zstdEncoderPool = sync.Pool{
+	New: func() any {
+		encoder, err := zstd.NewWriter(nil)
+		if err != nil {
+			panic(err)
+		}
+		return encoder
+	},
+}
 
 const (
 	contentEncodingZstd = "zstd"
@@ -136,6 +147,9 @@ func (w *compressionResponseWriter) Close() {
 		return
 	}
 	_ = w.compressor.Close()
+	if encoder, ok := w.compressor.(*zstd.Encoder); ok {
+		zstdEncoderPool.Put(encoder)
+	}
 	w.compressor = nil
 }
 
@@ -185,10 +199,8 @@ func (w *compressionResponseWriter) startCompression() error {
 
 	switch encoding {
 	case contentEncodingZstd:
-		encoder, err := zstd.NewWriter(w.ResponseWriter)
-		if err != nil {
-			return err
-		}
+		encoder := zstdEncoderPool.Get().(*zstd.Encoder)
+		encoder.Reset(w.ResponseWriter)
 		w.compressor = encoder
 	case contentEncodingGzip:
 		w.compressor = gzip.NewWriter(w.ResponseWriter)

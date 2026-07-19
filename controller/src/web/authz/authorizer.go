@@ -26,41 +26,14 @@ func (a *Authorizer) RequireAdmin(principal *Principal, forbiddenMessage string)
 }
 
 func (a *Authorizer) CanAccessInstance(principal *Principal, instanceName string) bool {
-	if principal == nil || principal.Role == UserRoleNone {
-		return false
-	}
-	if principal.Role == UserRoleAdmin {
-		return true
-	}
-	if principal.Role != UserRoleInstance {
-		return false
-	}
-	name := strings.TrimSpace(instanceName)
-	if name == "" {
-		return false
-	}
-	for _, allowed := range principal.AllowInstances {
-		if strings.TrimSpace(allowed) == name {
-			return true
-		}
-	}
-	sp, ok := process.Get(name)
-	if !ok || sp == nil {
-		return false
-	}
-	group := strings.TrimSpace(sp.InstanceSnapshot().Group)
-	if group == "" {
-		group = UngroupedScopeLabel
-	}
-	for _, allowed := range principal.AllowGroups {
-		if strings.TrimSpace(allowed) == group {
-			return true
-		}
-	}
-	return false
+	return a.canAccessInstance(principal, strings.TrimSpace(instanceName))
 }
 
 func (a *Authorizer) CanAccessInstanceExact(principal *Principal, instanceName string) bool {
+	return a.canAccessInstance(principal, instanceName)
+}
+
+func (a *Authorizer) canAccessInstance(principal *Principal, instanceName string) bool {
 	if principal == nil || principal.Role == UserRoleNone {
 		return false
 	}

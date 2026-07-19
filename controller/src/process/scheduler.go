@@ -158,6 +158,9 @@ func deleteInstanceTaskJobsLocked(ts *instanceTaskScheduler, instanceName string
 			delete(ts.Jobs, key)
 		}
 	}
+	delete(ts.Requested, instanceName)
+	delete(ts.Completed, instanceName)
+	delete(ts.Rebuilding, instanceName)
 	return errs
 }
 

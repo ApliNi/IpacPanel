@@ -429,9 +429,11 @@ func (c *Collector) collect() {
 	}
 	networkRxBPS, networkTxBPS, interfaceCounters := c.calculateNetworkBandwidthLocked(now, networkCounters)
 	diskReadBPS, diskWriteBPS, selectedDiskCounters := c.calculateDiskBandwidthLocked(now, diskCounters)
+	c.interfaces = make(map[string]struct{}, len(interfaces))
 	for name := range interfaces {
 		c.interfaces[name] = struct{}{}
 	}
+	c.disks = make(map[string]struct{}, len(disks))
 	for name := range disks {
 		c.disks[name] = struct{}{}
 	}
@@ -1461,6 +1463,8 @@ func (c *Collector) compactSQLite1sSamplesIfCurrent(path string, compactAfterDay
 		if err != nil {
 			return err
 		}
+		// 批次间让出时间, 避免长时间阻塞 sqliteMu
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -1970,12 +1974,6 @@ func bytesPerSecond(current uint64, previous uint64, seconds float64) uint64 {
 		return 0
 	}
 	return uint64(float64(current-previous) / seconds)
-}
-func minInt(a int, b int) int {
-	if b <= 0 || a < b {
-		return a
-	}
-	return b
 }
 
 func maxUint64(a uint64, b uint64) uint64 {

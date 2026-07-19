@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
@@ -142,8 +144,19 @@ func main() {
 	defer server.Close()
 	log.Printf("IPC server using controller stdio pipes")
 
+	// 捕获退出信号, 清理所有实例进程
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("received signal %v, shutting down instances", sig)
+		shutdownAllInstances()
+		os.Exit(0)
+	}()
+
 	if err := controllerLoop(controllerPath, server); err != nil {
-		fmt.Fprintf(os.Stderr, "controller loop: %v\n", err)
+		log.Printf("controller loop error, shutting down instances: %v", err)
+		shutdownAllInstances()
 		os.Exit(1)
 	}
 }

@@ -92,7 +92,7 @@ type requestLogState struct {
 type requestLogCarrier interface {
 	RequestLogState() *requestLogState
 	StatusCode() int
-	BytesWritten() int
+	BytesWritten() int64
 	WroteHeader() bool
 }
 
@@ -103,7 +103,7 @@ type responseWriterUnwrapper interface {
 type loggingResponseWriter struct {
 	http.ResponseWriter
 	statusCode   int
-	bytesWritten int
+	bytesWritten int64
 	wroteHeader  bool
 	state        *requestLogState
 }
@@ -134,7 +134,7 @@ func (w *loggingResponseWriter) Write(data []byte) (int, error) {
 		w.WriteHeader(http.StatusOK)
 	}
 	n, err := w.ResponseWriter.Write(data)
-	w.bytesWritten += n
+	w.bytesWritten += int64(n)
 	return n, err
 }
 
@@ -165,7 +165,7 @@ func (w *loggingResponseWriter) ReadFrom(r io.Reader) (int64, error) {
 		w.WriteHeader(http.StatusOK)
 	}
 	n, err := readerFrom.ReadFrom(r)
-	w.bytesWritten += int(n)
+	w.bytesWritten += n
 	return n, err
 }
 
@@ -177,7 +177,7 @@ func (w *loggingResponseWriter) StatusCode() int {
 	return w.statusCode
 }
 
-func (w *loggingResponseWriter) BytesWritten() int {
+func (w *loggingResponseWriter) BytesWritten() int64 {
 	return w.bytesWritten
 }
 
@@ -471,14 +471,4 @@ func shouldLogRequest(r *http.Request) bool {
 		return false
 	}
 	return true
-}
-
-func levelForStatus(statusCode int) string {
-	if statusCode >= http.StatusInternalServerError {
-		return "error"
-	}
-	if statusCode >= http.StatusBadRequest {
-		return "warn"
-	}
-	return "info"
 }

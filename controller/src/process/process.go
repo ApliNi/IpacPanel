@@ -882,14 +882,15 @@ func (sp *InstanceProcess) reserveStartLocked(historyLimit int, instanceUpdateSt
 	if sp.Starting || sp.Running {
 		return nil, nil
 	}
+	ins := sp.InstanceSnapshotLocked()
 	reserved := &startReservation{
-		ins:                      sp.InstanceSnapshotLocked(),
+		ins:                      ins,
 		historyLimit:             historyLimit,
 		instanceUpdateStagingDir: instanceUpdateStagingDir,
 		cols:                     sp.Cols,
 		rows:                     sp.Rows,
 		hadStarted:               !sp.StartTime.IsZero(),
-		instanceName:             sp.InstanceSnapshotLocked().Name,
+		instanceName:             ins.Name,
 	}
 	if sp.Restarting {
 		sp.cancelRestartLocked()

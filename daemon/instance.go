@@ -548,6 +548,7 @@ func (ins *DaemonInstance) readOutput(proxy *terminal.Proxy, proxySeq uint64, ru
 				case outputCh <- IPCResponse{Type: "o", Instance: runtimeID, Body: data, ReleaseFunc: func() { putDaemonOutputBuffer(releaseData) }}:
 				default:
 					putDaemonOutputBuffer(data)
+					log.Printf("instance %s output dropped (channel full, %d bytes)", runtimeID, len(data))
 				}
 			} else {
 				putDaemonOutputBuffer(data)
@@ -836,8 +837,9 @@ func (ins *DaemonInstance) sendRuntimeEvent(eventCh chan<- IPCResponse, resp IPC
 	case eventCh <- resp:
 	default:
 		instanceName := runtimeEventInstanceName(resp)
+		eventType := resp.Type
 		resp.Release()
-		log.Printf("instance %s runtime event %s dropped (event channel full)", instanceName, resp.Type)
+		log.Printf("instance %s runtime event %s dropped (event channel full)", instanceName, eventType)
 	}
 }
 

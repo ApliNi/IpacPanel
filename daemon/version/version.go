@@ -1,7 +1,7 @@
 package version
 
 const (
-	DaemonProtocol        = 6
+	DaemonProtocol        = 7
 	ControllerDataVersion = 1
-	Version               = "v0.0.7"
+	Version               = "v0.0.8"
 )

@@ -185,8 +185,12 @@ func (c *daemonIPCClient) deliverResponse(resp daemonIPCResponse) {
 
 func (c *daemonIPCClient) closeWithPendingError() {
 	c.pendingMu.Lock()
+	old := c.pending
 	c.pending = make(map[uint64]chan daemonIPCResponse)
 	c.pendingMu.Unlock()
+	for _, ch := range old {
+		close(ch)
+	}
 	close(c.done)
 }
 
@@ -228,6 +232,8 @@ func daemonRequest(req daemonIPCRequest) (daemonIPCResponse, error) {
 		return daemonIPCResponse{}, fmt.Errorf(msg.WriteDaemonIPCRequestFailedFmt, err)
 	}
 
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
 	select {
 	case resp, ok := <-respCh:
 		if !ok {
@@ -239,7 +245,7 @@ func daemonRequest(req daemonIPCRequest) (daemonIPCResponse, error) {
 		return resp, nil
 	case <-client.done:
 		return daemonIPCResponse{}, errors.New(msg.DaemonIPCDisconnected)
-	case <-time.After(30 * time.Second):
+	case <-timer.C:
 		return daemonIPCResponse{}, errors.New(msg.DaemonIPCRequestTimeout)
 	}
 }
