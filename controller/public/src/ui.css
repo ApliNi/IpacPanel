@@ -1117,7 +1117,7 @@ input[type="password"] {
 }
 
 .file-search-input.active {
-	border-color: var(--green) !important;
+	border-color: var(--blue) !important;
 }
 
 .file-current-path {
