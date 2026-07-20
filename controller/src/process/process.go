@@ -1315,13 +1315,17 @@ func (sp *InstanceProcess) Stop(force bool) {
 		return
 	}
 	if sp.State == processStateRestartWaiting {
+		instanceName := sp.InstanceSnapshotLocked().Name
 		sp.cancelRestartLocked()
 		sp.cancelStopLocked()
 		sp.enterStoppedStateLocked()
 		msg := BuildNormalTerminalSystemMessage(msg.AutoRestartStopped)
 		sp.appendAndBroadcastLocked(websocket.BinaryMessage, msg, limit)
-		NotifyInstanceStatusChanged(sp.InstanceSnapshotLocked().Name)
+		NotifyInstanceStatusChanged(instanceName)
 		sp.Mu.Unlock()
+		if force {
+			_ = stopDaemonInstance(instanceName, true)
+		}
 		return
 	}
 	if sp.State == processStateStoppingForRestart {
@@ -1373,14 +1377,18 @@ func (sp *InstanceProcess) Stop(force bool) {
 		return
 	}
 	if sp.Starting {
+		instanceName := sp.InstanceSnapshotLocked().Name
 		sp.cancelRestartLocked()
 		sp.cancelStopLocked()
 		sp.cancelStartLocked()
 		sp.enterStoppedStateLocked()
 		msg := BuildNormalTerminalSystemMessage(msg.StartingInstanceCanceled)
 		sp.appendAndBroadcastLocked(websocket.BinaryMessage, msg, limit)
-		NotifyInstanceStatusChanged(sp.InstanceSnapshotLocked().Name)
+		NotifyInstanceStatusChanged(instanceName)
 		sp.Mu.Unlock()
+		if force {
+			_ = stopDaemonInstance(instanceName, true)
+		}
 		return
 	}
 	if !sp.Running {

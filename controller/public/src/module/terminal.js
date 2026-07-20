@@ -778,7 +778,7 @@ const updateStatusDisplay = (svc) => {
     } else if (status === 'restarting') {
         dom.termStatus.innerText = '[RESTART]';
         dom.termStatus.className = 'status status-restart';
-        setControlButtons({ showStart: true, showStop: true, showRestart: false, showKill: false });
+        setControlButtons({ showStart: true, showStop: true, showRestart: false, showKill: true });
     } else if (status === 'updating') {
         dom.termStatus.innerText = '[UPDATE]';
         dom.termStatus.className = 'status status-restart';
