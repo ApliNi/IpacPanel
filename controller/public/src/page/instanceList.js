@@ -7,6 +7,38 @@ import { bootPanelSettingsModal } from '../module/panelSettingsModal.js';
 import { instanceStatusStore } from '../store/instanceStatusStore.js';
 import { InputValidation } from '../utils/inputValidation.js';
 
+// 筛选按钮 localStorage 持久化
+const FILTER_STORAGE_KEY = 'ipac_instance_list_filter';
+const VALID_FILTERS = Object.freeze(['all', 'group', 'running', 'stopped']);
+const DEFAULT_FILTER = 'group';
+
+const loadSavedFilter = () => {
+	try {
+		const stored = localStorage.getItem(FILTER_STORAGE_KEY);
+		if (stored !== null) {
+			if (VALID_FILTERS.includes(stored)) {
+				return stored;
+			}
+			console.warn(`[服务列表页] localStorage 中存储的筛选值 "${stored}" 无效, 回退至默认值`);
+		}
+	} catch (err) {
+		console.warn('[服务列表页] 读取 localStorage 失败:', err);
+	}
+	return DEFAULT_FILTER;
+};
+
+const saveFilter = (value) => {
+	if (!VALID_FILTERS.includes(value)) {
+		console.warn(`[服务列表页] 尝试保存无效的筛选值 "${value}", 已拒绝写入`);
+		return;
+	}
+	try {
+		localStorage.setItem(FILTER_STORAGE_KEY, value);
+	} catch (err) {
+		console.error('[服务列表页] 写入 localStorage 失败:', err);
+	}
+};
+
 console.log('[页面] 服务列表页加载中...');
 
 mainContainer.insertAdjacentHTML('beforeend', /*html*/`
@@ -15,7 +47,7 @@ mainContainer.insertAdjacentHTML('beforeend', /*html*/`
 			<div class="search-bar-container">
 				<div class="filter-group">
 					<button class="filter-btn" data-filter="all">ALL</button>
-					<button class="filter-btn active" data-filter="group">GROUP</button>
+					<button class="filter-btn" data-filter="group">GROUP</button>
 					<button class="filter-btn" data-filter="running">RUN</button>
 					<button class="filter-btn" data-filter="stopped">STOP</button>
 				</div>
@@ -42,7 +74,7 @@ const dom = {
 };
 
 const pageState = {
-    currentFilter: 'group',
+    currentFilter: loadSavedFilter(),
 	initialLoadDone: false,
 	unsubscribeStatusStore: null,
 };
@@ -618,7 +650,9 @@ export const bindInstanceListEvents = ({ onCreateInstance, onOpenInstance, onApp
 			btn.onclick = () => {
 				dom.filterBtns.forEach(b => b.classList.remove('active'));
 				btn.classList.add('active');
-				pageState.currentFilter = btn.dataset.filter;
+				const filterValue = btn.dataset.filter;
+				pageState.currentFilter = filterValue;
+				saveFilter(filterValue);
 				onApplyFilters();
 			};
 		});
@@ -800,6 +834,12 @@ export const bootInstanceListPage = (options = {}) => {
         onOpenInstance,
         onApplyFilters: () => applyFiltersAndRender(onOpenInstance),
     });
+
+	// 同步筛选按钮 active 状态与 pageState.currentFilter 一致
+	dom.filterBtns.forEach(btn => {
+		btn.classList.toggle('active', btn.dataset.filter === pageState.currentFilter);
+	});
+
 	return {
 		loadInstances: () => loadInstances(onOpenInstance),
 		showPage: () => showPage(onOpenInstance),
