@@ -389,48 +389,50 @@ func HandleDaemonInstanceOutput(instanceName string, data []byte) {
 		return
 	}
 	limit := cfg.GetHistoryLimit() * 1024
+
 	sp.Mu.Lock()
+	defer sp.Mu.Unlock()
+
 	if cfg.IsNoTerminal(sp.ActiveTerminalLocked()) {
-		sp.Mu.Unlock()
 		return
 	}
-	isPTYTerminal := cfg.IsPTYTerminal(sp.ActiveTerminalLocked())
-	if isPTYTerminal && sp.TerminalStartupProtecting {
-		historyData := sp.filterPTYHistoryOutputLocked(data)
-		if len(historyData) > 0 {
-			historyData, _, _, _ = sanitizeTerminalStartupOutput(historyData)
-		}
-		data = sp.sanitizeTerminalStartupOutputLocked(data)
-		if len(data) == 0 {
-			sp.Mu.Unlock()
-			return
-		}
-		if len(historyData) > 0 {
-			sp.appendHistoryLocked(historyData, limit)
-		}
-		sp.writeTerminalLiveClientsLocked(data)
-		sp.Mu.Unlock()
-		return
-	}
-	var historyData []byte
-	if isPTYTerminal {
+
+	isPTY := cfg.IsPTYTerminal(sp.ActiveTerminalLocked())
+	var historyData, liveData []byte
+	liveData = data
+
+	if isPTY {
 		historyData = sp.filterPTYHistoryOutputLocked(data)
+		if sp.TerminalStartupProtecting {
+			// 启动保护期: 实时和历史数据均需过滤破坏性序列
+			if len(historyData) > 0 {
+				historyData, _, _, _ = sanitizeTerminalStartupOutput(historyData)
+			}
+			liveData = sp.sanitizeTerminalStartupOutputLocked(data)
+			if len(liveData) == 0 {
+				return
+			}
+		} else {
+			// 常态 PTY: 过滤 \x1b[3J 以保留滚动条/历史
+			historyData = bytes.ReplaceAll(historyData, []byte("\x1b[3J"), nil)
+			liveData = bytes.ReplaceAll(liveData, []byte("\x1b[3J"), nil)
+		}
 	} else {
+		// 普通终端模式: 直接透传
 		historyData = data
 	}
-	idx := bytes.LastIndex(historyData, []byte("\x1b[3J"))
-	if idx != -1 {
-		sp.resetTerminalClientsLocked()
-		sp.resetHistoryLocked(historyData[idx+4:], limit)
-	} else if len(historyData) > 0 {
+
+	if len(historyData) > 0 {
 		sp.appendHistoryLocked(historyData, limit)
 	}
-	if isPTYTerminal {
-		sp.writeTerminalLiveClientsLocked(data)
-	} else {
-		sp.writeClientsLocked(websocket.BinaryMessage, data)
+
+	if len(liveData) > 0 {
+		if isPTY {
+			sp.writeTerminalLiveClientsLocked(liveData)
+		} else {
+			sp.writeClientsLocked(websocket.BinaryMessage, liveData)
+		}
 	}
-	sp.Mu.Unlock()
 }
 
 func HandleDaemonCleanupMessage(instanceName string, placeholder string, args []string) {

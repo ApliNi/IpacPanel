@@ -1,3 +1,5 @@
+
+.pi-temp/
 *.log
 test/
 _test/
@@ -21,6 +23,3 @@ build/
 # OS files
 .DS_Store
 Thumbs.db
-
-# OpenCode deepwork state
-.slim/deepwork/
