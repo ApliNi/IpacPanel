@@ -11,7 +11,7 @@ const STORAGE_DETAIL_MODE_KEY = 'IpacPanel.dashboard.detailMode';
 const DASHBOARD_PAGE_SYSTEM = 'system';
 const DASHBOARD_PAGE_IPAC_PANEL = 'ipacPanel';
 const DEFAULT_MINUTES = 30;
-const X_AXIS_TARGET_GRID_SPACE = 92;
+const X_AXIS_TARGET_GRID_SPACE = 60;
 const CHART_LINE_WIDTH = 1;
 const DETAIL_SCALE_PADDING_RATIO = 0.08;
 const Y_AXIS_FIXED_SIZE = (4 + 1 + 2) * 7 + 18;
@@ -546,24 +546,9 @@ const formatLegendPercent = (value) => formatPercent(value);
 const formatLegendBytes = (value) => formatBytes(value);
 const formatLegendBpsAbs = (value) => formatBps(Math.abs(value));
 
-const chooseTimeTickIntervalMinutes = (windowMinutes, chartWidth) => {
-	const safeWindowMinutes = Math.max(1, Number(windowMinutes) || DEFAULT_MINUTES);
-	const safeChartWidth = Math.max(320, Number(chartWidth) || 640);
-	const maxLabels = Math.max(2, Math.floor(safeChartWidth / X_AXIS_TARGET_GRID_SPACE));
-	return Math.max(1, Math.ceil(safeWindowMinutes / maxLabels));
-};
 
 const formatSparseTimeTicks = (u, values) => {
-	const intervalMinutes = chooseTimeTickIntervalMinutes(pageState.displayMinutes, Number(u && u.width) || 0);
-	const intervalSeconds = intervalMinutes * 60;
-	return values.map((value, index) => {
-		const isEdge = index === 0 || index === values.length - 1;
-		const roundedValue = Math.round(Number(value) || 0);
-		if (!isEdge && roundedValue % intervalSeconds !== 0) {
-			return '';
-		}
-		return formatTimeTick(value);
-	});
+	return values.map((value) => formatTimeTick(value));
 };
 
 const getMaxOf = (values, fallback = 1) => {
@@ -729,30 +714,17 @@ const getCurrentWindowRange = () => {
 const getDashboardChartElements = () => [dom.cpuChart, dom.memoryChart, dom.diskChart, dom.networkChart, dom.connectionChart];
 
 const getAdaptiveTimeAxis = (windowRange) => {
-	const chartWidth = Math.max(...getDashboardChartElements().map((chartEl) => chartEl.clientWidth || 0), 640);
-	const intervalMinutes = chooseTimeTickIntervalMinutes(pageState.displayMinutes, chartWidth);
 	return {
 		...axisCommon,
 		size: 24,
 		gap: 4,
 		space: X_AXIS_TARGET_GRID_SPACE,
-		incrs: [intervalMinutes * 60],
+		incrs: [120, 300, 600, 900, 1800, 3600, 7200, 18000],
 		values: formatSparseTimeTicks,
 	};
 };
 
 const buildBaseOptions = (windowRange) => ({
-	padding: [null, 20, null, null],
-	cursor: {
-		show: true,
-		x: false,
-		y: false,
-		points: { show: false },
-		drag: { x: false, y: false },
-	},
-	scales: {
-		x: { time: true, min: windowRange.min, max: windowRange.max },
-	},
 	legend: {
 		show: true,
 		live: true,
@@ -766,6 +738,9 @@ const buildBaseOptions = (windowRange) => ({
 				return series.stroke(u, seriesIndex);
 			},
 		},
+	},
+	scales: {
+		x: { time: true, min: windowRange.min, max: windowRange.max },
 	},
 	axes: [
 		getAdaptiveTimeAxis(windowRange),
