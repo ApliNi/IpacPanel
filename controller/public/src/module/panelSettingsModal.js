@@ -20,6 +20,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 			<div class="modal-form panel-settings-form">
 				<div class="filter-group panel-settings-main-tabs">
 					<button id="panelSettingsMainTabConfig" class="filter-btn active" type="button" data-page="config">CONFIG</button>
+					<button id="panelSettingsMainTabWebUi" class="filter-btn" type="button" data-page="web-ui">WEB UI</button>
 					<button id="panelSettingsMainTabUpload" class="filter-btn" type="button" data-page="upload">UPDATE</button>
 					<button id="panelSettingsMainTabDebug" class="filter-btn" type="button" data-page="debug">DEBUG</button>
 				</div>
@@ -210,6 +211,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 						</div>
 					</div>
 				</div>
+				<div id="panelSettingsWebUiPage" class="panel-settings-page"></div>
 				<div id="panelSettingsUploadPage" class="panel-settings-page">
 					<div class="controller-update-body">
 						<div class="field-group">
@@ -250,6 +252,7 @@ const dom = {
 	card: document.querySelector('#panelSettingsModal .panel-settings-modal-card'),
 	close: document.getElementById('panelSettingsClose'),
 	configMainTab: document.getElementById('panelSettingsMainTabConfig'),
+	webUiMainTab: document.getElementById('panelSettingsMainTabWebUi'),
 	uploadMainTab: document.getElementById('panelSettingsMainTabUpload'),
 	debugMainTab: document.getElementById('panelSettingsMainTabDebug'),
 	configTabs: document.getElementById('panelSettingsConfigTabs'),
@@ -262,6 +265,7 @@ const dom = {
 	webPage: document.getElementById('panelSettingsWebPage'),
 	powPage: document.getElementById('panelSettingsPowPage'),
 	debugPage: document.getElementById('panelSettingsDebugPage'),
+	webUiPage: document.getElementById('panelSettingsWebUiPage'),
 	uploadPage: document.getElementById('panelSettingsUploadPage'),
 	webTitle: document.getElementById('panelSettingsWebTitle'),
 	listen: document.getElementById('panelSettingsListen'),
@@ -596,9 +600,10 @@ const applyConfigPage = (page) => {
 };
 
 const applyMainPage = (page, configPage = panelSettingsState.currentConfigPage) => {
-	const targetPage = page === 'upload' || page === 'debug' ? page : 'config';
+	const targetPage = page === 'upload' || page === 'debug' || page === 'web-ui' ? page : 'config';
 	panelSettingsState.currentMainPage = targetPage;
 	dom.configMainTab.classList.toggle('active', targetPage === 'config');
+	dom.webUiMainTab.classList.toggle('active', targetPage === 'web-ui');
 	dom.uploadMainTab.classList.toggle('active', targetPage === 'upload');
 	dom.debugMainTab.classList.toggle('active', targetPage === 'debug');
 	dom.configTabs.classList.toggle('hidden', targetPage !== 'config');
@@ -610,6 +615,7 @@ const applyMainPage = (page, configPage = panelSettingsState.currentConfigPage) 
 		dom.webPage.classList.remove('active');
 		dom.powPage.classList.remove('active');
 	}
+	dom.webUiPage.classList.toggle('active', targetPage === 'web-ui');
 	dom.uploadPage.classList.toggle('active', targetPage === 'upload');
 	dom.debugPage.classList.toggle('active', targetPage === 'debug');
 };
@@ -982,9 +988,10 @@ const refreshStatus = async () => {
 
 const closeModal = () => {
 	if (panelSettingsState.locked) return;
+	dom.modal.classList.remove('visible');
 	dom.modal.classList.add('closing');
 	panelSettingsState.closeTimer = setTimeout(() => {
-		dom.modal.classList.remove('visible', 'closing');
+		dom.modal.classList.remove('closing');
 		dom.modal.style.display = 'none';
 	}, 240);
 };
@@ -1144,6 +1151,7 @@ const bindEvents = () => {
 	panelSettingsState.isBound = true;
 	dom.close.addEventListener('click', closeModal);
 	dom.configMainTab.addEventListener('click', () => applyMainPage('config'));
+	dom.webUiMainTab.addEventListener('click', () => applyMainPage('web-ui'));
 	dom.uploadMainTab.addEventListener('click', () => applyMainPage('upload'));
 	dom.debugMainTab.addEventListener('click', () => applyMainPage('debug'));
 	dom.optionsConfigTab.addEventListener('click', () => applyConfigPage('options'));
