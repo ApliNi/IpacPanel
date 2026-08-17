@@ -71,6 +71,8 @@ const (
 	maxMetricsMemoryMin   = 10080
 	minMetricsSQLiteDay   = 0
 	maxMetricsSQLiteDay   = 36500
+	maxDeviceFilterItems  = 512
+	maxDeviceFilterLen    = 128
 	minPowTaskCount       = 1
 	maxPowTaskCount       = 128
 	minPowDifficulty      = 1
@@ -107,6 +109,7 @@ var defaultConfig = Config{
 		MemoryMaxMin:          30,
 		SQLiteMaxDay:          7,
 		SQLiteCompactAfterDay: 2,
+		DeviceFilter:          nil,
 	},
 	Web: WebConfig{
 		EnableHTTPS:    false,
@@ -1371,11 +1374,42 @@ func normalizeMetricsConfig(metrics *MetricsConfig) {
 	metrics.MemoryMaxMin = clampInt(metrics.MemoryMaxMin, minMetricsMemoryMin, maxMetricsMemoryMin)
 	metrics.SQLiteMaxDay = clampInt(metrics.SQLiteMaxDay, minMetricsSQLiteDay, maxMetricsSQLiteDay)
 	metrics.SQLiteCompactAfterDay = clampInt(metrics.SQLiteCompactAfterDay, minMetricsSQLiteDay, maxMetricsSQLiteDay)
+	metrics.DeviceFilter = normalizeDeviceFilter(metrics.DeviceFilter)
 }
 
 func NormalizeMetricsConfig(metrics MetricsConfig) MetricsConfig {
 	normalizeMetricsConfig(&metrics)
 	return metrics
+}
+
+func NormalizeDeviceFilter(values []string) []string {
+	return normalizeDeviceFilter(values)
+}
+
+func normalizeDeviceFilter(values []string) []string {
+	if len(values) == 0 || maxDeviceFilterLen <= 0 || maxDeviceFilterItems <= 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for i := range values {
+		value := strings.TrimSpace(values[i])
+		if value == "" {
+			continue
+		}
+		if utf8.RuneCountInString(value) > maxDeviceFilterLen {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+		if len(out) >= maxDeviceFilterItems {
+			break
+		}
+	}
+	return out
 }
 
 func ValidateMetricsConfig(metrics MetricsConfig) error {
@@ -1391,6 +1425,24 @@ func ValidateMetricsConfig(metrics MetricsConfig) error {
 	}
 	if metrics.SQLiteCompactAfterDay < minMetricsSQLiteDay || metrics.SQLiteCompactAfterDay > maxMetricsSQLiteDay {
 		return fmt.Errorf(msg.MetricsSQLiteCompactAfterDayInvalidFmt, minMetricsSQLiteDay, maxMetricsSQLiteDay)
+	}
+	if len(metrics.DeviceFilter) > maxDeviceFilterItems {
+		return fmt.Errorf(msg.MetricsDeviceFilterTooManyFmt, maxDeviceFilterItems)
+	}
+	for _, rule := range metrics.DeviceFilter {
+		item := strings.TrimSpace(rule)
+		if item == "" {
+			continue
+		}
+		if strings.HasPrefix(item, "!") {
+			item = strings.TrimPrefix(item, "!")
+		}
+		if item == "" {
+			return errors.New(msg.MetricsDeviceFilterEmptyRule)
+		}
+		if utf8.RuneCountInString(item) > maxDeviceFilterLen {
+			return fmt.Errorf(msg.MetricsDeviceFilterItemTooLongFmt, maxDeviceFilterLen)
+		}
 	}
 	return nil
 }

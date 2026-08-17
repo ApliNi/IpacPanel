@@ -50,6 +50,7 @@ type Config struct {
 	SQLiteMaxDay          int
 	SQLiteCompactAfterDay int
 	SQLitePath            string
+	DeviceFilter          []string
 }
 
 type Sample struct {
@@ -106,6 +107,93 @@ type networkCounter struct {
 	txBytes uint64
 }
 
+type deviceFilter struct {
+	includes map[string]struct{}
+	excludes map[string]struct{}
+}
+
+func compileDeviceFilter(rules []string) deviceFilter {
+	filter := deviceFilter{
+		includes: make(map[string]struct{}),
+		excludes: make(map[string]struct{}),
+	}
+	for _, rule := range rules {
+		name := strings.TrimSpace(rule)
+		if name == "" {
+			continue
+		}
+		if strings.HasPrefix(name, "!") {
+			excluded := strings.TrimSpace(strings.TrimPrefix(name, "!"))
+			if excluded != "" {
+				filter.excludes[strings.ToLower(excluded)] = struct{}{}
+			}
+			continue
+		}
+		filter.includes[strings.ToLower(name)] = struct{}{}
+	}
+	return filter
+}
+
+func (f deviceFilter) allows(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if len(f.includes) > 0 {
+		if _, ok := f.includes[normalized]; !ok {
+			return false
+		}
+	}
+	if _, ok := f.excludes[normalized]; ok {
+		return false
+	}
+	return true
+}
+
+func (f deviceFilter) filterInterfaces(values map[string]struct{}, counters map[string]networkCounter) (map[string]struct{}, map[string]networkCounter) {
+	if len(f.includes) == 0 && len(f.excludes) == 0 {
+		return values, counters
+	}
+	filteredValues := make(map[string]struct{}, len(values))
+	filteredCounters := make(map[string]networkCounter, len(counters))
+	for name := range values {
+		if f.allows(name) {
+			filteredValues[name] = struct{}{}
+			if counter, ok := counters[name]; ok {
+				filteredCounters[name] = counter
+			}
+		}
+	}
+	return filteredValues, filteredCounters
+}
+
+func (f deviceFilter) filterDisks(values map[string]struct{}, counters map[string]diskCounter) (map[string]struct{}, map[string]diskCounter) {
+	if len(f.includes) == 0 && len(f.excludes) == 0 {
+		return values, counters
+	}
+	filteredValues := make(map[string]struct{}, len(values))
+	filteredCounters := make(map[string]diskCounter, len(counters))
+	for name := range values {
+		if f.allows(name) {
+			filteredValues[name] = struct{}{}
+			if counter, ok := counters[name]; ok {
+				filteredCounters[name] = counter
+			}
+		}
+	}
+	return filteredValues, filteredCounters
+}
+
+func (f deviceFilter) filterSortedStrings(values []string) []string {
+	if len(values) == 0 || (len(f.includes) == 0 && len(f.excludes) == 0) {
+		return values
+	}
+	result := make([]string, 0, len(values))
+	for _, name := range values {
+		if f.allows(name) {
+			result = append(result, name)
+		}
+	}
+	return result
+}
+
 type diskCounter struct {
 	readBytes  uint64
 	writeBytes uint64
@@ -160,6 +248,7 @@ type Collector struct {
 	sqliteCompactAfterDay int
 	sqlitePath            string
 	sqliteGeneration      uint64
+	deviceFilter          deviceFilter
 	nextSeq               int64
 	samples               []Sample
 	sqlitePending         []Sample
@@ -182,6 +271,7 @@ func NewCollector(config Config) *Collector {
 		sqliteMaxDay:          normalizeSQLiteMaxDay(config.SQLiteMaxDay),
 		sqliteCompactAfterDay: normalizeSQLiteCompactAfterDay(config.SQLiteCompactAfterDay),
 		sqlitePath:            normalizeSQLitePath(config.SQLitePath),
+		deviceFilter:          compileDeviceFilter(config.DeviceFilter),
 		interfaces:            make(map[string]struct{}),
 		disks:                 make(map[string]struct{}),
 	}
@@ -204,6 +294,7 @@ func (c *Collector) ApplyConfig(config Config) {
 	c.sqliteMaxDay = sqliteMaxDay
 	c.sqliteCompactAfterDay = sqliteCompactAfterDay
 	c.sqlitePath = sqlitePath
+	c.deviceFilter = compileDeviceFilter(config.DeviceFilter)
 	pathChanged := previousSQLitePath != sqlitePath || previousStorageMode != storageMode
 	c.sqliteGeneration++
 	sqliteGeneration := c.sqliteGeneration
@@ -316,6 +407,11 @@ func (c *Collector) Snapshot(minutes int, nic string, disk string, maxPoints int
 		interfaces = mergeSortedStrings(interfaces, storedInterfaces)
 		disks = mergeSortedStrings(disks, storedDisks)
 	}
+	c.mu.Lock()
+	deviceFilter := c.deviceFilter
+	c.mu.Unlock()
+	interfaces = deviceFilter.filterSortedStrings(interfaces)
+	disks = deviceFilter.filterSortedStrings(disks)
 
 	var samples []Sample
 	if enabled && storageMode == storageModeSQLite {
@@ -370,6 +466,11 @@ func (c *Collector) Metadata() Metadata {
 		interfaces = mergeSortedStrings(interfaces, storedInterfaces)
 		disks = mergeSortedStrings(disks, storedDisks)
 	}
+	c.mu.Lock()
+	deviceFilter := c.deviceFilter
+	c.mu.Unlock()
+	interfaces = deviceFilter.filterSortedStrings(interfaces)
+	disks = deviceFilter.filterSortedStrings(disks)
 	return Metadata{Enabled: enabled, MemoryMaxMin: retentionMinutes, Interfaces: interfaces, Disks: disks}
 }
 
@@ -427,6 +528,8 @@ func (c *Collector) collect() {
 		c.mu.Unlock()
 		return
 	}
+	interfaces, networkCounters = c.deviceFilter.filterInterfaces(interfaces, networkCounters)
+	disks, diskCounters = c.deviceFilter.filterDisks(disks, diskCounters)
 	networkRxBPS, networkTxBPS, interfaceCounters := c.calculateNetworkBandwidthLocked(now, networkCounters)
 	diskReadBPS, diskWriteBPS, selectedDiskCounters := c.calculateDiskBandwidthLocked(now, diskCounters)
 	c.interfaces = make(map[string]struct{}, len(interfaces))

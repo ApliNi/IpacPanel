@@ -72,21 +72,23 @@ type settingsWebUpdateRequest struct {
 }
 
 type settingsMetricsResponse struct {
-	StorageMode           string `json:"storage_mode"`
-	MemoryMaxMin          int    `json:"memory_max_min"`
-	SQLiteMaxDay          int    `json:"sqlite_max_day"`
-	SQLiteCompactAfterDay int    `json:"sqlite_compact_after_day"`
-	Enabled               bool   `json:"enabled"`
-	PublicDashboard       bool   `json:"public_dashboard"`
+	StorageMode           string   `json:"storage_mode"`
+	MemoryMaxMin          int      `json:"memory_max_min"`
+	SQLiteMaxDay          int      `json:"sqlite_max_day"`
+	SQLiteCompactAfterDay int      `json:"sqlite_compact_after_day"`
+	Enabled               bool     `json:"enabled"`
+	PublicDashboard       bool     `json:"public_dashboard"`
+	DeviceFilter          []string `json:"device_filter"`
 }
 
 type settingsMetricsUpdateRequest struct {
-	StorageMode           *string `json:"storage_mode"`
-	MemoryMaxMin          *int    `json:"memory_max_min"`
-	SQLiteMaxDay          *int    `json:"sqlite_max_day"`
-	SQLiteCompactAfterDay *int    `json:"sqlite_compact_after_day"`
-	Enabled               *bool   `json:"enabled"`
-	PublicDashboard       *bool   `json:"public_dashboard"`
+	StorageMode           *string   `json:"storage_mode"`
+	MemoryMaxMin          *int      `json:"memory_max_min"`
+	SQLiteMaxDay          *int      `json:"sqlite_max_day"`
+	SQLiteCompactAfterDay *int      `json:"sqlite_compact_after_day"`
+	Enabled               *bool     `json:"enabled"`
+	PublicDashboard       *bool     `json:"public_dashboard"`
+	DeviceFilter          *[]string `json:"device_filter"`
 }
 
 type settingsPowResponse struct {
@@ -190,6 +192,9 @@ func HandleApiSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Metrics.SQLiteCompactAfterDay != nil {
 			savedCfg.Metrics.SQLiteCompactAfterDay = *req.Metrics.SQLiteCompactAfterDay
+		}
+		if req.Metrics.DeviceFilter != nil {
+			savedCfg.Metrics.DeviceFilter = cfg.NormalizeDeviceFilter(*req.Metrics.DeviceFilter)
 		}
 	}
 	savedCfg.Metrics = cfg.NormalizeMetricsConfig(savedCfg.Metrics)
@@ -367,6 +372,7 @@ func newDashboardMetricsConfig(metricsConfig cfg.MetricsConfig) metrics.Config {
 		SQLiteMaxDay:          metricsConfig.SQLiteMaxDay,
 		SQLiteCompactAfterDay: metricsConfig.SQLiteCompactAfterDay,
 		SQLitePath:            cfg.ResolveDataPath("dashboard") + string(os.PathSeparator),
+		DeviceFilter:          metricsConfig.DeviceFilter,
 	}
 }
 
@@ -378,5 +384,6 @@ func newSettingsMetricsResponse(metricsConfig cfg.MetricsConfig) settingsMetrics
 		SQLiteCompactAfterDay: metricsConfig.SQLiteCompactAfterDay,
 		Enabled:               metricsConfig.Enabled,
 		PublicDashboard:       metricsConfig.PublicDashboard,
+		DeviceFilter:          metricsConfig.DeviceFilter,
 	}
 }

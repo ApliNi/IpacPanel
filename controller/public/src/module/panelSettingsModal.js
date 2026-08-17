@@ -114,6 +114,13 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 							设置为 0 将不会压缩数据
 						</div>
 					</div>
+					<div class="field-group">
+						<span>DEVICE FILTER</span>
+						<textarea id="panelSettingsMetricsDeviceFilter" rows="5" spellcheck="false" autocomplete="off"></textarea>
+						<div class="file-action-static instance-advanced-note">
+							每行填写硬件名以包含设备, 使用 "!" 开头以排除设备
+						</div>
+					</div>
 					<div class="modal-actions modal-actions-split">
 						<span id="panelSettingsMetricsStatus" aria-live="polite"></span>
 						<div class="modal-actions-group">
@@ -276,6 +283,7 @@ const dom = {
 	metricsSqliteMaxDay: document.getElementById('panelSettingsMetricsSqliteMaxDay'),
 	metricsSqliteCompactAfterDay: document.getElementById('panelSettingsMetricsSqliteCompactAfterDay'),
 	metricsSqliteGroup: document.getElementById('panelSettingsMetricsSqliteGroup'),
+	metricsDeviceFilter: document.getElementById('panelSettingsMetricsDeviceFilter'),
 	metricsCancel: document.getElementById('panelSettingsMetricsCancel'),
 	metricsStatus: document.getElementById('panelSettingsMetricsStatus'),
 	metricsSave: document.getElementById('panelSettingsMetricsSave'),
@@ -344,6 +352,7 @@ const settingsState = {
 	metricsStorageMode: 'memory',
 	metricsSqliteMaxDay: 7,
 	metricsSqliteCompactAfterDay: 2,
+	metricsDeviceFilter: [],
 	powEnabled: true,
 	powTaskCount: 24,
 	powDifficulty: 3,
@@ -399,6 +408,14 @@ const truncateInputValue = (input, maxLength) => {
 const normalizeMetricsStorageMode = (value) => {
 	const mode = String(value || '').trim().toLowerCase();
 	return mode === 'sqlite' ? 'sqlite' : 'memory';
+};
+
+const normalizeMetricsDeviceFilter = (value) => InputValidation.normalizeDeviceFilter(value);
+
+const normalizeMetricsDeviceFilterInput = () => {
+	const value = normalizeMetricsDeviceFilter(dom.metricsDeviceFilter.value || '').join('\n');
+	dom.metricsDeviceFilter.value = value;
+	return value;
 };
 
 const setDocumentTitle = (title) => {
@@ -531,6 +548,7 @@ const clearSettingsFormForLoad = () => {
 		dom.metricsMemoryMaxMin,
 		dom.metricsSqliteMaxDay,
 		dom.metricsSqliteCompactAfterDay,
+		dom.metricsDeviceFilter,
 		dom.powTaskCount,
 		dom.powDifficulty,
 		dom.powTimestampMaxSkew,
@@ -618,6 +636,7 @@ const buildRuntimeSettingsSnapshot = () => ({
 		storageMode: settingsState.metricsStorageMode,
 		sqliteMaxDay: settingsState.metricsSqliteMaxDay,
 		sqliteCompactAfterDay: settingsState.metricsSqliteCompactAfterDay,
+		deviceFilter: [...settingsState.metricsDeviceFilter],
 	},
 	pow: {
 		enabled: settingsState.powEnabled,
@@ -659,6 +678,7 @@ const renderSettings = (data = {}, options = {}) => {
 	settingsState.metricsStorageMode = normalizeMetricsStorageMode(metrics.storage_mode);
 	settingsState.metricsSqliteMaxDay = clampInteger(metrics.sqlite_max_day, 7, 0, MAX_METRICS_SQLITE_DAY);
 	settingsState.metricsSqliteCompactAfterDay = clampInteger(metrics.sqlite_compact_after_day, 2, 0, MAX_METRICS_SQLITE_DAY);
+	settingsState.metricsDeviceFilter = normalizeMetricsDeviceFilter(metrics.device_filter);
 	const pow = data.pow || {};
 	settingsState.powEnabled = !!pow.enabled;
 	settingsState.powTaskCount = clampInteger(pow.task_count, 24, 1, MAX_POW_TASK_COUNT);
@@ -685,6 +705,7 @@ const renderSettings = (data = {}, options = {}) => {
 	if (dom.metricsStorageMode) dom.metricsStorageMode.value = settingsState.metricsStorageMode;
 	if (dom.metricsSqliteMaxDay) dom.metricsSqliteMaxDay.value = String(settingsState.metricsSqliteMaxDay);
 	if (dom.metricsSqliteCompactAfterDay) dom.metricsSqliteCompactAfterDay.value = String(settingsState.metricsSqliteCompactAfterDay);
+	if (dom.metricsDeviceFilter) dom.metricsDeviceFilter.value = settingsState.metricsDeviceFilter.join('\n');
 	syncMetricsStorageModeFields();
 	if (dom.powEnabled) dom.powEnabled.checked = settingsState.powEnabled;
 	if (dom.powTaskCount) dom.powTaskCount.value = String(settingsState.powTaskCount);
@@ -742,6 +763,7 @@ const buildConfigSettingsPayload = () => {
 	const memoryMaxMin = readClampedInteger(dom.metricsMemoryMaxMin, 30, 1, MAX_METRICS_MEMORY_MIN);
 	const sqliteMaxDay = readClampedInteger(dom.metricsSqliteMaxDay, 7, 0, MAX_METRICS_SQLITE_DAY);
 	const sqliteCompactAfterDay = readClampedInteger(dom.metricsSqliteCompactAfterDay, 2, 0, MAX_METRICS_SQLITE_DAY);
+	const deviceFilter = normalizeMetricsDeviceFilter(normalizeMetricsDeviceFilterInput());
 	const taskCount = readClampedInteger(dom.powTaskCount, 24, 1, MAX_POW_TASK_COUNT);
 	const difficulty = readClampedInteger(dom.powDifficulty, 3, 1, MAX_POW_DIFFICULTY);
 	const timestampMaxSkew = readClampedInteger(dom.powTimestampMaxSkew, 90, 1, MAX_POW_TIMESTAMP_SKEW);
@@ -769,6 +791,7 @@ const buildConfigSettingsPayload = () => {
 				memory_max_min: memoryMaxMin,
 				sqlite_max_day: sqliteMaxDay,
 				sqlite_compact_after_day: sqliteCompactAfterDay,
+				device_filter: deviceFilter,
 			},
 			pow: {
 				enabled: dom.powEnabled.checked,

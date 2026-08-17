@@ -216,6 +216,7 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 		SQLiteMaxDay:          metricsConfig.SQLiteMaxDay,
 		SQLiteCompactAfterDay: metricsConfig.SQLiteCompactAfterDay,
 		SQLitePath:            cfg.ResolveDataPath("dashboard") + string(os.PathSeparator),
+		DeviceFilter:          metricsConfig.DeviceFilter,
 	})
 	api.SetDashboardCollector(dashboardCollector)
 	defer dashboardCollector.Stop()

@@ -195,22 +195,24 @@ func (c *WebConfig) UnmarshalYAML(value *yaml.Node) error {
 }
 
 type MetricsConfig struct {
-	Enabled               bool   `yaml:"enabled" json:"enabled"`
-	PublicDashboard       bool   `yaml:"public_dashboard" json:"public_dashboard"`
-	StorageMode           string `yaml:"storage_mode" json:"storage_mode"`
-	MemoryMaxMin          int    `yaml:"memory_max_min" json:"memory_max_min"`
-	SQLiteMaxDay          int    `yaml:"sqlite_max_day" json:"sqlite_max_day"`
-	SQLiteCompactAfterDay int    `yaml:"sqlite_compact_after_day" json:"sqlite_compact_after_day"`
+	Enabled               bool     `yaml:"enabled" json:"enabled"`
+	PublicDashboard       bool     `yaml:"public_dashboard" json:"public_dashboard"`
+	StorageMode           string   `yaml:"storage_mode" json:"storage_mode"`
+	MemoryMaxMin          int      `yaml:"memory_max_min" json:"memory_max_min"`
+	SQLiteMaxDay          int      `yaml:"sqlite_max_day" json:"sqlite_max_day"`
+	SQLiteCompactAfterDay int      `yaml:"sqlite_compact_after_day" json:"sqlite_compact_after_day"`
+	DeviceFilter          []string `yaml:"device_filter" json:"device_filter"`
 }
 
 func (c *MetricsConfig) UnmarshalYAML(value *yaml.Node) error {
 	type rawMetricsConfig struct {
-		Enabled               *bool   `yaml:"enabled"`
-		PublicDashboard       *bool   `yaml:"public_dashboard"`
-		StorageMode           *string `yaml:"storage_mode"`
-		MemoryMaxMin          *int    `yaml:"memory_max_min"`
-		SQLiteMaxDay          *int    `yaml:"sqlite_max_day"`
-		SQLiteCompactAfterDay *int    `yaml:"sqlite_compact_after_day"`
+		Enabled               *bool     `yaml:"enabled"`
+		PublicDashboard       *bool     `yaml:"public_dashboard"`
+		StorageMode           *string   `yaml:"storage_mode"`
+		MemoryMaxMin          *int      `yaml:"memory_max_min"`
+		SQLiteMaxDay          *int      `yaml:"sqlite_max_day"`
+		SQLiteCompactAfterDay *int      `yaml:"sqlite_compact_after_day"`
+		DeviceFilter          *[]string `yaml:"device_filter"`
 	}
 	var decoded rawMetricsConfig
 	if err := value.Decode(&decoded); err != nil {
@@ -235,6 +237,9 @@ func (c *MetricsConfig) UnmarshalYAML(value *yaml.Node) error {
 	}
 	if decoded.SQLiteCompactAfterDay != nil {
 		result.SQLiteCompactAfterDay = *decoded.SQLiteCompactAfterDay
+	}
+	if decoded.DeviceFilter != nil {
+		result.DeviceFilter = append([]string{}, (*decoded.DeviceFilter)...)
 	}
 	*c = result
 	return nil

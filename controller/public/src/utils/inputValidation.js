@@ -16,6 +16,8 @@ const limits = Object.freeze({
 	taskTimezone: 128,
 	trustedProxyIpsCount: 512,
 	trustedProxyIp: 128,
+	deviceFilterItemCount: 512,
+	deviceFilterItem: 128,
 });
 
 const settingsLimits = Object.freeze({
@@ -27,6 +29,8 @@ const settingsLimits = Object.freeze({
 	taskTimezone: limits.taskTimezone,
 	trustedProxyIpsCount: limits.trustedProxyIpsCount,
 	trustedProxyIp: limits.trustedProxyIp,
+	deviceFilterItemCount: limits.deviceFilterItemCount,
+	deviceFilterItem: limits.deviceFilterItem,
 });
 
 const SETTINGS_NAME_INVALID_PATTERN = /[\\/:*?"<>|]/;
@@ -79,6 +83,19 @@ const normalizeTrustedProxyIps = (value) => {
 		result.push(item);
 	});
 	return result.slice(0, limits.trustedProxyIpsCount);
+};
+
+const normalizeDeviceFilter = (value) => {
+	const items = Array.isArray(value) ? value : String(value || '').split(/\r?\n/);
+	const seen = new Set();
+	const result = [];
+	items.map((item) => String(item || '').trim()).filter(Boolean).forEach((item) => {
+		if (getTextLength(item) > settingsLimits.deviceFilterItem) return;
+		if (seen.has(item)) return;
+		seen.add(item);
+		result.push(item);
+	});
+	return result.slice(0, settingsLimits.deviceFilterItemCount);
 };
 
 const validateSettingsGeneralTextFields = ({ webTitle = '', listen = '', instanceUpdateStagingDir = '', taskTimezone = '', trustedProxyIpsText = '' } = {}) => {
@@ -229,4 +246,5 @@ export const InputValidation = Object.freeze({
 		formatAccessLinksText,
 	}),
 	normalizeTrustedProxyIps,
+	normalizeDeviceFilter,
 });

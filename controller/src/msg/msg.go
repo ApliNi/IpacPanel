@@ -86,6 +86,9 @@ const (
 	MetricsMemoryMaxMinInvalidFmt              = "MEMORY MAX MIN 必须在 %d-%d 范围内"
 	MetricsSQLiteMaxDayInvalidFmt              = "SQLITE MAX DAY 必须在 %d-%d 范围内"
 	MetricsSQLiteCompactAfterDayInvalidFmt     = "SQLITE COMPACT AFTER DAY 必须在 %d-%d 范围内"
+	MetricsDeviceFilterTooManyFmt              = "DEVICE FILTER 最多包含 %d 条规则"
+	MetricsDeviceFilterEmptyRule               = "DEVICE FILTER 规则不能为空"
+	MetricsDeviceFilterItemTooLongFmt          = "DEVICE FILTER 每条规则最多包含 %d 个字符"
 	InvalidTerminalMode                        = "终端模式无效"
 
 	CommandEmpty                    = "命令不能为空"
