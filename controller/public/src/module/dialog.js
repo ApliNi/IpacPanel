@@ -1,5 +1,3 @@
-console.log('[模块] Dialog 加载中...');
-
 const hiddenClass = 'hidden';
 const DEFAULT_PROMPT_MAX_LENGTH = 4096;
 

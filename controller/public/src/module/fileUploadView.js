@@ -185,7 +185,8 @@ export const buildFileUploadFolderGroupNode = (group) => {
 		childrenContainer.classList.add('hidden');
 	}
 	if (!isScanning) {
-		childrenContainer.append(...group.children.map(buildFileUploadItemNode));
+		// DONE 子项行已被 500ms 定时器从 DOM 移除，重建时不再绘制，但保留在数据中保证聚合稳定
+		childrenContainer.append(...group.children.filter((c) => c.status !== 'DONE').map(buildFileUploadItemNode));
 	}
 
 	container.append(header, meta, progress, childrenContainer);

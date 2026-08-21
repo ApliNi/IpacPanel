@@ -7,8 +7,6 @@ import { setupAutoResizeTextarea } from '../utils/autoTextarea.js';
 import { readJsonSSEStream } from '../utils/sse.js';
 import { applyTabPageState, bindTabPageButtons } from '../utils/modalHelper.js';
 
-console.log('[模块] FileBatchActionModal 加载中...');
-
 mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 	<div id="fileBatchActionModal" class="modal-overlay">
 		<div class="modal-card file-batch-action-modal-card">

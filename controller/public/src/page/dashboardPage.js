@@ -2,8 +2,6 @@ import { openDashboardEventStream } from '../api/dashboard.js';
 import { dispatchUnauthorized, parseSSEJsonData, readSSEStream } from '../api/core.js';
 import { mainContainer, state } from '../ui.js';
 
-console.log('[页面] 仪表板页加载中...');
-
 const STORAGE_MINUTES_KEY = 'IpacPanel.dashboard.minutes';
 const STORAGE_INTERFACE_KEY = 'IpacPanel.dashboard.interface';
 const STORAGE_DISK_KEY = 'IpacPanel.dashboard.disk';

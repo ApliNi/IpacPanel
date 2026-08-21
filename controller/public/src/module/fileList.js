@@ -10,8 +10,6 @@ import { showAlert, showConfirm } from './dialog.js';
 import { openPreview } from './mediaPreview.js';
 import { InputValidation } from '../utils/inputValidation.js';
 
-console.log('[模块] FileManager 加载中...');
-
 const FILE_EDITOR_SOFT_LIMIT_BYTES = 10 * 1024 * 1024;
 
 const reportFilePaginationError = async (message, error) => {

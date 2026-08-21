@@ -5,8 +5,6 @@ import { showAlert, showConfirm } from './dialog.js';
 import { applyFileUploadFolderGroupView, applyFileUploadItemView, buildFileUploadFolderGroupNode, buildFileUploadItemNode, ceilTo, computeFolderGroupAggregates, renderFileUploadSummaryText } from './fileUploadView.js';
 import { InputValidation } from '../utils/inputValidation.js';
 
-console.log('[模块] FileCreateModal 加载中...');
-
 mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 	<div id="fileCreateModal" class="modal-overlay">
         <div class="modal-card file-create-modal-card">
@@ -808,6 +806,35 @@ const createFileEntry = async (type, name, content = '', overwrite = false) => {
 	return result.data;
 };
 
+/**
+ * 全部子项成功完成后，调度 500ms 后移除文件夹组（幂等）。
+ * 存在未完成/失败子项时取消已排定的移除。
+ */
+const scheduleFolderGroupRemovalIfDone = (group) => {
+	if (!group || group.kind !== 'folder-group') return;
+	const allDone = group.children.length > 0 && group.children.every((c) => c.status === 'DONE');
+	if (!allDone) {
+		clearFileUploadDoneClearTimer(group.id);
+		return;
+	}
+	if (modalState.fileUploadDoneClearTimers.has(group.id)) {
+		return;
+	}
+	modalState.fileUploadDoneClearTimers.set(group.id, window.setTimeout(() => {
+		modalState.fileUploadDoneClearTimers.delete(group.id);
+		const currentParent = modalState.fileUploadItemById.get(group.id) || null;
+		if (!currentParent) return;
+		removeUploadItemById(group.id);
+		const removed = removeFileUploadItemRow(group.id);
+		if (!removed) {
+			renderFileUploadList();
+		}
+		renderFileUploadSummary();
+		updateFileUploadDropzoneState();
+		pruneFileUploadListIfEmpty();
+	}, 500));
+};
+
 /** 重新计算文件夹组的聚合数据并更新 DOM */
 const updateFolderGroupAggregates = (group) => {
 	if (!group || group.kind !== 'folder-group') return;
@@ -830,6 +857,8 @@ const updateFolderGroupAggregates = (group) => {
 	if (row) {
 		applyFileUploadFolderGroupView(row, group);
 	}
+	// 全部完成后调度文件夹组移除（驱动点收敛到聚合更新）
+	scheduleFolderGroupRemovalIfDone(group);
 };
 
 /** 如果子项有 parentId，更新对应的父文件夹组 */
@@ -880,13 +909,10 @@ const setFileUploadProgress = (id, payload = {}) => {
 			}
 
 			if (current.parentId) {
-				// 文件夹组子项：只删除 DOM 行，保留数据保证聚合稳定
+				// 文件夹组子项：只删除 DOM 行，保留数据以保证文件夹聚合稳定；全部完成时由聚合更新调度 500ms 移除文件夹
 				const parent = modalState.fileUploadItemById.get(current.parentId);
 				if (parent && parent.kind === 'folder-group') {
-					const removed = removeFileUploadItemRow(id);
-					if (!removed) {
-						renderFileUploadList();
-					}
+					removeFileUploadItemRow(id);
 					updateFolderGroupAggregates(parent);
 					renderFileUploadSummary();
 					updateFileUploadDropzoneState();
@@ -897,10 +923,7 @@ const setFileUploadProgress = (id, payload = {}) => {
 
 			// 普通文件：完整删除数据和 DOM
 			removeUploadItemById(id);
-			const removed = removeFileUploadItemRow(id);
-			if (!removed) {
-				renderFileUploadList();
-			}
+			removeFileUploadItemRow(id);
 			renderFileUploadSummary();
 			updateFileUploadDropzoneState();
 			pruneFileUploadListIfEmpty();
@@ -1996,7 +2019,6 @@ const uploadSelectedFiles = async (overwrite) => {
 		if (runToken === modalState.fileUploadRunToken) {
 			stopFileUploadSpeedTimer();
 			setFileUploadLocked(false);
-			cleanupDoneFolderGroupChildren();
 			trimFinishedUploadStats();
 		}
 	}
@@ -2170,41 +2192,6 @@ const removeFileUploadItem = (id) => {
 
 const trimFinishedUploadStats = () => {
 	renderFileUploadSummary();
-};
-
-/** 上传完成后清理文件夹组中已被 DOM 删除的 DONE 子项，空文件夹组一并移除 */
-const cleanupDoneFolderGroupChildren = () => {
-	let changed = false;
-	for (let i = modalState.fileUploadItems.length - 1; i >= 0; i--) {
-		const item = modalState.fileUploadItems[i];
-		if (item.kind !== 'folder-group') continue;
-
-		const doneChildren = item.children.filter((c) => c.status === 'DONE');
-		if (doneChildren.length > 0) {
-			doneChildren.forEach((c) => {
-				clearFileUploadDoneClearTimer(c.id);
-				forgetUploadItem(c.id);
-			});
-			item.children = item.children.filter((c) => c.status !== 'DONE');
-			changed = true;
-		}
-
-		if (item.children.length === 0) {
-			modalState.fileUploadItems.splice(i, 1);
-			forgetUploadItem(item.id);
-			changed = true;
-		} else {
-			updateFolderGroupAggregates(item);
-		}
-	}
-	if (changed) {
-		modalState.fileUploadStats.total = countUploadLeafItems(modalState.fileUploadItems);
-		modalState.fileUploadStats.success = countSuccessLeafItems(modalState.fileUploadItems);
-		renderFileUploadList();
-		renderFileUploadSummary();
-		updateFileUploadDropzoneState();
-		pruneFileUploadListIfEmpty();
-	}
 };
 
 const setFileCreateType = (type) => {

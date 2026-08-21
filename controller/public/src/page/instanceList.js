@@ -39,8 +39,6 @@ const saveFilter = (value) => {
 	}
 };
 
-console.log('[页面] 服务列表页加载中...');
-
 mainContainer.insertAdjacentHTML('beforeend', /*html*/`
 	<section id="instanceListSection" class="section">
 		<div class="section-header">

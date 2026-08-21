@@ -246,8 +246,6 @@ const ensureMonacoRuntime = (() => {
 	};
 })();
 
-console.log('[模块] FileEditorModal 加载中...');
-
 const getReadableErrorMessage = (error, fallback = 'Unknown error') => {
 	if (!error) {
 		return fallback;

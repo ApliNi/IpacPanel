@@ -8,8 +8,6 @@ import { InputValidation } from '../utils/inputValidation.js';
 import { readJsonSSEStream } from '../utils/sse.js';
 import { applyTabPageState, bindTabPageButtons } from '../utils/modalHelper.js';
 
-console.log('[模块] FileActionModal 加载中...');
-
 mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 	<div id="fileActionModal" class="modal-overlay">
         <div class="modal-card file-action-modal-card">

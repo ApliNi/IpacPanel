@@ -14,8 +14,6 @@ const getTerminalRuntime = () => {
 	return { TerminalCtor, FitAddonCtor: FitAddon.FitAddon };
 };
 
-console.log('[模块] TerminalWorkspace 加载中...');
-
 mainContainer.insertAdjacentHTML('beforeend', /*html*/`
 	<section id="terminalSection" class="section">
 		<div class="console-content">
@@ -1017,7 +1015,6 @@ const initTerminal = (historySize) => {
 		}
     }
 
-	console.log('[控制台页] 正在初始化 xterm.js 实例...');
 	const { TerminalCtor, FitAddonCtor } = getTerminalRuntime();
 	const plainPipeMode = activeTerminalMode === terminalMode.TERMINAL;
 	cardState.terminalModeAtInit = activeTerminalMode;
@@ -1131,13 +1128,11 @@ const connectWebSocket = (svc, options = {}) => {
 		cardState.wsReconnectAttempt = 0;
 	}
 
-	console.log(`[WebSocket] 正在连接实例: ${instanceName}`);
 	cardState.socket = createWebSocket(instanceName, {
 		onOpen: () => {
 			if (state.currentInstanceName !== instanceName) {
 				return;
 			}
-			console.log(`[WebSocket] 已连接到 ${instanceName}`);
 			cardState.wsDisconnectCount = 0;
 			cardState.wsReconnectAttempt = 0;
 			updateStatusDisplay(getCurrentSvc() || svc);
@@ -1167,7 +1162,6 @@ const connectWebSocket = (svc, options = {}) => {
 			}
 		},
 		onClose: () => {
-			console.log(`[WebSocket] 与 ${instanceName} 断开连接`);
 			cardState.socket = null;
 			resetTerminalWriteQueue();
 			clearRenderedPlainTerminalPromptLine();
@@ -1177,7 +1171,6 @@ const connectWebSocket = (svc, options = {}) => {
 				cardState.wsDisconnectCount += 1;
 				cardState.wsReconnectAttempt += 1;
 				const reconnectDelay = getWsReconnectDelay(cardState.wsReconnectAttempt);
-				console.log(`[WebSocket] 将在 ${reconnectDelay}ms 后尝试重连 ${instanceName}...`);
 				cardState.reconnectTimer = setTimeout(() => {
 					const checkSeq = cardState.instanceMissingCheckSeq + 1;
 					cardState.instanceMissingCheckSeq = checkSeq;

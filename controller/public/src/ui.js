@@ -41,8 +41,6 @@ const routePages = {
 	dashboard: 'dashboard',
 };
 
-console.log('[模块] UI 加载中...');
-
 export const mainHeader = document.getElementById('mainHeader');
 export const mainContainer = document.getElementById('mainContainer');
 export const mainModalOverlay = document.getElementById('mainModalOverlay');

@@ -27,8 +27,6 @@ import {
 	openInstanceHelpModal,
 } from '../module/instanceModalView.js';
 
-console.log('[页面] 控制台页加载中...');
-
 mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 	<div id="instanceModal" class="modal-overlay">
 		<div class="modal-card instance-modal-card">

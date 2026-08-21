@@ -3,8 +3,6 @@ import { clearTimer, withActionsDisabled } from '../utils/utils.js';
 import { updateGroup } from '../api/instance.js';
 import { showAlert, showConfirm } from './dialog.js';
 
-console.log('[模块] InstanceGroupModal 加载中...');
-
 const createFieldGroup = ({ label, className = '', content } = {}) => {
 	const group = document.createElement('div');
 	group.className = ['field-group', className].filter(Boolean).join(' ');

@@ -7,8 +7,6 @@ import { instanceStatusStore } from '../store/instanceStatusStore.js';
 import { createAdminUser, deleteAdminUser, fetchAdminUser, fetchMe, fetchUsers, updateAdminUser, updateMe } from '../api/user.js';
 import { showAlert, showConfirm } from './dialog.js';
 
-console.log('[模块] UserManageModal 加载中...');
-
 const USER_NAME_MAX_LENGTH = 32;
 const USER_PASSWORD_MAX_LENGTH = 4096;
 const USER_SCOPE_MAX_ITEMS = 4096;

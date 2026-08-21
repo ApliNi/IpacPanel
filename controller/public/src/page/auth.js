@@ -2,8 +2,6 @@ import { dispatchAuthenticated } from '../api/core.js';
 import { getLoginPow, login } from '../api/auth.js';
 import { InputValidation } from '../utils/inputValidation.js';
 
-console.log('[页面] 登录页加载中...');
-
 const dom = {
 	root: null,
 	card: null,
