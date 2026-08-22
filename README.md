@@ -142,7 +142,7 @@ go run ./build.go
 **管理进程**
 - Golang, 及其标准库
 - WebSocket: [`github.com/gorilla/websocket`](https://github.com/gorilla/websocket)
-- 定时任务调度: [`github.com/reugn/go-quartz/quartz`](https://github.com/reugn/go-quartz)
+- 定时任务调度: [`github.com/go-co-op/gocron/v2`](https://github.com/go-co-op/gocron)
 - 系统指标采集: [`github.com/shirou/gopsutil/v4/`]( https://github.com/shirou/gopsutil)
 - SQLite 数据库: [`modernc.org/sqlite`]( https://pkg.go.dev/modernc.org/sqlite)
 - 文件解压: [`github.com/mholt/archives`](https://github.com/mholt/archives)

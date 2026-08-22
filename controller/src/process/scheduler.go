@@ -10,15 +10,15 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/go-co-op/gocron/v2"
 	"github.com/gorilla/websocket"
-	"github.com/reugn/go-quartz/quartz"
 )
 
 type instanceTaskScheduler struct {
 	Mu         sync.Mutex
 	Cond       *sync.Cond
-	Scheduler  quartz.Scheduler
-	Jobs       map[string]*quartz.JobKey
+	Scheduler  gocron.Scheduler
+	Jobs       map[string]gocron.Job
 	Rebuilding map[string]bool
 	Requested  map[string]uint64
 	Completed  map[string]uint64
@@ -45,18 +45,17 @@ func initTaskScheduler() {
 	if taskScheduler != nil {
 		return
 	}
+
 	ctx, cancel := context.WithCancel(context.Background())
-	scheduler, err := quartz.NewStdScheduler()
+
+	s, err := gocron.NewScheduler()
 	if err != nil {
-		cancel()
-		log.Printf(msg.InitSchedulerFailedLogFmt, err)
-		return
+		log.Fatalf("failed to create task scheduler: %v", err)
 	}
-	scheduler.Start(ctx)
 
 	taskScheduler = &instanceTaskScheduler{
-		Scheduler:  scheduler,
-		Jobs:       make(map[string]*quartz.JobKey),
+		Scheduler:  s,
+		Jobs:       make(map[string]gocron.Job),
 		Rebuilding: make(map[string]bool),
 		Requested:  make(map[string]uint64),
 		Completed:  make(map[string]uint64),
@@ -64,6 +63,8 @@ func initTaskScheduler() {
 		Cancel:     cancel,
 	}
 	taskScheduler.Cond = sync.NewCond(&taskScheduler.Mu)
+
+	s.Start()
 }
 
 func stopTaskScheduler() {
@@ -77,16 +78,17 @@ func stopTaskScheduler() {
 
 	ts.Mu.Lock()
 	ts.Stopping = true
-	for key, jobKey := range ts.Jobs {
-		if err := ts.Scheduler.DeleteJob(jobKey); err != nil {
-			log.Printf(msg.DeleteScheduledTaskFailedLogFmt, key, err)
-		}
+	for key, job := range ts.Jobs {
+		ts.Scheduler.RemoveJob(job.ID())
 		delete(ts.Jobs, key)
 	}
 	if ts.Cond != nil {
 		ts.Cond.Broadcast()
 	}
 	ts.Mu.Unlock()
+
+	// Shut down the scheduler and wait for running jobs to finish.
+	_ = ts.Scheduler.Shutdown()
 
 	if ts.Cancel != nil {
 		ts.Cancel()
@@ -149,12 +151,9 @@ func finishInstanceTaskRebuild(ts *instanceTaskScheduler, instanceName string, t
 
 func deleteInstanceTaskJobsLocked(ts *instanceTaskScheduler, instanceName string) []string {
 	var errs []string
-	for key, jobKey := range ts.Jobs {
+	for key, job := range ts.Jobs {
 		if strings.HasPrefix(key, instanceName+"::") {
-			if err := ts.Scheduler.DeleteJob(jobKey); err != nil {
-				log.Printf(msg.DeleteScheduledTaskFailedLogFmt, key, err)
-				errs = append(errs, fmt.Sprintf(msg.DeleteScheduledTaskFailedFmt, key, err))
-			}
+			ts.Scheduler.RemoveJob(job.ID())
 			delete(ts.Jobs, key)
 		}
 	}
@@ -166,28 +165,6 @@ func deleteInstanceTaskJobsLocked(ts *instanceTaskScheduler, instanceName string
 
 func taskJobKey(instanceName string, taskName string) string {
 	return instanceName + "::" + taskName
-}
-
-type instanceTaskJob struct {
-	InstanceName  string
-	TaskName      string
-	Action        string
-	Command       string
-	UseKillStop   bool
-	StrictRestart bool
-}
-
-func (j *instanceTaskJob) Execute(_ context.Context) error {
-	sp, ok := Get(j.InstanceName)
-	if !ok {
-		return nil
-	}
-	executeTask(sp, j.TaskName, j.Action, j.Command, j.UseKillStop, j.StrictRestart)
-	return nil
-}
-
-func (j *instanceTaskJob) Description() string {
-	return fmt.Sprintf("task %s/%s", j.InstanceName, j.TaskName)
 }
 
 func rebuildAllInstanceTasksLocked() {
@@ -264,48 +241,54 @@ func rebuildInstanceTasks(instanceName string) error {
 				if !t.Enabled {
 					continue
 				}
-				trigger, normalizedExpr, err := cfg.NewTaskTrigger(t.Expr)
+
+				spec, _, err := cfg.BuildTaskSchedule(t.Expr)
 				if err != nil {
 					log.Printf(msg.ParseScheduledTaskFailedLogFmt, instanceName, name, err)
 					errs = append(errs, fmt.Sprintf(msg.ParseScheduledTaskFailedFmt, name, err))
 					limit := cfg.GetHistoryLimit() * 1024
 					sp.Mu.Lock()
-					msg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.ParseScheduledTaskFailedFmt, name, err))
-					sp.appendAndBroadcastLocked(websocket.BinaryMessage, msg, limit)
+					terminalMsg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.ParseScheduledTaskFailedFmt, name, err))
+					sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
 					sp.Mu.Unlock()
 					continue
 				}
-				expr := normalizedExpr
-				if expr == "" {
-					continue
-				}
+
 				action := strings.TrimSpace(t.Action)
 				cmd := strings.TrimSpace(t.Command)
-
+				useKillStop := t.UseKillStop
+				strictRestart := t.StrictRestart
 				key := taskJobKey(instanceName, name)
-				jobKey := quartz.NewJobKeyWithGroup(name, instanceName)
-				job := &instanceTaskJob{InstanceName: instanceName, TaskName: name, Action: action, Command: cmd, UseKillStop: t.UseKillStop, StrictRestart: t.StrictRestart}
-				jobDetail := quartz.NewJobDetail(job, jobKey)
 
-				ts.Mu.Lock()
-				if ts.Stopping {
-					ts.Mu.Unlock()
-					shouldStop = true
-					break
-				}
-				err = ts.Scheduler.ScheduleJob(jobDetail, trigger)
+				job, err := ts.Scheduler.NewJob(
+					gocron.CronJob(spec, false),
+					gocron.NewTask(func() {
+						sp, ok := Get(instanceName)
+						if !ok {
+							return
+						}
+						executeTask(sp, name, action, cmd, useKillStop, strictRestart)
+					}),
+				)
 				if err != nil {
-					ts.Mu.Unlock()
 					log.Printf(msg.RegisterScheduledTaskFailedLogFmt, instanceName, name, err)
 					errs = append(errs, fmt.Sprintf(msg.RegisterScheduledTaskFailedFmt, name, err))
 					limit := cfg.GetHistoryLimit() * 1024
 					sp.Mu.Lock()
-					msg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.RegisterScheduledTaskFailedFmt, name, err))
-					sp.appendAndBroadcastLocked(websocket.BinaryMessage, msg, limit)
+					terminalMsg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.RegisterScheduledTaskFailedFmt, name, err))
+					sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
 					sp.Mu.Unlock()
 					continue
 				}
-				ts.Jobs[key] = jobKey
+
+				ts.Mu.Lock()
+				if ts.Stopping {
+					ts.Scheduler.RemoveJob(job.ID())
+					ts.Mu.Unlock()
+					shouldStop = true
+					break
+				}
+				ts.Jobs[key] = job
 				ts.Mu.Unlock()
 			}
 		}

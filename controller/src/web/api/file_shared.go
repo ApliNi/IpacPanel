@@ -341,19 +341,96 @@ func compareFileListItems(a fileEntryLite, b fileEntryLite) int {
 		}
 		return 1
 	}
-	if a.LowerName != b.LowerName {
-		if a.LowerName < b.LowerName {
+	if c := compareFileListNames(a.Name, b.Name); c != 0 {
+		return c
+	}
+	// 自然序下完全等价时用原始名称做确定性稳定排序（如 "1" 与 "01"）
+	return strings.Compare(a.Name, b.Name)
+}
+
+// compareFileListNames 对文件名进行自然排序（大小写不敏感, 连续数字按数值比较）。
+// 目录已由调用方在 compareFileListItems 中优先排序, 此处仅处理名称。
+func compareFileListNames(a string, b string) int {
+	ai, bi := 0, 0
+	for ai < len(a) && bi < len(b) {
+		ar, br := a[ai], b[bi]
+		aDigit := ar >= '0' && ar <= '9'
+		bDigit := br >= '0' && br <= '9'
+		if aDigit && bDigit {
+			astart, bstart := ai, bi
+			for ai < len(a) && a[ai] >= '0' && a[ai] <= '9' {
+				ai++
+			}
+			for bi < len(b) && b[bi] >= '0' && b[bi] <= '9' {
+				bi++
+			}
+			if c := compareFileDigitRuns(a[astart:ai], b[bstart:bi]); c != 0 {
+				return c
+			}
+			continue
+		}
+		if aDigit != bDigit {
+			// 数字段排在文字段之前（保持与原 ASCII 顺序一致: 0-9 在 A-Z/a-z 之前）
+			if aDigit {
+				return -1
+			}
+			return 1
+		}
+		// 不区分大小写比较文字
+		arLow, brLow := foldASCIIUpper(ar), foldASCIIUpper(br)
+		if arLow != brLow {
+			if arLow < brLow {
+				return -1
+			}
+			return 1
+		}
+		ai++
+		bi++
+	}
+	switch {
+	case ai == len(a) && bi == len(b):
+		return 0
+	case ai == len(a):
+		return -1
+	default:
+		return 1
+	}
+}
+
+// compareFileDigitRuns 比较两段连续数字的数值大小（忽略前导零）。
+func compareFileDigitRuns(a string, b string) int {
+	ai, bi := 0, 0
+	for ai < len(a)-1 && a[ai] == '0' {
+		ai++
+	}
+	for bi < len(b)-1 && b[bi] == '0' {
+		bi++
+	}
+	aLen, bLen := len(a)-ai, len(b)-bi
+	if aLen != bLen {
+		if aLen < bLen {
 			return -1
 		}
 		return 1
 	}
-	if a.Name != b.Name {
-		if a.Name < b.Name {
-			return -1
+	for i := range aLen {
+		ac, bc := a[ai+i], b[bi+i]
+		if ac != bc {
+			if ac < bc {
+				return -1
+			}
+			return 1
 		}
-		return 1
 	}
 	return 0
+}
+
+// foldASCIIUpper 将 ASCII 小写字母转为大写, 实现大小写不敏感的名称比较.
+func foldASCIIUpper(ch byte) byte {
+	if ch >= 'a' && ch <= 'z' {
+		return ch - ('a' - 'A')
+	}
+	return ch
 }
 
 type fileListMaxHeap []fileEntryLite

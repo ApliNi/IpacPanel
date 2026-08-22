@@ -17,7 +17,7 @@ func runTasksSuite(env *testEnv) error {
 	}
 	config := defaultPanelConfig(listen)
 	interval := 700
-	expr := "0/2 * * * * ?"
+	expr := "* * * * *"
 	instances := []instanceConfig{
 		{Name: "task-cycle", Path: "./instances/", Command: helperCommand(ctx, "task-cycle", "exit-normally", "--exit-after", "100ms"), Terminal: terminalModePipe, Tasks: []taskConfig{{Name: "周期", Enabled: true, Expr: expr, Action: "start"}}},
 		{Name: "task-start", Path: "./instances/", Command: helperCommand(ctx, "task-start", "long-running"), Terminal: terminalModePipe, Tasks: []taskConfig{{Name: "启动", Enabled: true, Expr: expr, Action: "start"}}},

@@ -153,25 +153,8 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 							</tr>
 						</thead>
 						<tbody>
-							<tr><td>语法标准</td><td>计划任务使用 <strong>Quartz Cron</strong> 语法, 5 段会自动补全为 6 段</td></tr>
-							<tr><td>执行时区</td><td>默认按服务器系统本地时区执行, 可在设置中指定 IANA 时区</td></tr>
-							<tr><td>字段分隔</td><td>各段之间使用空格分隔, 一共支持 5 / 6 / 7 段</td></tr>
-							<tr><td>日与周</td><td><strong>日期</strong> 与 <strong>星期</strong> 通常二选一明确指定, 另一个建议写 <code>?</code></td></tr>
-							<tr><td>英文名称</td><td>月份和星期支持英文缩写, 如 <code>JAN</code>, <code>MON-FRI</code>, 且不区分大小写</td></tr>
-						</tbody>
-					</table>
-					<table>
-						<thead>
-							<tr>
-								<th align="left">段数</th>
-								<th align="left">表达式格式</th>
-								<th align="left">各段含义</th>
-							</tr>
-						</thead>
-						<tbody>
-							<tr><td>5</td><td><code>分 时 日 月 周</code></td><td>自动补全为 <code>0 分 时 日 月 周</code></td></tr>
-							<tr><td>6</td><td><code>秒 分 时 日 月 周</code></td><td>标准 6 段格式 (Quartz)</td></tr>
-							<tr><td>7</td><td><code>秒 分 时 日 月 周 年</code></td><td>增加年份限制</td></tr>
+							<tr><td>语法标准</td><td>计划任务使用标准 <strong>Unix/Linux Cron</strong> 语法, 固定 5 段: <code>分 时 日 月 周</code></td></tr>
+							<tr><td>执行时区</td><td>默认使用服务器系统时区, 可在设置中覆盖, 支持表达式前缀 <code>TZ=</code></td></tr>
 						</tbody>
 					</table>
 					<table>
@@ -184,13 +167,11 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 							</tr>
 						</thead>
 						<tbody>
-							<tr><td>1</td><td>秒 (Seconds)</td><td>0 - 59</td><td><code>, - * /</code></td></tr>
-							<tr><td>2</td><td>分 (Minutes)</td><td>0 - 59</td><td><code>, - * /</code></td></tr>
-							<tr><td>3</td><td>时 (Hours)</td><td>0 - 23</td><td><code>, - * /</code></td></tr>
-							<tr><td>4</td><td>日 (Day of Month)</td><td>1 - 31</td><td><code>, - * / ? L W</code></td></tr>
-							<tr><td>5</td><td>月 (Month)</td><td>1 - 12</td><td><code>, - * /</code></td></tr>
-							<tr><td>6</td><td>周 (Day of Week)</td><td>1 - 7</td><td><code>, - * / ? L #</code></td></tr>
-							<tr><td>7</td><td>年 (Year)</td><td>1970+</td><td><code>, - * /</code></td></tr>
+							<tr><td>1</td><td>分 (Minutes)</td><td>0 - 59</td><td><code>, - * /</code></td></tr>
+							<tr><td>2</td><td>时 (Hours)</td><td>0 - 23</td><td><code>, - * /</code></td></tr>
+							<tr><td>3</td><td>日 (Month)</td><td>1 - 31</td><td><code>, - * /</code></td></tr>
+							<tr><td>4</td><td>月 (Month)</td><td>1 - 12</td><td><code>, - * /</code></td></tr>
+							<tr><td>5</td><td>周 (Week)</td><td>0 - 6 (0 为周日)</td><td><code>, - * /</code></td></tr>
 						</tbody>
 					</table>
 					<table>
@@ -203,41 +184,32 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 						</thead>
 						<tbody>
 							<tr><td><code>*</code></td><td>任意值</td><td>该字段每次都匹配</td></tr>
-							<tr><td><code>?</code></td><td>留空</td><td>仅用于"日"和"周", 表示这一项不指定</td></tr>
 							<tr><td><code>-</code></td><td>范围</td><td>表示一个连续区间</td></tr>
 							<tr><td><code>,</code></td><td>多个值</td><td>表示多个离散取值</td></tr>
 							<tr><td><code>/</code></td><td>步长</td><td>表示按固定间隔触发</td></tr>
-							<tr><td><code>L</code></td><td>最后</td><td>表示最后一天或最后一个星期几</td></tr>
-							<tr><td><code>W</code></td><td>最近工作日</td><td>仅用于"日", 表示最近的工作日</td></tr>
-							<tr><td><code>#</code></td><td>第几个</td><td>仅用于"周", 表示第几个星期几</td></tr>
 						</tbody>
 					</table>
 					<table>
 						<thead>
 							<tr>
 								<th align="left">示例</th>
-								<th align="left">含义</th>
+								<th align="left">说明</th>
 							</tr>
 						</thead>
 						<tbody>
-							<tr><td><code>0 * * * * ?</code></td><td>每分钟执行一次</td></tr>
-							<tr><td><code>0 */5 * * * ?</code></td><td>每 5 分钟执行一次</td></tr>
-							<tr><td><code>0 0 3 * * ?</code></td><td>每天 03:00 执行</td></tr>
-							<tr><td><code>0 30 3 * * ?</code></td><td>每天 03:30 执行</td></tr>
-							<tr><td><code>0 0 */6 * * ?</code></td><td>每 6 小时执行一次</td></tr>
-							<tr><td><code>0 0 9 ? * MON-FRI</code></td><td>工作日每天 09:00 执行</td></tr>
-							<tr><td><code>0 0 9,18 ? * MON-FRI</code></td><td>工作日每天 09:00 和 18:00 执行</td></tr>
-							<tr><td><code>0 0 4 ? * MON</code></td><td>每周一 04:00 执行</td></tr>
-							<tr><td><code>0 0 4 ? * SAT,SUN</code></td><td>每周六和周日 04:00 执行</td></tr>
-							<tr><td><code>0 */15 * * * ?</code></td><td>每 15 分钟执行一次</td></tr>
-							<tr><td><code>0 0 4 1 * ?</code></td><td>每月 1 日 04:00 执行</td></tr>
-							<tr><td><code>0 0 4 1 */3 ?</code></td><td>每 3 个月的 1 日 04:00 执行</td></tr>
-							<tr><td><code>0 0 10 L * ?</code></td><td>每月最后一天 10:00 执行</td></tr>
-							<tr><td><code>0 0 10 LW * ?</code></td><td>每月最后一个工作日 10:00 执行</td></tr>
-							<tr><td><code>0 0 8 ? * 2#1</code></td><td>每月第 1 个星期一 08:00 执行</td></tr>
-							<tr><td><code>0 0 8 15W * ?</code></td><td>每月 15 日最近的工作日 08:00 执行</td></tr>
-							<tr><td><code>0 0 0 1 1 ?</code></td><td>每年 1 月 1 日 00:00 执行</td></tr>
-							<tr><td><code>0 30 9 * * ? 2027</code></td><td>仅在 2027 年每天 09:30 执行</td></tr>
+							<tr><td><code>* * * * *</code></td><td>每分钟执行一次</td></tr>
+							<tr><td><code>*/5 * * * *</code></td><td>每 5 分钟执行一次</td></tr>
+							<tr><td><code>0 * * * *</code></td><td>每小时整点执行</td></tr>
+							<tr><td><code>0 9 * * *</code></td><td>每天 09:00 执行</td></tr>
+							<tr><td><code>0 9,18 * * *</code></td><td>每天 09:00 和 18:00 执行</td></tr>
+							<tr><td><code>0 9-17 * * *</code></td><td>09:00 到 17:00 每小时执行</td></tr>
+							<tr><td><code>0 9 * * 1-5</code></td><td>工作日 (周一至周五) 09:00 执行</td></tr>
+							<tr><td><code>0 9 * * MON-FRI</code></td><td>工作日 09:00 执行</td></tr>
+							<tr><td><code>0 4 * * 0,6</code></td><td>每周六和周日 04:00 执行</td></tr>
+							<tr><td><code>0 4 1 * *</code></td><td>每月 1 日 04:00 执行</td></tr>
+							<tr><td><code>0 4 1 */3 *</code></td><td>每 3 个月的第 1 天 04:00 执行</td></tr>
+							<tr><td><code>30 9 1 * MON</code></td><td>每月 1 日或每周一 09:30 执行</td></tr>
+							<tr><td><code>0 0 1 JAN,JUL *</code></td><td>每年 1 月和 7 月 1 日 00:00 执行</td></tr>
 						</tbody>
 					</table>
 				</div>

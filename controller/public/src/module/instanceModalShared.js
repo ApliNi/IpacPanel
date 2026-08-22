@@ -130,7 +130,7 @@ export const buildTaskRow = (task = {}) => {
 	exprInput.type = 'text';
 	exprInput.maxLength = InputValidation.limits.taskExpr;
 	exprInput.autocomplete = 'off';
-	exprInput.placeholder = ' Quartz expr 5 / 6 / 7';
+	exprInput.placeholder = ' Cron expr';
 
 	const actionSelect = document.createElement('select');
 	actionSelect.className = 'instance-task-action instance-task-select';

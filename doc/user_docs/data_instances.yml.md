@@ -18,6 +18,6 @@
   tasks:
     - name: Task-1
       enabled: true
-      expr: '*/5 * * * * *'
+      expr: '*/5 * * * *'
       action: restart
 ```
