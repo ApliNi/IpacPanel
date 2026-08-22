@@ -3,7 +3,6 @@ package config
 import (
 	"IpacPanel/controller/src/msg"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -61,7 +60,7 @@ func DefaultTaskTimezone() (string, error) {
 		return "", nil
 	}
 	if _, err := time.LoadLocation(timezone); err != nil {
-		return "", fmt.Errorf(msg.SettingsTaskTimezoneInvalidFmt, err)
+		return "", errors.New(msg.SettingsTaskTimezoneInvalid)
 	}
 	return timezone, nil
 }

@@ -336,7 +336,7 @@ func ValidateTaskTimezone(timezone string) error {
 		return errors.New(msg.SettingsTaskTimezoneInvalidControlChars)
 	}
 	if _, err := time.LoadLocation(value); err != nil {
-		return fmt.Errorf(msg.SettingsTaskTimezoneInvalidFmt, err)
+		return errors.New(msg.SettingsTaskTimezoneInvalid)
 	}
 	return nil
 }

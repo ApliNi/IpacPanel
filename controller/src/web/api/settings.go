@@ -203,7 +203,7 @@ func HandleApiSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := cfg.ValidateSettingsTextFields(savedCfg.WebTitle, savedCfg.Listen, savedCfg.TaskTimezone, savedCfg.Web, savedCfg.InstanceUpdateStagingDir, savedCfg.TrustedProxyIPs); err != nil {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.InvalidRequestBody, err)
+		web.WriteAPIError(w, http.StatusBadRequest, err.Error(), err)
 		return
 	}
 	if req.Pow != nil {
