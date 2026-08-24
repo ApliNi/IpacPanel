@@ -116,28 +116,46 @@ func validateControllerUpdatePackageName(name string) error {
 	return nil
 }
 
+// controllerUpdateBinaryError 区分管理进程二进制校验失败的具体原因,
+// 用户消息 (userMessage) 与内部日志 (err) 分离.
+type controllerUpdateBinaryError struct {
+	userMessage string
+	err         error
+}
+
+func (e *controllerUpdateBinaryError) Error() string {
+	if e.err != nil {
+		return e.userMessage + ": " + e.err.Error()
+	}
+	return e.userMessage
+}
+
+func (e *controllerUpdateBinaryError) Unwrap() error {
+	return e.err
+}
+
 func parseControllerVersion(binaryPath string) (*controllerUpdateVersionInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binaryPath, "--version")
 	output, err := cmd.Output()
 	if ctx.Err() != nil {
-		return nil, fmt.Errorf(msg.ControllerVersionCheckTimeoutFmt, ctx.Err())
+		return nil, &controllerUpdateBinaryError{userMessage: msg.ControllerBinaryVersionCheckTimeout, err: ctx.Err()}
 	}
 	if err != nil {
-		return nil, fmt.Errorf(msg.ControllerVersionCheckFailedFmt, err)
+		return nil, &controllerUpdateBinaryError{userMessage: msg.ControllerBinaryVersionCheckFailed, err: err}
 	}
 	var wrapper struct {
 		Version controllerUpdateVersionInfo `yaml:"version"`
 	}
 	if err := yaml.Unmarshal(output, &wrapper); err != nil {
-		return nil, fmt.Errorf(msg.ControllerVersionOutputParseFailedFmt, err)
+		return nil, &controllerUpdateBinaryError{userMessage: msg.ControllerBinaryVersionOutputInvalid, err: err}
 	}
 	if wrapper.Version.Role != "controller" {
-		return nil, fmt.Errorf(msg.ControllerVersionRoleInvalidFmt, wrapper.Version.Role)
+		return nil, &controllerUpdateBinaryError{userMessage: fmt.Sprintf(msg.ControllerBinaryRoleInvalidFmt, wrapper.Version.Role)}
 	}
 	if wrapper.Version.DaemonProtocol != version.DaemonProtocol {
-		return nil, fmt.Errorf(msg.ControllerUpdateDaemonProtocolMismatchFmt, version.DaemonProtocol, wrapper.Version.DaemonProtocol)
+		return nil, &controllerUpdateBinaryError{userMessage: fmt.Sprintf(msg.ControllerBinaryDaemonProtocolMismatchFmt, version.DaemonProtocol, wrapper.Version.DaemonProtocol)}
 	}
 	return &wrapper.Version, nil
 }
@@ -514,7 +532,7 @@ func prepareControllerUpdateBinary(uploadPath string, workDir string) (string, *
 	}
 	versionInfo, err := parseControllerVersion(extractedPath)
 	if err != nil {
-		return "", nil, fmt.Errorf(msg.ControllerBinaryInvalidFmt, err)
+		return "", nil, err
 	}
 	return extractedPath, versionInfo, nil
 }
@@ -926,6 +944,10 @@ func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Requ
 func controllerUpdatePrepareUserMessage(err error) string {
 	if err == nil {
 		return msg.ControllerUpdatePackageInvalid
+	}
+	var binaryErr *controllerUpdateBinaryError
+	if errors.As(err, &binaryErr) {
+		return binaryErr.userMessage
 	}
 	message := err.Error()
 	if strings.Contains(message, msg.ControllerBinaryInvalid) {

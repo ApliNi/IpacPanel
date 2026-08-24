@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -26,7 +27,8 @@ import (
 	api "IpacPanel/controller/src/web/api"
 )
 
-var versionedPublicPathPattern = regexp.MustCompile(`^/v\d+(?:\.\d+)*(?:/.*)?$`)
+// versionedPublicPathPattern 匹配以当前版本号开头的静态资源路径, 如 /v0.0.9/src/ui.js.
+var versionedPublicPathPattern = regexp.MustCompile("^/" + regexp.QuoteMeta(version.Version) + "(?:/.*)?$")
 
 func isExpectedControllerServerCloseError(err error) bool {
 	return err == nil || errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed)
@@ -125,12 +127,45 @@ func createPublicHandler(publicFS http.FileSystem) http.Handler {
 				http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
 				return
 			}
+			// 版本化路径只用于静态资源, 不提供 HTML 入口.
+			if publicPath == "/" || publicPath == "/index.html" {
+				http.NotFound(w, r)
+				return
+			}
+			// 路径含版本号, 内容变更时路径随之变化, 可安全使用长强缓存.
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 			servePublicPath(w, r, resolvePublicAssetAlias(publicPath))
 			return
 		}
 
+		if publicPath == "/" || publicPath == "/index.html" {
+			serveIndexHTMLWithVersion(w, r, publicFS)
+			return
+		}
 		servePublicPath(w, r, resolvePublicAssetAlias(publicPath))
 	})
+}
+
+// serveIndexHTMLWithVersion 提供 index.html, 将其中的 ${IpacPanelVersion} 替换为当前版本 (最多一次),
+// 使前端 <base href> 始终指向与二进制一致的静态资源路径.
+func serveIndexHTMLWithVersion(w http.ResponseWriter, r *http.Request, publicFS http.FileSystem) {
+	file, err := publicFS.Open("/index.html")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer file.Close()
+	content, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, msg.PublicAssetReadFailed, http.StatusInternalServerError)
+		return
+	}
+	html := strings.Replace(string(content), "${IpacPanelVersion}", version.Version, 1)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Length", strconv.Itoa(len(html)))
+	if r.Method != http.MethodHead {
+		_, _ = io.WriteString(w, html)
+	}
 }
 
 func withForceHTTPS(next http.Handler) http.Handler {
