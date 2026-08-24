@@ -491,6 +491,7 @@ type InstanceRuntimeState struct {
 	PID          int       `json:"pid,omitempty"`
 	StartTime    time.Time `json:"start_time,omitempty"`
 	ExitTime     time.Time `json:"exit_time,omitempty"`
+	// RestartCount 实为启动计数: 未曾启动为 -1, 每次成功启动 +1.
 	RestartCount int       `json:"restart_count"`
 	Terminal     int       `json:"terminal,omitempty"`
 }

@@ -622,7 +622,7 @@ export const openTerminalPage = async (svc, historySize, options = {}) => {
 		updating: !!svc.updating,
 		restarting: !!svc.restarting,
 		start_time: svc.start_time || detail.start_time || '',
-		restart_count: Number.isFinite(svc.restart_count) ? svc.restart_count : (detail.restart_count || 0),
+		restart_count: Number.isFinite(svc.restart_count) ? svc.restart_count : detail.restart_count,
 		terminal: normalizeTerminalMode(detail.terminal),
 		active_terminal: normalizeTerminalMode(svc.active_terminal ?? detail.active_terminal ?? detail.terminal),
 	});

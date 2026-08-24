@@ -278,10 +278,8 @@ func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse, eventCh chan<- IPC
 	ins.State = instanceRunning
 	ins.runtimeID = runtimeID
 	ins.skipCleanup = false
-	restartCount := ins.Runtime.RestartCount
-	if !ins.Runtime.StartTime.IsZero() {
-		restartCount++
-	}
+	// StartCount 语义: 未曾启动为 -1, 每次成功启动 +1.
+	startCount := ins.Runtime.RestartCount + 1
 	ins.Runtime = InstanceRuntimeState{
 		InstanceName: ins.Name,
 		RuntimeAlias: "",
@@ -289,7 +287,7 @@ func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse, eventCh chan<- IPC
 		RuntimeCode:  RuntimeCodeRunning,
 		PID:          pid,
 		StartTime:    time.Now(),
-		RestartCount: restartCount,
+		RestartCount: startCount,
 		Terminal:     ins.Terminal,
 	}
 	ins.proxySeq++

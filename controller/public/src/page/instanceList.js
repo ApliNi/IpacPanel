@@ -305,7 +305,8 @@ const setItemHTMLAndSig = (item, svc) => {
 	titleEl.textContent = String(svc.name || '');
 	titleEl.title = String(svc.name || '');
 	timeEl.textContent = `T: ${svc.start_time || '#'}`;
-	restartEl.textContent = `R: ${svc.restart_count || '#'}`;
+	// 启动计数: 未曾启动 (-1) 显示为 #.
+	restartEl.textContent = `R: ${svc.restart_count >= 0 ? svc.restart_count : '#'}`;
 
 	accessLinksEl.replaceChildren();
 	const accessLinks = parseAccessLinksEntries(svc.access_links);

@@ -151,7 +151,6 @@ type startReservation struct {
 	instanceUpdateStagingDir string
 	cols                     uint16
 	rows                     uint16
-	hadStarted               bool
 	startSeq                 uint64
 	resetRestarting          bool
 	instanceName             string
@@ -890,7 +889,6 @@ func (sp *InstanceProcess) reserveStartLocked(historyLimit int, instanceUpdateSt
 		instanceUpdateStagingDir: instanceUpdateStagingDir,
 		cols:                     sp.Cols,
 		rows:                     sp.Rows,
-		hadStarted:               !sp.StartTime.IsZero(),
 		instanceName:             ins.Name,
 	}
 	if sp.Restarting {
@@ -970,15 +968,17 @@ func (sp *InstanceProcess) commitPreparedStartLocked(reserved *startReservation,
 	if sp.State == processStateStopping || sp.State == processStateStoppingForRestart {
 		return 0, false
 	}
-	restartCount := sp.RestartCount
+	// StartCount 语义: 未曾启动为 -1, 每次成功启动 +1.
+	// 优先采用守护进程回传的计数; 守护进程不可达时本地递增.
+	startCount := sp.RestartCount
 	if prepared.state != nil {
-		restartCount = prepared.state.RestartCount
-	} else if reserved.hadStarted {
-		restartCount++
+		startCount = prepared.state.RestartCount
+	} else {
+		startCount++
 	}
 	sp.ActiveTerminalMode = cfg.NormalizeTerminalMode(reserved.ins.Terminal)
 	sp.resetPTYAlternateScreenStateLocked()
-	proxySeq := sp.setProcessStartedLocked(prepared.startTime, restartCount)
+	proxySeq := sp.setProcessStartedLocked(prepared.startTime, startCount)
 	if cfg.IsPTYTerminal(reserved.ins.Terminal) {
 		sp.TerminalStartupProtecting = true
 		sp.TerminalStartupPendingEscape = nil

@@ -18,10 +18,11 @@ func NewInstanceProcess(ins *cfg.Instance) *InstanceProcess {
 		instance = cfg.CloneInstances([]cfg.Instance{*ins})[0]
 	}
 	return &InstanceProcess{
-		Ins:     instance,
-		Cols:    cfg.DefaultTerminalCols,
-		Rows:    cfg.DefaultTerminalRows,
-		Clients: make(map[*WSClient]bool),
+		Ins:          instance,
+		Cols:         cfg.DefaultTerminalCols,
+		Rows:         cfg.DefaultTerminalRows,
+		RestartCount: -1,
+		Clients:      make(map[*WSClient]bool),
 	}
 }
 
