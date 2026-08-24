@@ -1,6 +1,7 @@
 package api
 
 import (
+	"IpacPanel/controller/src/logbuf"
 	"IpacPanel/controller/src/msg"
 	"IpacPanel/controller/src/process"
 	web "IpacPanel/controller/src/web"
@@ -8,6 +9,7 @@ import (
 
 	cfg "IpacPanel/controller/src/config"
 
+	"fmt"
 	"log"
 	"net/http"
 )
@@ -39,6 +41,7 @@ func HandleApiInstanceControl(w http.ResponseWriter, r *http.Request) {
 			ip.Mu.Lock()
 			ip.AppendAndBroadcastWarningSystemMessageLocked(err.Error(), limit)
 			ip.Mu.Unlock()
+			_ = logbuf.EmitInstance(logbuf.LevelError, name, fmt.Sprintf("%s: %s", msg.StartInstanceFailed, err.Error()))
 			web.WriteAPIError(w, http.StatusInternalServerError, msg.StartInstanceFailed, err)
 			return
 		}

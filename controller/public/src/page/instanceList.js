@@ -4,7 +4,9 @@ import { cleanupFileLastDirs } from '../module/fileList.js';
 import { bootInstanceGroupModal } from '../module/instanceGroupModal.js';
 import { copyTextToClipboard } from '../module/terminal.js';
 import { bootPanelSettingsModal } from '../module/panelSettingsModal.js';
+import { bootLogModal } from '../module/logModal.js';
 import { instanceStatusStore } from '../store/instanceStatusStore.js';
+import { logStore } from '../store/logStore.js';
 import { InputValidation } from '../utils/inputValidation.js';
 
 // 筛选按钮 localStorage 持久化
@@ -54,6 +56,7 @@ mainContainer.insertAdjacentHTML('beforeend', /*html*/`
 					<button id="createInstanceBtn" class="action-btn">NEW</button>
 					<button id="userManageBtn" class="action-btn" type="button">USER</button>
 					<button id="panelSettingsBtn" class="action-btn" type="button">SETTINGS</button>
+					<button id="logBtn" class="action-btn" type="button">LOG</button>
 				</div>
 			</div>
 		</div>
@@ -69,6 +72,7 @@ const dom = {
 	createInstanceBtn: document.getElementById('createInstanceBtn'),
 	panelSettingsBtn: document.getElementById('panelSettingsBtn'),
 	userManageBtn: document.getElementById('userManageBtn'),
+	logBtn: document.getElementById('logBtn'),
 };
 
 const pageState = {
@@ -80,6 +84,7 @@ const pageState = {
 let userManageModal = null;
 let instanceGroupModal = null;
 let panelSettingsModal = null;
+let logModal = null;
 let onPatchCurrentInstance = null;
 
 // Cache instance lookups for click handler: avoids O(n) find() per click.
@@ -666,6 +671,11 @@ export const bindInstanceListEvents = ({ onCreateInstance, onOpenInstance, onApp
 			userManageModal?.open?.();
 		};
 	}
+	if (dom.logBtn) {
+		dom.logBtn.onclick = () => {
+			logModal?.open?.();
+		};
+	}
 	if (dom.panelSettingsBtn) {
 		dom.panelSettingsBtn.classList.toggle('hidden', !state.isAdmin);
 		dom.panelSettingsBtn.onclick = () => {
@@ -801,6 +811,7 @@ const ensureInstanceStatusSubscription = (onOpenInstance) => {
 const loadInstances = async (onOpenInstance) => {
 	ensureInstanceStatusSubscription(onOpenInstance);
 	instanceStatusStore.start();
+	logStore.start();
 	if (!pageState.initialLoadDone) {
 		const snapshot = await instanceStatusStore.waitForReady();
 		applyInstanceData(snapshot.instances, onOpenInstance);
@@ -812,6 +823,7 @@ const showPage = (onOpenInstance) => {
     dom.section.classList.add('active');
 	ensureInstanceStatusSubscription(onOpenInstance);
 	instanceStatusStore.start();
+	logStore.start();
 };
 
 const hidePage = () => {
@@ -823,6 +835,15 @@ export const bootInstanceListPage = (options = {}) => {
 	onPatchCurrentInstance = typeof options.onPatchCurrentInstance === 'function' ? options.onPatchCurrentInstance : null;
 	userManageModal = bootUserManageModal();
 	panelSettingsModal = bootPanelSettingsModal();
+	logModal = bootLogModal({
+		onOpenInstance: (ins) => onOpenInstance?.(ins),
+		onCountChange: (count) => {
+			if (!dom.logBtn) return;
+			// 有日志时按钮金黄色并显示计数, 无日志时仅显示 LOG.
+			dom.logBtn.textContent = count > 0 ? `LOG [${count}]` : 'LOG';
+			dom.logBtn.classList.toggle('log-btn-active', count > 0);
+		},
+	});
 	instanceGroupModal = bootInstanceGroupModal({
 		onReload: () => loadInstances(onOpenInstance),
 		onCreateInstance: (options = {}) => onCreateInstance?.(options),

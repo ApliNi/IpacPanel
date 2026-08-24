@@ -2,6 +2,7 @@ package backend
 
 import (
 	"IpacPanel/controller/src/atomic/file"
+	"IpacPanel/controller/src/logbuf"
 	"IpacPanel/controller/src/metrics"
 	"IpacPanel/controller/src/msg"
 	"IpacPanel/daemon/version"
@@ -316,6 +317,7 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 				sp.Mu.Lock()
 				sp.AppendAndBroadcastWarningSystemMessageLocked(fmt.Sprintf("%s: %s", msg.StartInstanceFailed, err.Error()), limit)
 				sp.Mu.Unlock()
+				_ = logbuf.EmitInstance(logbuf.LevelError, ins.Name, fmt.Sprintf("%s: %s", msg.StartInstanceFailed, err.Error()))
 			}
 			interval := cfg.GetAutoStartInterval()
 			if interval > 0 {

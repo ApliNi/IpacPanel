@@ -617,6 +617,11 @@ input[type="password"] {
     color: var(--text-color);
 }
 
+.action-btn.log-btn-active {
+    color: #f4b740;
+    border-color: #f4b740;
+}
+
 #instanceSearch::placeholder {
     color: var(--text-faint-color);
 }
@@ -2583,4 +2588,78 @@ input[type="radio"]:checked { border: 6px double var(--text-subtle-color); }
     .file-row-main {
         grid-template-columns: auto minmax(0, 1fr);
     }
+}
+
+/* 运行日志卡片 */
+.log-modal-card {
+	width: min(100%, 760px);
+}
+
+.log-form {
+	gap: 14px;
+}
+
+#logList {
+	display: flex;
+	flex-direction: column;
+	max-height: 55vh;
+	overflow-y: auto;
+	transition: opacity 0.2s;
+}
+
+#logList.loading {
+	opacity: 0.5;
+	pointer-events: none;
+}
+
+.log-entry {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	padding: 5px 0;
+	border-bottom: 1px solid var(--border-color);
+	font-size: 0.78rem;
+	line-height: 1.45;
+	word-break: break-all;
+}
+
+.log-entry:last-child {
+	border-bottom: none;
+}
+
+.log-time {
+	flex-shrink: 0;
+	color: var(--text-faint-color);
+	white-space: nowrap;
+	user-select: all;
+}
+
+.log-instance {
+	flex-shrink: 0;
+	color: var(--text-subtle-color);
+	cursor: pointer;
+	white-space: nowrap;
+	user-select: all;
+	text-decoration: none;
+	transition: color 0.2s;
+}
+
+.log-instance:hover {
+	color: var(--text-color);
+	text-decoration: underline;
+}
+
+.log-message {
+	color: var(--text-color);
+	min-width: 0;
+	white-space: pre-wrap;
+	user-select: text;
+}
+
+.log-entry-warn .log-message {
+	color: #f4b740;
+}
+
+.log-entry-error .log-message {
+	color: var(--red);
 }

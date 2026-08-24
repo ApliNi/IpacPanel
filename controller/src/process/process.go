@@ -2,6 +2,7 @@ package process
 
 import (
 	cfg "IpacPanel/controller/src/config"
+	"IpacPanel/controller/src/logbuf"
 	"IpacPanel/controller/src/msg"
 	"errors"
 	"fmt"
@@ -926,6 +927,7 @@ func (sp *InstanceProcess) prepareStart(reserved *startReservation) (*preparedSt
 	}
 	if err := ApplyStagedInstanceUpdate(resolvedPath, reserved.instanceUpdateStagingDir, reserved.cancelCh); err != nil {
 		log.Printf(msg.InstanceUpdateFailedLogFmt, reserved.ins.Name, err)
+		_ = logbuf.EmitInstance(logbuf.LevelError, reserved.ins.Name, fmt.Sprintf(msg.InstanceUpdateFailedLogFmt, reserved.ins.Name, err))
 		return nil, err
 	}
 	sp.Mu.Lock()
@@ -1039,9 +1041,10 @@ func (sp *InstanceProcess) scheduleAutoRestart() {
 	sp.Mu.Unlock()
 	if err != nil {
 		sp.Mu.Lock()
-		msg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
+		restartMsg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
+		_ = logbuf.EmitInstance(logbuf.LevelError, sp.InstanceSnapshotLocked().Name, fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
 		sp.enterStoppedStateLocked()
-		sp.appendAndBroadcastLocked(websocket.BinaryMessage, msg, historyLimit)
+		sp.appendAndBroadcastLocked(websocket.BinaryMessage, restartMsg, historyLimit)
 		NotifyInstanceStatusChanged(sp.InstanceSnapshotLocked().Name)
 		sp.Mu.Unlock()
 		return
@@ -1054,9 +1057,10 @@ func (sp *InstanceProcess) scheduleAutoRestart() {
 		sp.Mu.Lock()
 		if sp.Starting && sp.StartSeq == reserved.startSeq {
 			sp.cancelStartLocked()
-			msg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
+			restartMsg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
+			_ = logbuf.EmitInstance(logbuf.LevelError, sp.InstanceSnapshotLocked().Name, fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
 			sp.enterStoppedStateLocked()
-			sp.appendAndBroadcastLocked(websocket.BinaryMessage, msg, historyLimit)
+			sp.appendAndBroadcastLocked(websocket.BinaryMessage, restartMsg, historyLimit)
 			NotifyInstanceStatusChanged(sp.InstanceSnapshotLocked().Name)
 		}
 		sp.Mu.Unlock()
@@ -1159,6 +1163,7 @@ func (sp *InstanceProcess) ScheduleRecoveredAutoRestart(state DaemonRuntimeState
 			limit := cfg.GetHistoryLimit() * 1024
 			sp.Mu.Lock()
 			terminalMsg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
+			_ = logbuf.EmitInstance(logbuf.LevelError, sp.InstanceSnapshotLocked().Name, fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
 			sp.enterStoppedStateLocked()
 			sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
 			NotifyInstanceStatusChanged(sp.InstanceSnapshotLocked().Name)

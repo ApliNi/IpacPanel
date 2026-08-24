@@ -2,6 +2,7 @@ package process
 
 import (
 	cfg "IpacPanel/controller/src/config"
+	"IpacPanel/controller/src/logbuf"
 	"IpacPanel/controller/src/msg"
 	"context"
 	"errors"
@@ -246,6 +247,7 @@ func rebuildInstanceTasks(instanceName string) error {
 				if err != nil {
 					log.Printf(msg.ParseScheduledTaskFailedLogFmt, instanceName, name, err)
 					errs = append(errs, fmt.Sprintf(msg.ParseScheduledTaskFailedFmt, name, err))
+					_ = logbuf.EmitInstance(logbuf.LevelWarn, instanceName, fmt.Sprintf(msg.ParseScheduledTaskFailedFmt, name, err))
 					limit := cfg.GetHistoryLimit() * 1024
 					sp.Mu.Lock()
 					terminalMsg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.ParseScheduledTaskFailedFmt, name, err))
@@ -273,6 +275,7 @@ func rebuildInstanceTasks(instanceName string) error {
 				if err != nil {
 					log.Printf(msg.RegisterScheduledTaskFailedLogFmt, instanceName, name, err)
 					errs = append(errs, fmt.Sprintf(msg.RegisterScheduledTaskFailedFmt, name, err))
+					_ = logbuf.EmitInstance(logbuf.LevelWarn, instanceName, fmt.Sprintf(msg.RegisterScheduledTaskFailedFmt, name, err))
 					limit := cfg.GetHistoryLimit() * 1024
 					sp.Mu.Lock()
 					terminalMsg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.RegisterScheduledTaskFailedFmt, name, err))

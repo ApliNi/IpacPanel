@@ -41,6 +41,8 @@ const (
 	ChunkOffsetOutsideSize  = "分片偏移超出文件大小"
 	InvalidExpectedChunkSz  = "期望的分片大小无效"
 	InstanceNotFound        = "实例不存在"
+	LogQueryFailed          = "获取运行日志失败"
+	LogQueryLimitInvalidFmt = "运行日志拉取数量必须在 %d-%d 范围内"
 	SSEWriteFailed          = "SSE 写入失败"
 	EmptyDest               = "目标路径为空"
 	DestinationNotDirectory = "目标路径不是目录"

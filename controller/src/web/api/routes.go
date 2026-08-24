@@ -86,6 +86,10 @@ var Routes = []Route{
 	{Path: "/api/controller/update/upload/complete", Policy: adminPost, Handler: HandleApiControllerUpdateUploadComplete},
 	{Path: "/api/controller/update/apply", Policy: adminPost, Handler: HandleApiControllerUpdateApply},
 
+	// Log
+	{Path: "/api/log/get", Policy: userPost, Handler: HandleApiLogGet},
+	{Path: "/api/log/clear", Policy: adminPost, Handler: HandleApiLogClear},
+
 	// Instance
 	{Path: "/api/instance/events", Policy: userSSE, Handler: HandleApiInstanceEvents},
 	{Path: "/api/instance/get", Policy: userPost, Handler: HandleApiInstanceGet},
