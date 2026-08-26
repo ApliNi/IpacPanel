@@ -173,7 +173,8 @@ func (m *InstanceManager) RenameInstance(oldName string, newName string) error {
 func (m *InstanceManager) prepareInstanceForStartLocked(req *IPCRequest) *DaemonInstance {
 	ins, ok := m.instances[req.Instance]
 	if !ok || ins == nil {
-		ins = &DaemonInstance{Name: req.Instance}
+		// StartCount 语义: 未曾启动为 -1, 每次成功启动 +1.
+		ins = &DaemonInstance{Name: req.Instance, Runtime: InstanceRuntimeState{RestartCount: -1}}
 	}
 	ins.Mu.Lock()
 	ins.Name = req.Instance

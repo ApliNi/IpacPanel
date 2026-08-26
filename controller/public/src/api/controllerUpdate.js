@@ -19,15 +19,12 @@ const postJson = async (url, payload = {}) => {
 	return await parseJsonData(res);
 };
 
-export const fetchControllerUpdateStatus = async () => {
-	return await withApiResult(async () => {
-		const res = await authedFetch('/api/controller/update/status');
-		return await parseJsonData(res);
-	}, { logMessage: '[API] 获取面板更新状态失败:' });
-};
-
 export const initControllerUpdateUpload = async (payload) => {
-	return await postJson('/api/controller/update/upload/init', payload);
+	const { replaceMode, ...initPayload } = payload || {};
+	if (replaceMode === undefined) {
+		return await postJson('/api/controller/update/upload/init', payload);
+	}
+	return await postJson('/api/controller/update/upload/init', { ...initPayload, replace_mode: !!replaceMode });
 };
 
 export const completeControllerUpdateUpload = async (uploadId) => {
@@ -36,10 +33,6 @@ export const completeControllerUpdateUpload = async (uploadId) => {
 
 export const abortControllerUpdateUpload = async (uploadId) => {
 	return await postJson('/api/controller/update/upload/abort', { upload_id: uploadId });
-};
-
-export const applyControllerUpdate = async () => {
-	return await postJson('/api/controller/update/apply');
 };
 
 export const uploadControllerUpdateChunk = (uploadId, index, chunk, onProgress, options = {}) => new Promise((resolve, reject) => {

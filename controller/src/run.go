@@ -326,6 +326,8 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 	if err := process.NotifyControllerReady(); err != nil {
 		return fmt.Errorf(msg.NotifyDaemonControllerReadyFailedFmt, err)
 	}
+	api.CleanupReplacedOldBinaries()
+	api.CleanupUpdateTempDir()
 
 	process.RestoreDaemonAutoRestarts(runtimeStates)
 

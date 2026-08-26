@@ -330,7 +330,7 @@ func (s *IPCServer) handleRestartController(req *IPCRequest) *IPCResponse {
 	switch purpose {
 	case ControllerShutdownPurposeRestart:
 	case ControllerShutdownPurposeUpdate:
-		log.Printf("controller restart requested for update")
+		// 更新退出: 管理进程已自行替换文件, 立即重启无需等待.
 		s.controllerUpdateRestartPending.Store(true)
 	default:
 		resp := NewIPCResponse("controller_error", "", nil, "invalid controller shutdown purpose")

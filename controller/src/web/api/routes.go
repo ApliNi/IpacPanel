@@ -79,12 +79,10 @@ var Routes = []Route{
 	{Path: "/api/file/extract", Policy: userSSE, Handler: HandleApiFileExtract},
 
 	// Controller update
-	{Path: "/api/controller/update/status", Policy: adminGet, Handler: HandleApiControllerUpdateStatus},
 	{Path: "/api/controller/update/upload/init", Policy: adminPost, Handler: HandleApiControllerUpdateUploadInit},
 	{Path: "/api/controller/update/upload/chunk", Policy: adminPost, Handler: HandleApiControllerUpdateUploadChunk},
 	{Path: "/api/controller/update/upload/abort", Policy: adminPost, Handler: HandleApiControllerUpdateUploadAbort},
 	{Path: "/api/controller/update/upload/complete", Policy: adminPost, Handler: HandleApiControllerUpdateUploadComplete},
-	{Path: "/api/controller/update/apply", Policy: adminPost, Handler: HandleApiControllerUpdateApply},
 
 	// Log
 	{Path: "/api/log/get", Policy: userPost, Handler: HandleApiLogGet},

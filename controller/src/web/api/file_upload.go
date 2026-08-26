@@ -225,6 +225,7 @@ type fileUploadSession struct {
 	ChunkSize       int64
 	ChunkCount      int
 	Overwrite       bool
+	ReplaceMode     bool
 	CreatedAt       time.Time
 	LastChunkAt     time.Time
 	UploadedCount   int

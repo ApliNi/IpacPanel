@@ -1,5 +1,5 @@
 import { applyWebTitle, mainModalOverlay } from '../ui.js';
-import { abortControllerUpdateUpload, applyControllerUpdate, completeControllerUpdateUpload, fetchControllerUpdateStatus, initControllerUpdateUpload, uploadControllerUpdateChunk } from '../api/controllerUpdate.js';
+import { abortControllerUpdateUpload, completeControllerUpdateUpload, initControllerUpdateUpload, uploadControllerUpdateChunk } from '../api/controllerUpdate.js';
 import { clearTimer, formatFileSize, getUploadErrorText, withActionsDisabled } from '../utils/utils.js';
 import { fetchSettings, restartController, updateSettings } from '../api/settings.js';
 import { InputValidation } from '../utils/inputValidation.js';
@@ -221,6 +221,12 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 							</button>
 							<input id="controllerUpdateFileInput" class="hidden" type="file" accept=".zip" autocomplete="off">
 						</div>
+					<div class="field-group field-group-dynamic-label">
+						<label class="checkbox-group instance-advanced-toggle">
+							<input id="controllerUpdateReplaceMode" type="checkbox" autocomplete="off">
+							<span>以替换方式更新</span>
+						</label>
+					</div>
 						<div id="controllerUpdateProgressWrap" class="file-upload-item hidden">
 							<div class="file-upload-item-head">
 								<span id="controllerUpdateFileName" class="file-upload-item-name"></span>
@@ -311,6 +317,7 @@ const dom = {
 	debugStatus: document.getElementById('panelSettingsDebugStatus'),
 	dropzone: document.getElementById('controllerUpdateDropzone'),
 	fileInput: document.getElementById('controllerUpdateFileInput'),
+	replaceMode: document.getElementById('controllerUpdateReplaceMode'),
 	progressWrap: document.getElementById('controllerUpdateProgressWrap'),
 	fileName: document.getElementById('controllerUpdateFileName'),
 	percent: document.getElementById('controllerUpdatePercent'),
@@ -327,10 +334,6 @@ const panelSettingsState = {
 	closeTimer: null,
 	isBound: false,
 	locked: false,
-	pending: false,
-	selectedFile: null,
-	updateFileName: '',
-	updateFileSize: 0,
 	updateUploadAbortController: null,
 	currentMainPage: 'config',
 	currentConfigPage: 'options',
@@ -876,15 +879,9 @@ const setActionStatus = (text, error = false) => {
 	dom.actionStatus.classList.toggle('error', !!error);
 };
 
-const getErrorMessage = (error, fallback) => {
-	if (error instanceof Error && error.message) return error.message;
-	const message = String(error || '').trim();
-	return message || fallback;
-};
-
 const renderControllerUpdateActions = () => {
 	if (dom.apply) {
-		dom.apply.disabled = panelSettingsState.locked || (!panelSettingsState.pending && !panelSettingsState.selectedFile);
+		dom.apply.disabled = panelSettingsState.locked || !panelSettingsState.selectedFile;
 		dom.apply.textContent = panelSettingsState.selectedFile ? 'UPLOAD' : 'UPDATE';
 	}
 	if (dom.cancel) dom.cancel.disabled = panelSettingsState.locked;
@@ -924,34 +921,12 @@ const renderEmptyControllerUpdate = () => {
 	setUploadError('');
 };
 
-const renderPendingControllerUpdate = () => {
-	dom.progressWrap.classList.remove('hidden');
-	if (dom.fileName) dom.fileName.textContent = panelSettingsState.updateFileName;
-	if (dom.loaded) dom.loaded.textContent = `${formatFileSize(panelSettingsState.updateFileSize)} / ${formatFileSize(panelSettingsState.updateFileSize)}`;
-	if (dom.percent) dom.percent.textContent = '100%';
-	if (dom.status) dom.status.textContent = 'READY';
-	if (dom.progress) dom.progress.style.width = '100%';
-	setUploadError('');
-};
-
-const renderStatus = (data = {}, options = {}) => {
-	panelSettingsState.pending = !!data.pending;
-	if (panelSettingsState.pending) {
-		panelSettingsState.updateFileName = String(data.name || panelSettingsState.updateFileName).trim();
-		panelSettingsState.updateFileSize = Math.max(0, Number(data.size || panelSettingsState.updateFileSize || 0));
-	} else {
-		panelSettingsState.updateFileName = '';
-		panelSettingsState.updateFileSize = 0;
-	}
+const renderStatus = (options = {}) => {
 	if (options.clearSelectedFile === true) {
 		panelSettingsState.selectedFile = null;
 	}
 	if (!panelSettingsState.selectedFile) {
-		if (panelSettingsState.pending) {
-			renderPendingControllerUpdate();
-		} else {
-			renderEmptyControllerUpdate();
-		}
+		renderEmptyControllerUpdate();
 	}
 	renderControllerUpdateActions();
 };
@@ -960,11 +935,7 @@ const stageControllerUpdateFile = (file) => {
 	const validationError = validateControllerUpdateFile(file);
 	if (validationError) {
 		panelSettingsState.selectedFile = null;
-		if (panelSettingsState.pending) {
-			renderPendingControllerUpdate();
-		} else {
-			renderEmptyControllerUpdate();
-		}
+		renderEmptyControllerUpdate();
 		setUploadError(validationError);
 		setActionStatus('SELECT FAILED', true);
 		renderControllerUpdateActions();
@@ -975,15 +946,6 @@ const stageControllerUpdateFile = (file) => {
 	setActionStatus('READY TO UPLOAD');
 	renderControllerUpdateActions();
 	return true;
-};
-
-const refreshStatus = async () => {
-	const result = await fetchControllerUpdateStatus();
-	if (!result.ok) {
-		setActionStatus(result.error || 'LOAD STATUS FAILED', true);
-		return;
-	}
-	renderStatus(result.data || {});
 };
 
 const closeModal = () => {
@@ -1067,27 +1029,28 @@ const uploadControllerUpdateChunks = async (file, uploadId, chunkSize, chunkCoun
 	await Promise.all(workers);
 };
 
-const uploadFile = async (file) => {
+const uploadFile = async (file, replaceMode = false) => {
 	const validationError = validateControllerUpdateFile(file);
 	if (validationError) {
 		setUploadError(validationError);
 		setActionStatus('UPLOAD FAILED', true);
 		return false;
 	}
-	panelSettingsState.updateFileName = String(file.name || '').trim();
 	const chunkSize = file.size > UPDATE_UPLOAD_CHUNK_SIZE ? UPDATE_UPLOAD_CHUNK_SIZE : Math.max(file.size, 1);
 	const chunkCount = Math.max(1, Math.ceil(file.size / chunkSize));
 	setLocked(true);
+	if (dom.replaceMode) dom.replaceMode.disabled = true;
 	const abortController = new AbortController();
 	panelSettingsState.updateUploadAbortController = abortController;
 	let uploadId = '';
 	let shouldAbortRemote = true;
 	try {
 		const init = await initControllerUpdateUpload({
-			name: panelSettingsState.updateFileName,
+			name: String(file.name || '').trim(),
 			size: file.size,
 			chunk_size: chunkSize,
 			chunk_count: chunkCount,
+			replaceMode,
 		});
 		uploadId = init ? init.upload_id : '';
 		if (!uploadId) throw new Error('UPLOAD INIT FAILED');
@@ -1100,9 +1063,13 @@ const uploadFile = async (file) => {
 		updateProgress(file, file.size, 'VERIFYING');
 		const completed = await completeControllerUpdateUpload(uploadId);
 		shouldAbortRemote = false;
-		renderStatus({ ...completed, pending: true, name: panelSettingsState.updateFileName, size: file.size }, { clearSelectedFile: true });
+		if (completed && completed.replaced === true) {
+			renderStatus({ clearSelectedFile: true });
+			return { replaced: true };
+		}
+		renderStatus({ clearSelectedFile: true });
 		setActionStatus('VERIFY PASSED');
-		return true;
+		return { replaced: false };
 	} catch (error) {
 		abortController.abort();
 		console.error('[面板更新] 上传失败:', error);
@@ -1117,33 +1084,29 @@ const uploadFile = async (file) => {
 			panelSettingsState.updateUploadAbortController = null;
 		}
 		setLocked(false);
-	}
-};
-
-const applyControllerUpdateFromSettings = async () => {
-	setLocked(true);
-	try {
-		await applyControllerUpdate();
-		setActionStatus('RESTARTING');
-		void showAlert('管理进程正在重启, 请稍候后刷新页面或等待页面自动恢复.', { title: 'RESTARTING', okText: 'OK' });
-		return true;
-	} catch (error) {
-		setActionStatus(getErrorMessage(error, 'UPDATE FAILED'), true);
-		setLocked(false);
-		return false;
+		if (dom.replaceMode) dom.replaceMode.disabled = false;
 	}
 };
 
 const uploadSelectedFileAndApply = async () => {
 	const file = panelSettingsState.selectedFile;
 	if (!file) return false;
-	const ok = await showConfirm('确认后将上传更新, 管理进程将会重启, 实例进程保持运行.', { title: 'UPDATE', okText: 'UPDATE' });
+	const replaceMode = !!(dom.replaceMode && dom.replaceMode.checked);
+	const ok = await showConfirm(replaceMode ? '替换模式将跳过版本校验并直接替换本机程序文件, 不会重启管理进程.' : '确认后将上传更新, 管理进程自动重启, 实例进程保持运行.', { title: 'UPDATE', okText: 'UPDATE' });
 	if (!ok) return false;
-	const uploaded = await uploadFile(file);
+	const uploaded = await uploadFile(file, replaceMode);
 	if (!uploaded) return false;
 	panelSettingsState.selectedFile = null;
-	setActionStatus('UPDATING');
-	return await applyControllerUpdateFromSettings();
+	if (uploaded.replaced) {
+		setActionStatus('REPLACED');
+		void showAlert('程序文件已替换, 重启服务器后生效.', { title: 'REPLACED', okText: 'OK' });
+		return true;
+	}
+	setActionStatus('RESTARTING');
+	void showAlert('管理进程已更新并重启, 请稍候后刷新页面或等待页面自动恢复.', { title: 'RESTARTING', okText: 'OK' });
+	renderStatus({ clearSelectedFile: true });
+	setLocked(false);
+	return true;
 };
 
 const bindEvents = () => {
@@ -1209,15 +1172,8 @@ const bindEvents = () => {
 		stageControllerUpdateFile(dataTransfer && dataTransfer.files ? dataTransfer.files[0] || null : null);
 	});
 	dom.cancel.addEventListener('click', closeModal);
-	dom.apply.addEventListener('click', async () => {
-		if (panelSettingsState.selectedFile) {
-			void uploadSelectedFileAndApply();
-			return;
-		}
-		if (!panelSettingsState.pending) return;
-		const ok = await showConfirm('确认后将上传更新, 管理进程将会重启, 实例进程保持运行.', { title: 'UPDATE', okText: 'UPDATE' });
-		if (!ok) return;
-		void applyControllerUpdateFromSettings();
+	dom.apply.addEventListener('click', () => {
+		if (panelSettingsState.selectedFile) void uploadSelectedFileAndApply();
 	});
 };
 
@@ -1234,7 +1190,6 @@ export const bootPanelSettingsModal = () => {
 			const loaded = await refreshSettings();
 			finishSettingsLoad(loaded);
 			setActionStatus('');
-			void refreshStatus();
 			if (loaded) dom.webTitle.focus();
 		},
 	};

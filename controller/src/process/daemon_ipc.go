@@ -28,9 +28,7 @@ const (
 	RuntimeCodeManualKill     = ipc.RuntimeCodeManualKill
 	RuntimeCodeRestarting     = ipc.RuntimeCodeRestarting
 	RuntimeCodeUnexpectedExit = ipc.RuntimeCodeUnexpectedExit
-)
 
-const (
 	ControllerShutdownPurposeRestart = ipc.ControllerShutdownPurposeRestart
 	ControllerShutdownPurposeUpdate  = ipc.ControllerShutdownPurposeUpdate
 )
@@ -275,12 +273,15 @@ func SetDaemonDebug(debug bool) error {
 	return err
 }
 
+// RestartController 请求守护进程重启管理进程 (设置页手动重启).
 func RestartController() error {
 	return restartControllerWithPurpose(ControllerShutdownPurposeRestart)
 }
 
-func RestartControllerForUpdate() error {
-	return restartControllerWithPurpose(ControllerShutdownPurposeUpdate)
+// NotifyControllerUpdateExit 在自替换更新完成、管理进程即将退出前调用,
+// 守护进程收到后立即重启, 无需等待常规重启延时.
+func NotifyControllerUpdateExit() error {
+	return restartControllerWithPurpose(ipc.ControllerShutdownPurposeUpdate)
 }
 
 func restartControllerWithPurpose(purpose string) error {
