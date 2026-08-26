@@ -112,8 +112,6 @@ func writeControllerUpdatePackageNameValidationError(w http.ResponseWriter, err 
 		web.WriteAPIError(w, http.StatusBadRequest, msg.ControllerUpdatePackageNameRequired, err)
 	case msg.ControllerUpdatePackageTypeInvalid:
 		web.WriteAPIError(w, http.StatusBadRequest, msg.ControllerUpdatePackageTypeInvalid, err)
-	case msg.ControllerUpdatePackageNameInvalid:
-		web.WriteAPIError(w, http.StatusBadRequest, msg.ControllerUpdatePackageNameInvalid, err)
 	default:
 		web.WriteAPIError(w, http.StatusBadRequest, msg.ControllerUpdatePackageNameInvalid, err)
 	}

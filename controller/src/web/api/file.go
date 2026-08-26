@@ -49,7 +49,7 @@ func requireFileRequestInstance(w http.ResponseWriter, r *http.Request, instance
 
 func writeFileReadResponse(w http.ResponseWriter, relativePath string, targetPath string, file *os.File, size int64) error {
 	if w == nil || file == nil {
-		return errors.New(msg.EmptyDest)
+		return errors.New(msg.InternalResponseWriterMissing)
 	}
 
 	fileName := filepath.Base(targetPath)

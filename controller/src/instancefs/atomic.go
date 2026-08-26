@@ -15,7 +15,7 @@ import (
 func OpenAtomicTempFileWithinRoot(rootPath string, targetPath string, mode os.FileMode) (*os.File, string, error) {
 	targetPath = strings.TrimSpace(targetPath)
 	if targetPath == "" {
-		return nil, "", errors.New(msg.EmptyDest)
+		return nil, "", errors.New(msg.TargetPathEmpty)
 	}
 	if err := EnsurePathComponentsWithinRoot(rootPath, targetPath, false); err != nil {
 		return nil, "", err
@@ -43,7 +43,7 @@ func CommitAtomicTempFileWithinRoot(rootPath string, tempPath string, targetPath
 	tempPath = strings.TrimSpace(tempPath)
 	targetPath = strings.TrimSpace(targetPath)
 	if tempPath == "" || targetPath == "" {
-		return errors.New(msg.EmptyDest)
+		return errors.New(msg.TempPathAndTargetPathRequired)
 	}
 	if err := EnsurePathComponentsWithinRoot(rootPath, tempPath, true); err != nil {
 		return err
@@ -96,7 +96,7 @@ func CommitAtomicTempDirWithinRoot(rootPath string, tempDir string, targetPath s
 	tempDir = strings.TrimSpace(tempDir)
 	targetPath = strings.TrimSpace(targetPath)
 	if tempDir == "" || targetPath == "" {
-		return errors.New(msg.EmptyDest)
+		return errors.New(msg.TempDirectoryAndTargetPathRequired)
 	}
 	if err := EnsurePathComponentsWithinRoot(rootPath, targetPath, false); err != nil {
 		return err
@@ -117,7 +117,7 @@ func CommitAtomicTempDirWithinRoot(rootPath string, tempDir string, targetPath s
 func EnsureDirectoryWithinRoot(rootPath string, dirPath string) error {
 	dirPath = strings.TrimSpace(dirPath)
 	if dirPath == "" {
-		return errors.New(msg.EmptyDest)
+		return errors.New(msg.DirectoryPathEmpty)
 	}
 	if err := EnsurePathComponentsWithinRoot(rootPath, dirPath, false); err != nil {
 		return err
@@ -322,7 +322,7 @@ func RenameFileOnlyWithinRoot(rootPath string, srcPath string, dstPath string, o
 func WriteFileAtomicWithinRoot(rootPath string, targetPath string, data []byte, overwrite bool, mode os.FileMode) error {
 	targetPath = strings.TrimSpace(targetPath)
 	if targetPath == "" {
-		return errors.New(msg.EmptyDest)
+		return errors.New(msg.TargetPathEmpty)
 	}
 	tmp, tmpPath, err := OpenAtomicTempFileWithinRoot(rootPath, targetPath, mode)
 	if err != nil {

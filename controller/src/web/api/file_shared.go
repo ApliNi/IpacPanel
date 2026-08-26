@@ -68,7 +68,7 @@ func writeFileAtomicWithinRoot(rootPath string, targetPath string, data []byte, 
 func writeNewFileAtomic(sp *process.InstanceProcess, targetPath string, data []byte, overwrite bool, mode os.FileMode) error {
 	targetPath = strings.TrimSpace(targetPath)
 	if targetPath == "" {
-		return errors.New(msg.EmptyDest)
+		return errors.New(msg.TargetPathEmpty)
 	}
 	rootPath, err := instancefs.GetInstanceRootPath(sp)
 	if err != nil {

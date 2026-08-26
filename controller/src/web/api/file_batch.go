@@ -468,7 +468,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 		destAbs = filepath.Join(destRoot, filepath.FromSlash(destRel))
 	}
 	if destAbs == "" {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, errors.New(msg.EmptyDest))
+		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, errors.New(msg.TargetPathEmpty))
 		return
 	}
 	if action != "delete" {

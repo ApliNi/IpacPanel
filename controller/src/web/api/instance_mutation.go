@@ -144,7 +144,7 @@ func rollbackDeletedInstance(name string, oldCfg cfg.Config, ip *process.Instanc
 func createInstanceDirAfterPlan(resolvedPath string) (bool, error) {
 	resolvedPath = strings.TrimSpace(resolvedPath)
 	if resolvedPath == "" {
-		return false, errors.New(msg.EmptyDest)
+		return false, errors.New(msg.DirectoryPathEmpty)
 	}
 	created := false
 	if _, err := os.Stat(resolvedPath); err != nil {

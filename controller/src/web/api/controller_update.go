@@ -465,7 +465,7 @@ func prepareControllerUpdateBinary(uploadPath string, workDir string, expectedRo
 	extractDir := filepath.Join(workDir, "extracted-controller")
 	extractedPath := filepath.Join(extractDir, controllerBinaryName())
 	if err := extractControllerFromZip(uploadPath, extractedPath); err != nil {
-		return "", nil, fmt.Errorf(msg.ControllerUpdatePackageInvalidFmt, err)
+		return "", nil, fmt.Errorf("%s: %w", msg.ControllerUpdatePackageInvalid, err)
 	}
 	versionInfo, err := parseUpdateBinaryVersion(extractedPath, expectedRole)
 	if err != nil {
@@ -909,6 +909,8 @@ func writeControllerUpdateInstallError(w http.ResponseWriter, err error) {
 	web.WriteAPIError(w, http.StatusInternalServerError, msg.CommitControllerUpdateFileFailed, err)
 }
 
+// controllerUpdatePrepareUserMessage 将准备阶段错误映射为用户消息:
+// 二进制校验错误使用其细分消息, 其余一律按更新压缩包无效处理.
 func controllerUpdatePrepareUserMessage(err error) string {
 	if err == nil {
 		return msg.ControllerUpdatePackageInvalid
@@ -916,10 +918,6 @@ func controllerUpdatePrepareUserMessage(err error) string {
 	var binaryErr *controllerUpdateBinaryError
 	if errors.As(err, &binaryErr) {
 		return binaryErr.userMessage
-	}
-	message := err.Error()
-	if strings.Contains(message, msg.ControllerBinaryInvalid) {
-		return msg.ControllerBinaryInvalid
 	}
 	return msg.ControllerUpdatePackageInvalid
 }

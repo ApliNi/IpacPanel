@@ -40,7 +40,7 @@ func (fs *InstanceFS) ResolveExtractTarget(relativePath string, extractHere bool
 		return SafePath{}, err
 	}
 	if strings.TrimSpace(targetPath.AbsPath()) == "" {
-		return SafePath{}, errors.New(msg.EmptyDest)
+		return SafePath{}, errors.New(msg.TargetPathEmpty)
 	}
 	if extractHere {
 		info, err := os.Stat(targetPath.AbsPath())
@@ -100,10 +100,10 @@ func (fs *InstanceFS) NewExtractDirCache() *ExtractDirCache {
 
 func (c *ExtractDirCache) Ensure(baseDir string, dir string) error {
 	if c == nil || c.fs == nil {
-		return errors.New(msg.EmptyDest)
+		return errors.New(msg.ExtractDirCacheUninitialized)
 	}
 	if strings.TrimSpace(c.rootPath) == "" {
-		return errors.New(msg.EmptyDest)
+		return errors.New(msg.ExtractRootPathEmpty)
 	}
 	cleanBase := filepath.Clean(baseDir)
 	clean := filepath.Clean(dir)

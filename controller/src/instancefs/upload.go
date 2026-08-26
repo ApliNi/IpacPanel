@@ -65,7 +65,7 @@ func (fs *InstanceFS) ResolveUploadTarget(dirPath string, fileName string) (Uplo
 func (fs *InstanceFS) EnsureUploadTargetDirectory(target UploadTarget) error {
 	targetDir := target.TargetDir()
 	if strings.TrimSpace(targetDir) == "" {
-		return errors.New(msg.EmptyDest)
+		return errors.New(msg.DirectoryPathEmpty)
 	}
 	if err := EnsurePathComponentsWithinRoot(fs.rootPath, targetDir, false); err != nil {
 		return err
@@ -106,7 +106,7 @@ func (fs *InstanceFS) OpenUploadAtomicFile(target UploadTarget, mode os.FileMode
 func (fs *InstanceFS) OpenRegisteredUploadAtomicFile(target UploadTarget, mode os.FileMode) (*os.File, string, error) {
 	targetPath := strings.TrimSpace(target.TargetPath())
 	if targetPath == "" {
-		return nil, "", errors.New(msg.EmptyDest)
+		return nil, "", errors.New(msg.TargetPathEmpty)
 	}
 	if err := EnsurePathComponentsWithinRoot(fs.rootPath, targetPath, false); err != nil {
 		return nil, "", err
@@ -138,7 +138,7 @@ func (fs *InstanceFS) CommitRegisteredUploadFile(tempPath string, target UploadT
 	tempPath = strings.TrimSpace(tempPath)
 	targetPath := strings.TrimSpace(target.TargetPath())
 	if tempPath == "" || targetPath == "" {
-		return false, errors.New(msg.EmptyDest)
+		return false, errors.New(msg.TempPathAndTargetPathRequired)
 	}
 	if err := EnsurePathComponentsWithinRoot(fs.rootPath, tempPath, true); err != nil {
 		return false, err
