@@ -33,6 +33,9 @@ const (
 	controllerUpdateUploadID      = "controller-update"
 	controllerUpdateMaxBinarySize = 512 * 1024 * 1024
 	controllerUpdateDocsStageDir  = "controller-docs"
+
+	updateRoleController = "controller"
+	updateRoleDaemon     = "daemon"
 )
 
 var controllerUpdateRootDocNames = map[string]struct{}{
@@ -136,7 +139,9 @@ func (e *controllerUpdateBinaryError) Unwrap() error {
 	return e.err
 }
 
-func parseControllerVersion(binaryPath string) (*controllerUpdateVersionInfo, error) {
+// parseUpdateBinaryVersion 运行新二进制的 --version 命令 (60 秒超时) 并解析 YAML 输出,
+// 校验角色与 expectedRole 一致. 不校验守护进程协议, 允许跨协议版本更新.
+func parseUpdateBinaryVersion(binaryPath string, expectedRole string) (*controllerUpdateVersionInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binaryPath, "--version")
@@ -153,11 +158,8 @@ func parseControllerVersion(binaryPath string) (*controllerUpdateVersionInfo, er
 	if err := yaml.Unmarshal(output, &wrapper); err != nil {
 		return nil, &controllerUpdateBinaryError{userMessage: msg.ControllerBinaryVersionOutputInvalid, err: err}
 	}
-	if wrapper.Version.Role != "controller" {
-		return nil, &controllerUpdateBinaryError{userMessage: fmt.Sprintf(msg.ControllerBinaryRoleInvalidFmt, wrapper.Version.Role)}
-	}
-	if wrapper.Version.DaemonProtocol != version.DaemonProtocol {
-		return nil, &controllerUpdateBinaryError{userMessage: fmt.Sprintf(msg.ControllerBinaryDaemonProtocolMismatchFmt, version.DaemonProtocol, wrapper.Version.DaemonProtocol)}
+	if wrapper.Version.Role != expectedRole {
+		return nil, &controllerUpdateBinaryError{userMessage: msg.ControllerBinaryRoleInvalid}
 	}
 	return &wrapper.Version, nil
 }
@@ -459,13 +461,13 @@ func copyControllerUpdateDocFile(sourcePath string, targetPath string, mode os.F
 	return nil
 }
 
-func prepareControllerUpdateBinary(uploadPath string, workDir string) (string, *controllerUpdateVersionInfo, error) {
+func prepareControllerUpdateBinary(uploadPath string, workDir string, expectedRole string) (string, *controllerUpdateVersionInfo, error) {
 	extractDir := filepath.Join(workDir, "extracted-controller")
 	extractedPath := filepath.Join(extractDir, controllerBinaryName())
 	if err := extractControllerFromZip(uploadPath, extractedPath); err != nil {
 		return "", nil, fmt.Errorf(msg.ControllerUpdatePackageInvalidFmt, err)
 	}
-	versionInfo, err := parseControllerVersion(extractedPath)
+	versionInfo, err := parseUpdateBinaryVersion(extractedPath, expectedRole)
 	if err != nil {
 		return "", nil, err
 	}
@@ -807,12 +809,19 @@ func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Requ
 		}
 	}()
 	var updateBinaryPath string
+	var versionInfo *controllerUpdateVersionInfo
 	var err error
 	if !session.ReplaceMode {
-		updateBinaryPath, _, err = prepareControllerUpdateBinary(session.StagePath, workDir)
+		updateBinaryPath, versionInfo, err = prepareControllerUpdateBinary(session.StagePath, workDir, updateRoleController)
 		if err != nil {
 			completionStatus = uploadSessionActive
 			web.WriteAPIError(w, http.StatusBadRequest, controllerUpdatePrepareUserMessage(err), err)
+			return
+		}
+		if versionInfo.DaemonProtocol != version.DaemonProtocol {
+			completionStatus = uploadSessionActive
+			err := errors.New(msg.ControllerProtocolMismatch)
+			web.WriteAPIError(w, http.StatusBadRequest, err.Error(), err)
 			return
 		}
 	}
@@ -824,25 +833,18 @@ func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Requ
 		log.Printf(msg.ControllerUpdateDocsStagingCompletedLogFmt, stagedDocCount)
 	}
 	docsStaged := err == nil
-	if session.ReplaceMode {
-		if err := installControllerUpdateReplace(session.StagePath, workDir); err != nil {
-			_ = file.RemoveRegisteredTempPath(workDir)
-			workDirRemoved = true
-			completionStatus = uploadSessionActive
-			var replaceErr *controllerUpdateReplaceError
-			if errors.As(err, &replaceErr) {
-				web.WriteAPIError(w, replaceErr.status, replaceErr.userMessage, replaceErr.err)
-			} else {
-				web.WriteAPIError(w, http.StatusInternalServerError, msg.CommitControllerUpdateFileFailed, err)
-			}
-			return
-		}
-		if !commitControllerUpdateReplaceSession(session) {
-			_ = file.RemoveRegisteredTempPath(workDir)
-			workDirRemoved = true
+	// 清理任务目录, 无论清理是否成功都不再由 defer 重试.
+	removeWorkDir := func() {
+		_ = file.RemoveRegisteredTempPath(workDir)
+		workDirRemoved = true
+	}
+	// 提交会话并应用文档, 返回 false 表示会话已被取消或被其他请求接管.
+	commitAndApplyDocs := func() bool {
+		if !commitControllerUpdateSession(session) {
+			removeWorkDir()
 			completionStatus = uploadSessionCanceled
 			writeUploadCanceled(w)
-			return
+			return false
 		}
 		completionStatus = uploadSessionCommitted
 		signalUploadCompletion(session)
@@ -856,48 +858,37 @@ func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Requ
 			}
 			workDirRemoved = true
 		}
+		return true
+	}
+	if session.ReplaceMode {
+		if err := installControllerUpdateReplace(session.StagePath, workDir); err != nil {
+			removeWorkDir()
+			completionStatus = uploadSessionActive
+			writeControllerUpdateInstallError(w, err)
+			return
+		}
+		if !commitAndApplyDocs() {
+			return
+		}
 		web.WriteOK(w, map[string]interface{}{"replaced": true})
 		return
 	}
 	// 常规模式: 校验通过后管理进程替换自身并退出, 由守护进程重启加载新版本.
 	execPath, err := os.Executable()
 	if err != nil {
-		_ = file.RemoveRegisteredTempPath(workDir)
-		workDirRemoved = true
+		removeWorkDir()
 		completionStatus = uploadSessionActive
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.CommitControllerUpdateFileFailed, err)
 		return
 	}
 	if err := installReplacedBinary(updateBinaryPath, execPath); err != nil {
-		_ = file.RemoveRegisteredTempPath(workDir)
-		workDirRemoved = true
+		removeWorkDir()
 		completionStatus = uploadSessionActive
-		var replaceErr *controllerUpdateReplaceError
-		if errors.As(err, &replaceErr) {
-			web.WriteAPIError(w, replaceErr.status, replaceErr.userMessage, replaceErr.err)
-		} else {
-			web.WriteAPIError(w, http.StatusInternalServerError, msg.CommitControllerUpdateFileFailed, err)
-		}
+		writeControllerUpdateInstallError(w, err)
 		return
 	}
-	if !commitControllerUpdateReplaceSession(session) {
-		_ = file.RemoveRegisteredTempPath(workDir)
-		workDirRemoved = true
-		completionStatus = uploadSessionCanceled
-		writeUploadCanceled(w)
+	if !commitAndApplyDocs() {
 		return
-	}
-	completionStatus = uploadSessionCommitted
-	signalUploadCompletion(session)
-	if docsStaged {
-		applyControllerUpdateStagedDocs(docsStagingDir)
-	}
-	// 文档应用完成后整体删除任务目录.
-	if session.CleanupPath != "" {
-		if err := file.RemoveRegisteredTempPath(session.CleanupPath); err != nil {
-			log.Printf(msg.RemoveControllerUpdateTaskDirFailedLogFmt, err)
-		}
-		workDirRemoved = true
 	}
 	web.WriteOK(w, map[string]interface{}{"restarting": true})
 	// 先让响应发出, 再通知守护进程立即重启并退出自身.
@@ -905,6 +896,17 @@ func HandleApiControllerUpdateUploadComplete(w http.ResponseWriter, r *http.Requ
 		log.Printf(msg.NotifyControllerUpdateExitFailedLogFmt, err)
 	}
 	requestControllerShutdown()
+}
+
+// writeControllerUpdateInstallError 统一响应安装阶段错误:
+// controllerUpdateReplaceError 携带的状态码与用户消息, 其余按内部错误处理.
+func writeControllerUpdateInstallError(w http.ResponseWriter, err error) {
+	var replaceErr *controllerUpdateReplaceError
+	if errors.As(err, &replaceErr) {
+		web.WriteAPIError(w, replaceErr.status, replaceErr.userMessage, replaceErr.err)
+		return
+	}
+	web.WriteAPIError(w, http.StatusInternalServerError, msg.CommitControllerUpdateFileFailed, err)
 }
 
 func controllerUpdatePrepareUserMessage(err error) string {
@@ -968,9 +970,9 @@ func (e *controllerUpdateReplaceError) Unwrap() error {
 	return e.err
 }
 
-// commitControllerUpdateReplaceSession 将替换模式会话标记为已提交并移出会话表,
-// 返回 false 表示会话已被取消或被其他请求接管.
-func commitControllerUpdateReplaceSession(session *fileUploadSession) bool {
+// commitControllerUpdateSession 将更新会话标记为已提交并移出会话表,
+// 常规模式与替换模式共用, 返回 false 表示会话已被取消或被其他请求接管.
+func commitControllerUpdateSession(session *fileUploadSession) bool {
 	uploads.mu.Lock()
 	defer uploads.mu.Unlock()
 	current, ok := uploads.sessions[session.UploadID]
@@ -982,9 +984,9 @@ func commitControllerUpdateReplaceSession(session *fileUploadSession) bool {
 	delete(uploads.sessions, session.UploadID)
 	return true
 }
-
-// 跳过版本校验, 先提取到 workDir 并以 *.replace 名暂存在任务目录 data/temp/ 中,
-// 再原子替换可执行文件所在目录中的旧文件; 原文件不存在 *.old 备份时先重命名备份,
+// 先提取到 workDir 并以 *.replace 名暂存在任务目录 data/temp/ 中, 再原子替换可执行文件
+// 所在目录中的旧文件; 每个二进制先并行运行 --version 校验角色 (守护进程=daemon, 管理进程=controller),
+// 不校验守护进程协议, 不比较版本号新旧. 原文件不存在 *.old 备份时先重命名备份,
 // 已有备份则直接尝试覆盖 (Windows 上运行中的守护进程镜像无法覆盖时整体失败, 不回滚).
 func installControllerUpdateReplace(stageZipPath string, workDir string) error {
 	execPath, err := os.Executable()
@@ -999,27 +1001,30 @@ func installControllerUpdateReplace(stageZipPath string, workDir string) error {
 	defer reader.Close()
 
 	type controllerUpdateReplaceTarget struct {
-		zipName    string
-		workPath   string
-		stagedPath string
-		targetPath string
-		isDaemon   bool
+		zipName      string
+		workPath     string
+		stagedPath   string
+		targetPath   string
+		isDaemon     bool
+		expectedRole string
 	}
 	daemonName := daemonBinaryName()
 	controllerName := controllerBinaryName()
 	targets := []controllerUpdateReplaceTarget{
 		{
-			zipName:    daemonName,
-			workPath:   filepath.Join(workDir, daemonName),
-			stagedPath: filepath.Join(workDir, replaceModeStagingName(daemonName)),
-			targetPath: filepath.Join(baseDir, daemonName),
-			isDaemon:   true,
+			zipName:      daemonName,
+			workPath:     filepath.Join(workDir, daemonName),
+			stagedPath:   filepath.Join(workDir, replaceModeStagingName(daemonName)),
+			targetPath:   filepath.Join(baseDir, daemonName),
+			isDaemon:     true,
+			expectedRole: updateRoleDaemon,
 		},
 		{
-			zipName:    controllerName,
-			workPath:   filepath.Join(workDir, controllerName),
-			stagedPath: filepath.Join(workDir, replaceModeStagingName(controllerName)),
-			targetPath: filepath.Join(baseDir, controllerName),
+			zipName:      controllerName,
+			workPath:     filepath.Join(workDir, controllerName),
+			stagedPath:   filepath.Join(workDir, replaceModeStagingName(controllerName)),
+			targetPath:   filepath.Join(baseDir, controllerName),
+			expectedRole: updateRoleController,
 		},
 	}
 	for i := range targets {
@@ -1033,6 +1038,25 @@ func installControllerUpdateReplace(stageZipPath string, workDir string) error {
 		if err := extractControllerZipEntry(candidate, targets[i].workPath); err != nil {
 			return &controllerUpdateReplaceError{status: http.StatusBadRequest, userMessage: msg.ControllerUpdatePackageInvalid, err: err}
 		}
+	}
+	// 并行运行各二进制的 --version 角色校验, 任一失败即整体中止.
+	versionErrs := make([]error, len(targets))
+	var versionWg sync.WaitGroup
+	for i := range targets {
+		versionWg.Add(1)
+		go func(i int) {
+			defer versionWg.Done()
+			_, err := parseUpdateBinaryVersion(targets[i].workPath, targets[i].expectedRole)
+			versionErrs[i] = err
+		}(i)
+	}
+	versionWg.Wait()
+	for i := range targets {
+		if versionErrs[i] != nil {
+			return &controllerUpdateReplaceError{status: http.StatusBadRequest, userMessage: controllerUpdatePrepareUserMessage(versionErrs[i]), err: versionErrs[i]}
+		}
+	}
+	for i := range targets {
 		// 暂存到任务目录中, 覆盖已有同名暂存文件.
 		if err := compat.ReplaceFileAtomic(targets[i].workPath, targets[i].stagedPath); err != nil {
 			return &controllerUpdateReplaceError{status: http.StatusInternalServerError, userMessage: msg.CommitControllerUpdateFileFailed, err: err}
