@@ -783,8 +783,9 @@ input[type="password"] {
 	color: var(--text-subtle-color);
 }
 .dashboard-chart .u-legend tbody::before {
+	/* 使文字达到占位所需的统一长度 */
 	content: 'ABCD';
-	margin-right: 5px;
+	margin-right: 14px;
 	color: transparent;
 }
 
@@ -816,6 +817,10 @@ input[type="password"] {
 }
 
 .dashboard-chart .u-title {
+	display: none;
+}
+
+.dashboard-chart .u-legend .u-series:nth-child(1) .u-marker {
 	display: none;
 }
 

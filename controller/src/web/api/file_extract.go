@@ -119,13 +119,15 @@ type extractProgressReporter struct {
 	processedBytes int64
 	lastAt         time.Time
 	minInterval    time.Duration
+	userValid      func() bool
 }
 
-func newExtractProgressReporter(sse *web.SSEWriter, total int) *extractProgressReporter {
+func newExtractProgressReporter(sse *web.SSEWriter, total int, userValid func() bool) *extractProgressReporter {
 	return &extractProgressReporter{
 		sse:         sse,
 		total:       total,
 		minInterval: sseProgressThrottleInterval,
+		userValid:   userValid,
 	}
 }
 
@@ -196,6 +198,10 @@ func (e *fileExtractProgressError) Is(target error) bool {
 func (p *extractProgressReporter) send(force bool) error {
 	if p == nil || p.sse == nil {
 		return nil
+	}
+	// 进度上报前重验用户: 已禁用或被删除则中止任务.
+	if p.userValid != nil && !p.userValid() {
+		return newFileExtractProgressError(errUserStreamInactive)
 	}
 	now := time.Now()
 	if !force && !p.lastAt.IsZero() && now.Sub(p.lastAt) < p.minInterval {
@@ -316,7 +322,7 @@ func (r *extractReadCloser) Close() error {
 	return firstErr
 }
 
-func extractArchiveWithFormat(ctx context.Context, fs *instancefs.InstanceFS, format archives.Format, archivePath string, targetAbs string, extractHere bool, overwrite bool, sse *web.SSEWriter) (*extractResult, error) {
+func extractArchiveWithFormat(ctx context.Context, fs *instancefs.InstanceFS, format archives.Format, archivePath string, targetAbs string, extractHere bool, overwrite bool, sse *web.SSEWriter, userValid func() bool) (*extractResult, error) {
 	archiveReader, err := openArchiveReader(format, archivePath)
 	if err != nil {
 		return nil, err
@@ -339,7 +345,7 @@ func extractArchiveWithFormat(ctx context.Context, fs *instancefs.InstanceFS, fo
 			return nil, errExtractInvalidPath
 		}
 	}
-	progress := newExtractProgressReporter(sse, 0)
+	progress := newExtractProgressReporter(sse, 0, userValid)
 
 	err = extraction.Extract(ctx, archiveReader, func(ctx context.Context, info archives.FileInfo) error {
 		select {
@@ -416,6 +422,12 @@ func HandleApiFileExtract(w http.ResponseWriter, r *http.Request) {
 		web.WriteUnauthorized(w)
 		return
 	}
+	release, ok := web.AcquireSSESlot(r)
+	if !ok {
+		web.WriteAPIError(w, http.StatusTooManyRequests, msg.TooManyStreams, nil)
+		return
+	}
+	defer release()
 	sp, ok := web.RequireInstanceProcessByName(w, authedUser, req.Instance)
 	if !ok {
 		return
@@ -519,7 +531,8 @@ func HandleApiFileExtract(w http.ResponseWriter, r *http.Request) {
 		sendFileExtractFailure(sse, message)
 		return
 	}
-	result, err := extractArchiveWithFormat(r.Context(), fs, format, archivePath, targetAbs, req.ExtractHere, req.Overwrite, sse)
+	username := authedUser.User
+	result, err := extractArchiveWithFormat(r.Context(), fs, format, archivePath, targetAbs, req.ExtractHere, req.Overwrite, sse, func() bool { return userStreamActive(username) })
 	if err != nil {
 		if errors.Is(err, errFileExtractProgressSend) {
 			web.MarkAPIError(w, http.StatusInternalServerError, msg.WriteExtractProgressFailed, err)

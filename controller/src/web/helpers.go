@@ -202,6 +202,12 @@ func ParseInstanceControlParams(w http.ResponseWriter, r *http.Request) (string,
 		WriteAPIError(w, http.StatusBadRequest, msg.ActionRequired, nil)
 		return "", "", false
 	}
+	switch action {
+	case "start", "stop", "kill", "restart":
+	default:
+		WriteAPIError(w, http.StatusBadRequest, msg.InvalidOperation, nil)
+		return "", "", false
+	}
 	return name, action, true
 }
 

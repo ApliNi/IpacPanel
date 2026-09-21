@@ -4,7 +4,7 @@ import (
 	"IpacPanel/controller/src/msg"
 	"IpacPanel/controller/src/web/authz"
 	"errors"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"time"
@@ -13,13 +13,11 @@ import (
 	web "IpacPanel/controller/src/web"
 )
 
-var loginDelayRng = rand.New(rand.NewSource(time.Now().UnixNano()))
-
 // loginFailureDelay sleeps a random duration between 20-100ms before returning
 // login failures, preventing timing attacks that could distinguish valid
 // usernames, password correctness, or PoW validity by response latency.
 func loginFailureDelay() {
-	ms := 20 + loginDelayRng.Intn(81) // [20, 100]
+	ms := 20 + rand.IntN(81) // [20, 100]
 	time.Sleep(time.Duration(ms) * time.Millisecond)
 }
 
@@ -53,14 +51,17 @@ func HandleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
 	username := authz.NormalizeUsername(req.User)
 	password := req.Pass
 	if err := cfg.ValidateUserName(username); err != nil {
+		loginFailureDelay()
 		writeUserNameValidationError(w, err)
 		return
 	}
 	if err := cfg.ValidateUserPassword(password); err != nil {
+		loginFailureDelay()
 		writeUserPasswordValidationError(w, err)
 		return
 	}
 	if username == "" || strings.TrimSpace(password) == "" {
+		loginFailureDelay()
 		web.WriteAPIError(w, http.StatusBadRequest, msg.UsernameOrPasswordRequired, nil)
 		return
 	}
@@ -109,7 +110,7 @@ func HandleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if u.Perm == 0 {
 		loginFailureDelay()
-		web.WriteAPIError(w, http.StatusUnauthorized, msg.UserDisabled, nil)
+		web.WriteAPIError(w, http.StatusUnauthorized, msg.InvalidUsernameOrPassword, nil)
 		return
 	}
 	web.MarkRequestUser(w, username)

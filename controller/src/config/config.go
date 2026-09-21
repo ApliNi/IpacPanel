@@ -793,7 +793,7 @@ func writeConfigAtomic(path string, data []byte) error {
 	if path == "" {
 		path = "config.yml"
 	}
-	return file.WriteFile(path, data, file.Options{Overwrite: true, Mode: 0644, SyncDir: true})
+	return file.WriteFile(path, data, file.Options{Overwrite: true, Mode: 0600, SyncDir: true})
 }
 
 func loadAuth() ([]AuthUser, error) {
@@ -924,6 +924,10 @@ func LoadConfig() error {
 	if err := EnsureAdminUser(); err != nil {
 		return err
 	}
+	os.MkdirAll(ResolveDataPath(""), 0700)
+	if err := file.CleanupOrphanAtomicTemps(ResolveDataPath("")); err != nil {
+		log.Printf(msg.CleanupOrphanAtomicTempsFailedFmt, err)
+	}
 	return nil
 }
 
@@ -955,7 +959,7 @@ func CreateConfigFileSnapshot(cfg Config) error {
 	if err != nil {
 		return err
 	}
-	if err := file.WriteFile(ResolveDataPath("config.yml"), data, file.Options{Overwrite: false, Mode: 0644, SyncDir: true}); err != nil {
+	if err := file.WriteFile(ResolveDataPath("config.yml"), data, file.Options{Overwrite: false, Mode: 0600, SyncDir: true}); err != nil {
 		if os.IsExist(err) || errors.Is(err, os.ErrExist) {
 			// Concurrent creation means the config file already exists.
 			return nil

@@ -198,6 +198,12 @@ func HandleApiDashboardEvents(w http.ResponseWriter, r *http.Request) {
 		web.WriteAPIError(w, http.StatusUnauthorized, msg.Unauthorized, nil)
 		return
 	}
+	release, ok := web.AcquireSSESlot(r)
+	if !ok {
+		web.WriteAPIError(w, http.StatusTooManyRequests, msg.TooManyStreams, nil)
+		return
+	}
+	defer release()
 	sse, ok := web.BeginSSE(w)
 	if !ok {
 		return
@@ -208,6 +214,10 @@ func HandleApiDashboardEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	isAdmin := isDashboardAdmin(authedUser)
+	var username string
+	if authedUser != nil {
+		username = authedUser.User
+	}
 	minutes, ok := parseDashboardStreamMinutes(sse, req.Minutes)
 	if !ok {
 		return
@@ -275,6 +285,25 @@ func HandleApiDashboardEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-sampleTicker.C:
+			if username != "" {
+				// 公共仪表板 (username 为空) 跳过重验; 登录用户被禁用或删除时断开连接.
+				freshUser, stillValid := authz.AuthUserByUsername(username)
+				if !stillValid {
+					return
+				}
+				if freshUser != authedUser {
+					authedUser = freshUser
+					// isAdmin 依赖 authedUser 指针, 重验后需重建; nic/disk 随权限同步.
+					isAdmin = isDashboardAdmin(authedUser)
+					if isAdmin {
+						nic = strings.TrimSpace(req.NIC)
+						disk = strings.TrimSpace(req.Disk)
+					} else {
+						nic = ""
+						disk = ""
+					}
+				}
+			}
 			metadata := dashboardCollector.Metadata()
 			if metadata.Enabled != lastEnabled || metadata.MemoryMaxMin != lastMemoryMaxMin {
 				if !sendFull(dashboardCollector.Snapshot(minutes, nic, disk, dashboardMaxPoints)) {

@@ -1,6 +1,6 @@
 module IpacPanel
 
-go 1.26.1
+go 1.26.6
 
 require (
 	github.com/UserExistsError/conpty v0.1.4
@@ -13,7 +13,7 @@ require (
 
 require (
 	github.com/go-co-op/gocron/v2 v2.22.0
-	github.com/klauspost/compress v1.18.6
+	github.com/klauspost/compress v1.18.7
 	github.com/mholt/archives v0.1.5
 	github.com/shirou/gopsutil/v4 v4.26.4
 	golang.org/x/sys v0.45.0

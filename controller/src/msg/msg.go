@@ -45,6 +45,7 @@ const (
 	LogQueryLimitInvalidFmt = "运行日志拉取数量必须在 %d-%d 范围内"
 	PublicAssetReadFailed   = "读取前端入口文件失败"
 	SSEWriteFailed          = "SSE 写入失败"
+	TooManyStreams          = "并发流数量已达上限"
 	DirectoryPathEmpty      = "目录路径为空"
 	DestinationNotDirectory = "目标路径不是目录"
 
@@ -84,6 +85,7 @@ const (
 	ReadAuthFileFailedFmt                      = "读取 auth.yml 失败: %w"
 	ReadInstancesFileFailedFmt                 = "读取 instances.yml 失败: %w"
 	CreateConfigFileFailedFmt                  = "创建 config.yml 失败: %w"
+	CleanupOrphanAtomicTempsFailedFmt          = "清理孤儿原子临时文件失败: %v"
 	HistorySizeInvalidFmt                      = "HISTORY SIZE 必须在 %d-%d 范围内"
 	PowTaskCountInvalidFmt                     = "TASK COUNT 必须在 %d-%d 范围内"
 	PowDifficultyInvalidFmt                    = "DIFFICULTY 必须在 %d-%d 范围内"
@@ -255,6 +257,7 @@ const (
 	PartialDeleteFailed                                             = "部分文件删除失败"
 	PartialDeleteFailedCountFmt                                     = "部分文件删除失败: %d 项失败"
 	InvalidOperation                                                = "无效操作"
+	OperationFailed                                                 = "操作失败"
 	TargetNotFound                                                  = "目标不存在"
 	TargetDirectoryInsideSource                                     = "目标目录是源目录的子目录"
 	TargetSameAsSource                                              = "目标与源相同"

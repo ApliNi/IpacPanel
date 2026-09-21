@@ -5,8 +5,9 @@ import (
 	"IpacPanel/controller/src/web/authz"
 
 	cfg "IpacPanel/controller/src/config"
-	process "IpacPanel/controller/src/process"
 	"IpacPanel/controller/src/logbuf"
+	"IpacPanel/controller/src/msg"
+	process "IpacPanel/controller/src/process"
 
 	"net/http"
 	"time"
@@ -26,6 +27,12 @@ func HandleApiInstanceEvents(w http.ResponseWriter, r *http.Request) {
 	if !web.DecodeJSONBody(w, r, &req) {
 		return
 	}
+	release, ok := web.AcquireSSESlot(r)
+	if !ok {
+		web.WriteAPIError(w, http.StatusTooManyRequests, msg.TooManyStreams, nil)
+		return
+	}
+	defer release()
 	sse, ok := web.BeginSSE(w)
 	if !ok {
 		return
@@ -80,7 +87,18 @@ func HandleApiInstanceEvents(w http.ResponseWriter, r *http.Request) {
 	ticker := time.NewTicker(sseKeepaliveInterval)
 	defer ticker.Stop()
 
+	username := authedUser.User
 	for {
+		// SSE 保持期间重验用户: 若已禁用或被删除, 直接断开连接.
+		freshUser, stillValid := authz.AuthUserByUsername(username)
+		if !stillValid {
+			return
+		}
+		if freshUser != authedUser {
+			authedUser = freshUser
+			logFilter = logbufVisibleFilter(authedUser)
+			lastLogCount = -1
+		}
 		select {
 		case <-ctx.Done():
 			return

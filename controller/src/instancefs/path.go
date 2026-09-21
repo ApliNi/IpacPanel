@@ -447,6 +447,11 @@ func EnsureFileName(name string) (string, error) {
 	if strings.ContainsAny(name, `\\/:*?"<>|`) {
 		return "", errors.New(msg.FileNameInvalidChars)
 	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return "", errors.New(msg.FileNameInvalidChars)
+		}
+	}
 	return name, nil
 }
 

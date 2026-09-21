@@ -80,7 +80,9 @@ func stopTaskScheduler() {
 	ts.Mu.Lock()
 	ts.Stopping = true
 	for key, job := range ts.Jobs {
-		ts.Scheduler.RemoveJob(job.ID())
+		if err := ts.Scheduler.RemoveJob(job.ID()); err != nil {
+			log.Printf(msg.DeleteScheduledTaskFailedLogFmt, key, err)
+		}
 		delete(ts.Jobs, key)
 	}
 	if ts.Cond != nil {
@@ -150,11 +152,21 @@ func finishInstanceTaskRebuild(ts *instanceTaskScheduler, instanceName string, t
 	return target, false, nil
 }
 
+func taskJobKey(instanceName string, taskName string) string {
+	return instanceName + "::" + taskName
+}
+
+// deleteInstanceTaskJobsLocked 移除属于指定实例的全部计划任务作业.
+// 返回收集到的移除错误; 移除失败 (如与并发 Shutdown 竞争) 时作业仍挂调度器持续触发,
+// 此时保留地图项以便后续重建或停止时再次尝试移除.
 func deleteInstanceTaskJobsLocked(ts *instanceTaskScheduler, instanceName string) []string {
 	var errs []string
 	for key, job := range ts.Jobs {
 		if strings.HasPrefix(key, instanceName+"::") {
-			ts.Scheduler.RemoveJob(job.ID())
+			if err := ts.Scheduler.RemoveJob(job.ID()); err != nil {
+				errs = append(errs, fmt.Sprintf(msg.DeleteScheduledTaskFailedFmt, key, err))
+				continue
+			}
 			delete(ts.Jobs, key)
 		}
 	}
@@ -162,10 +174,6 @@ func deleteInstanceTaskJobsLocked(ts *instanceTaskScheduler, instanceName string
 	delete(ts.Completed, instanceName)
 	delete(ts.Rebuilding, instanceName)
 	return errs
-}
-
-func taskJobKey(instanceName string, taskName string) string {
-	return instanceName + "::" + taskName
 }
 
 func rebuildAllInstanceTasksLocked() {

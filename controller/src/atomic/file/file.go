@@ -564,3 +564,25 @@ func nextSequenceSuffix() string {
 	seq := atomic.AddUint64(&tempSequence, 1)
 	return strconv.FormatUint(seq, 10)
 }
+
+func CleanupOrphanAtomicTemps(baseDir string) error {
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var errs []error
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(entry.Name(), tempPrefix+"-") {
+			if err := os.Remove(filepath.Join(baseDir, entry.Name())); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}

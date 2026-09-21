@@ -9,20 +9,13 @@ import (
 	"github.com/go-co-op/gocron/v2"
 )
 
-// taskCronValidator validates strict standard 5-field Unix/Linux cron
-// expressions:
+// NormalizeTaskExpr 校验并规范化严格 5 段标准 Unix/Linux cron 表达式:
 //
 //	分 时 日 月 周   (minute hour day-of-month month day-of-week)
 //
-// The legacy Quartz features (seconds field, year field, '?' and L/W/# special
-// characters) and auto-completion behaviors are deliberately excluded. It also
-// refuses descriptors like "@daily" so that the schedule never embeds a
-// descriptor, keeping timezone management explicit.
-//
-// The optional timezone prefix (TZ= or CRON_TZ=) is handled by
-// BuildTaskSchedule, not by this validator.
-var taskCronValidator = gocron.NewDefaultCron(false)
-
+// 旧版 Quartz 特性 (秒字段、年字段、'?' 与 L/W/# 特殊字符) 及自动补全行为被刻意排除.
+// 同时拒绝 "@daily" 类描述符, 使调度从不内嵌描述符, 时间源管理保持显式.
+// TZ= 或 CRON_TZ= 前缀由 BuildTaskSchedule 处理, 不在此校验器内.
 func NormalizeTaskExpr(expr string) (string, error) {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
@@ -44,7 +37,9 @@ func NormalizeTaskExpr(expr string) (string, error) {
 			return "", errors.New(msg.TaskExprInvalid)
 		}
 	}
-	if err := taskCronValidator.IsValid(strings.Join(parts, " "), time.Local, time.Now()); err != nil {
+	// gocron 的 defaultCron.IsValid 会把解析结果写入内部字段, 并发调用同一校验器会触发数据竞态,
+	// 因此每次校验新建 validator, 与 gocron 自身为每个 job 复制 defaultCron 的方式保持一致.
+	if err := gocron.NewDefaultCron(false).IsValid(strings.Join(parts, " "), time.Local, time.Now()); err != nil {
 		return "", errors.New(msg.TaskExprInvalid)
 	}
 	return strings.Join(parts, " "), nil

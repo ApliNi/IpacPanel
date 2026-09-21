@@ -825,6 +825,10 @@ const showPage = (onOpenInstance) => {
 	ensureInstanceStatusSubscription(onOpenInstance);
 	instanceStatusStore.start();
 	logStore.start();
+	// 每次打开实例列表页面时聚焦到搜索框
+	if (dom.instanceSearch) {
+		dom.instanceSearch.focus();
+	}
 };
 
 const hidePage = () => {

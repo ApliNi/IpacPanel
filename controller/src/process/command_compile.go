@@ -62,10 +62,20 @@ func compileScriptCommandArgv(argv []string, path string) ([]string, error) {
 			if err := validateWindowsBatchCommandArgs(args); err != nil {
 				return nil, err
 			}
-			return []string{"cmd.exe", "/d", "/s", "/c", windowsCommandLine(args)}, nil
+			systemRoot := os.Getenv("SystemRoot")
+			cmdPath := systemRoot + "\\System32\\cmd.exe"
+			if systemRoot == "" {
+				cmdPath = "cmd.exe"
+			}
+			return []string{cmdPath, "/d", "/s", "/c", windowsCommandLine(args)}, nil
 		case ".ps1":
 			args[0] = script.runPath
-			return append([]string{"powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"}, args...), nil
+			systemRoot := os.Getenv("SystemRoot")
+			psPath := systemRoot + "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+			if systemRoot == "" {
+				psPath = "powershell.exe"
+			}
+			return append([]string{psPath, "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"}, args...), nil
 		}
 	case "linux", "darwin", "freebsd", "openbsd", "netbsd":
 		if ext == ".sh" && isExecutableScript(script.statPath) {

@@ -444,6 +444,12 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 		web.WriteUnauthorized(w)
 		return
 	}
+	release, ok := web.AcquireSSESlot(r)
+	if !ok {
+		web.WriteAPIError(w, http.StatusTooManyRequests, msg.TooManyStreams, nil)
+		return
+	}
+	defer release()
 	sp, ok := web.RequireInstanceProcessByName(w, authedUser, req.Instance)
 	if !ok {
 		return
@@ -570,9 +576,15 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 	failCount := 0
 	lastProgressAt := time.Time{}
 	minProgressInterval := sseProgressThrottleInterval
+	username := authedUser.User
 
 	sendProgress := func(force bool) {
 		if sseFailed.Load() {
+			return
+		}
+		// 进度上报前重验用户: 已禁用或被删除则中止任务.
+		if !userStreamActive(username) {
+			reportSseErr(errUserStreamInactive)
 			return
 		}
 		now := time.Now()
@@ -647,7 +659,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 		if action == "copy" || action == "move" {
 			dstAbs, err = resolveFileBatchActionDestination(rootPath, destAbs, srcAbs, isDir, action, req.CopyDuplicate)
 			if err != nil {
-				fail(rule.Path, err.Error(), isDir)
+				fail(rule.Path, batchFailureReason(err), isDir)
 				continue
 			}
 		}
@@ -679,7 +691,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 			// Always ensure destination directory exists, even if it ends up empty
 			// (e.g. everything inside is excluded).
 			if err := ensureDirectoryWithinRoot(rootPath, dstAbs); err != nil {
-				fail(rule.Path, err.Error(), true)
+				fail(rule.Path, batchFailureReason(err), true)
 				continue
 			}
 
@@ -702,7 +714,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 					if d != nil {
 						dirFlag = d.IsDir()
 					}
-					fail(filepath.ToSlash(p), walkErr.Error(), dirFlag)
+					fail(filepath.ToSlash(p), batchFailureReason(walkErr), dirFlag)
 					if sseFailed.Load() {
 						return getSseErr()
 					}
@@ -738,7 +750,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 				}
 				dstPath := filepath.Join(dstAbs, rel)
 				if err := ensurePathComponentsWithinRoot(rootPath, dstPath, false); err != nil {
-					fail(filepath.ToSlash(srcPath), err.Error(), srcIsDir)
+					fail(filepath.ToSlash(srcPath), batchFailureReason(err), srcIsDir)
 					if sseFailed.Load() {
 						return getSseErr()
 					}
@@ -749,7 +761,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 				}
 				if srcIsDir {
 					if err := ensureDirectoryWithinRoot(rootPath, dstPath); err != nil {
-						fail(filepath.ToSlash(srcPath), err.Error(), true)
+						fail(filepath.ToSlash(srcPath), batchFailureReason(err), true)
 						if sseFailed.Load() {
 							return getSseErr()
 						}
@@ -768,14 +780,14 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 				if action == "copy" && req.CopyDuplicate {
 					dstPath, err = resolveCopyFileDestination(dstPath, true)
 					if err != nil {
-						fail(filepath.ToSlash(srcPath), err.Error(), false)
+						fail(filepath.ToSlash(srcPath), batchFailureReason(err), false)
 						if sseFailed.Load() {
 							return getSseErr()
 						}
 						return nil
 					}
 					if err := ensurePathComponentsWithinRoot(rootPath, dstPath, false); err != nil {
-						fail(filepath.ToSlash(srcPath), err.Error(), false)
+						fail(filepath.ToSlash(srcPath), batchFailureReason(err), false)
 						if sseFailed.Load() {
 							return getSseErr()
 						}
@@ -815,7 +827,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 					logSseFailureOnce()
 					return
 				}
-				fail(rule.Path, err.Error(), true)
+				fail(rule.Path, batchFailureReason(err), true)
 				continue
 			}
 			if action == "move" {
@@ -856,12 +868,12 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 					fail(rule.Path, msg.TargetAlreadyExists, false)
 					continue
 				} else if !errors.Is(err, os.ErrNotExist) {
-					fail(rule.Path, err.Error(), false)
+					fail(rule.Path, batchFailureReason(err), false)
 					continue
 				}
 			}
 			if err := ensurePathComponentsWithinRoot(rootPath, dstAbs, false); err != nil {
-				fail(rule.Path, err.Error(), false)
+				fail(rule.Path, batchFailureReason(err), false)
 				continue
 			}
 			if err := moveFileWithinRoot(r.Context(), rootPath, srcAbs, dstAbs, info.Mode(), req.Overwrite); err != nil {
@@ -869,7 +881,7 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 					fail(rule.Path, msg.TargetAlreadyExists, false)
 					continue
 				}
-				fail(rule.Path, err.Error(), false)
+				fail(rule.Path, batchFailureReason(err), false)
 				continue
 			}
 			success()

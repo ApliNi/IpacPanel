@@ -29,6 +29,23 @@ func textTooLong(value string, maxLen int) bool {
 	return utf8.RuneCountInString(value) > maxLen
 }
 
+// batchFailureReason 将批量文件操作中的底层错误映射为用户可读的失败原因,
+// 避免将底层错误字符串直接透传给前端; 默认返回通用操作失败提示。
+func batchFailureReason(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case os.IsPermission(err) || strings.Contains(strings.ToLower(err.Error()), "permission"):
+		return msg.PermissionDenied
+	case os.IsNotExist(err):
+		return msg.FileNotFound
+	case errors.Is(err, instancefs.ErrPathOutsideInstanceRoot):
+		return msg.PathOutsideInstanceRoot
+	default:
+		return msg.OperationFailed
+	}
+}
+
 func ensurePathComponentsWithinRoot(rootPath string, targetPath string, includeLeaf bool) error {
 	return instancefs.EnsurePathComponentsWithinRoot(rootPath, targetPath, includeLeaf)
 }

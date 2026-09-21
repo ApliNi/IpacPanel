@@ -25,11 +25,11 @@ var (
 	userSSE    = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeUser, CSRF: authz.CSRFModeHeader, Origin: authz.OriginModeSameWhenPresent, Kind: authz.RouteKindSSE}
 	userWS     = authz.RoutePolicy{Methods: []string{http.MethodGet}, Auth: authz.AuthModeUser, CSRF: authz.CSRFModeWebSocketProtocol, Origin: authz.OriginModeWebSocket, Kind: authz.RouteKindWebSocket}
 
-	// Dashboard endpoints keep public-dashboard fallback in handlers. Snapshot does
-	// not require CSRF. Events use optional auth: no auth cookie may fall back to
-	// public dashboard, a valid auth cookie must pass header CSRF, and an invalid
-	// auth cookie is rejected by Guard before public fallback.
-	dashboardSnapshot = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeOptional, CSRF: authz.CSRFModeNone, Origin: authz.OriginModeNone, Kind: authz.RouteKindAPI}
+	// Dashboard endpoints keep public-dashboard fallback in handlers. Both use
+	// optional auth: no auth cookie may fall back to public dashboard, a valid
+	// auth cookie must pass header CSRF, and an invalid auth cookie is rejected
+	// by Guard before public fallback.
+	dashboardSnapshot = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeOptional, CSRF: authz.CSRFModeHeaderWhenAuthenticated, Origin: authz.OriginModeNone, Kind: authz.RouteKindAPI}
 	dashboardEvents   = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeOptional, CSRF: authz.CSRFModeHeaderWhenAuthenticated, Origin: authz.OriginModeNone, Kind: authz.RouteKindSSE}
 )
 
