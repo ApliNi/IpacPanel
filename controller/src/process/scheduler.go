@@ -346,7 +346,7 @@ func executeTask(sp *InstanceProcess, taskName string, action string, command st
 
 	switch action {
 	case "start":
-		if err := sp.Start(); err != nil {
+		if err := sp.StartWithCommand(command); err != nil {
 			sp.Mu.Lock()
 			terminalMsg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.ScheduledTaskStartFailedFmt, taskName, err))
 			sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
@@ -356,10 +356,10 @@ func executeTask(sp *InstanceProcess, taskName string, action string, command st
 		sp.Stop(useKillStop)
 	case "restart":
 		if strictRestart {
-			writeStrictRestartTaskResult(sp, taskName, sp.RequestStrictRestartWithKillStop(useKillStop), limit)
+			writeStrictRestartTaskResult(sp, taskName, sp.RequestStrictRestartWithKillStopAndCommand(useKillStop, command), limit)
 			return
 		}
-		writeRestartTaskResult(sp, taskName, sp.RequestRestartWithKillStopResult(useKillStop), limit)
+		writeRestartTaskResult(sp, taskName, sp.RequestRestartWithKillStopAndCommand(useKillStop, command), limit)
 	case "command":
 		if err := sp.SendCommand(command); err != nil {
 			sp.Mu.Lock()

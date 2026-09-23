@@ -9,6 +9,7 @@ import { InputValidation } from '../utils/inputValidation.js';
 import { normalizeTerminalMode, terminalMode } from '../utils/enum.js';
 import { setupAutoResizeTextarea } from '../utils/autoTextarea.js';
 import {
+	bindSingleLineEditor,
 	buildTaskRow,
 	collectInstanceTasks,
 	fillInstanceModalForm,
@@ -408,36 +409,6 @@ const applyRuntimeSettingsToTerminalPage = (settings = {}) => {
 	}
 };
 
-const bindSingleLineEditor = (el, maxLength = 0) => {
-    if (!el) return;
-	const normalizeEditorValue = () => InputValidation.truncateText(normalizeSingleLineText(el.value || ''), maxLength || Number.MAX_SAFE_INTEGER);
-	const scheduleResize = setupAutoResizeTextarea(el);
-
-    el.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') {
-            event.preventDefault();
-        }
-    });
-
-	    el.addEventListener('paste', (event) => {
-		event.preventDefault();
-		const text = normalizeSingleLineText(event.clipboardData?.getData('text/plain') || '');
-		const selectionStart = el.selectionStart;
-		const selectionEnd = el.selectionEnd;
-		const nextValue = `${el.value.slice(0, selectionStart)}${text}${el.value.slice(selectionEnd)}`;
-		const normalizedValue = InputValidation.truncateText(normalizeSingleLineText(nextValue), maxLength || Number.MAX_SAFE_INTEGER);
-		const nextCursor = Math.min(normalizeSingleLineText(`${el.value.slice(0, selectionStart)}${text}`).length, normalizedValue.length);
-		el.value = normalizedValue;
-		el.setSelectionRange(nextCursor, nextCursor);
-		scheduleResize();
-    });
-
-	el.addEventListener('blur', () => {
-		el.value = normalizeEditorValue();
-		scheduleResize();
-	});
-};
-
 bindSingleLineEditor(dom.instanceModalCommand, InputValidation.limits.instanceCommand);
 bindSingleLineEditor(dom.instanceModalPath, InputValidation.limits.instancePath);
 
@@ -567,6 +538,12 @@ const switchInstanceModalPage = (page) => {
 		requestAnimationFrame(() => {
 			setupAutoResizeTextarea(dom.instanceModalPath)();
 			setupAutoResizeTextarea(dom.instanceModalCommand)();
+		});
+	} else if (page === 'tasks') {
+		requestAnimationFrame(() => {
+			dom.instanceTasksList.querySelectorAll('.instance-task-start-command').forEach((el) => {
+				setupAutoResizeTextarea(el)();
+			});
 		});
 	}
 };

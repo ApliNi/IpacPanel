@@ -1311,7 +1311,11 @@ func NormalizeInstanceTasks(tasks []Task) []Task {
 		if t.Action != "restart" {
 			t.StrictRestart = false
 		}
-		t.Command = strings.TrimSpace(t.Command)
+		if t.Action == "stop" {
+			t.Command = ""
+		} else {
+			t.Command = strings.TrimSpace(t.Command)
+		}
 		out = append(out, t)
 	}
 	return out

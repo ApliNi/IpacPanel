@@ -3,5 +3,5 @@ package version
 const (
 	DaemonProtocol        = 10
 	ControllerDataVersion = 1
-	Version               = "v0.0.10"
+	Version               = "v0.0.11"
 )

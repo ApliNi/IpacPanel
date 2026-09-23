@@ -1,5 +1,7 @@
 import { InputValidation } from '../utils/inputValidation.js';
 import { normalizeTerminalMode, terminalMode } from '../utils/enum.js';
+import { setupAutoResizeTextarea } from '../utils/autoTextarea.js';
+import { normalizeSingleLineText } from '../utils/utils.js';
 
 export const NEW_GROUP_VALUE = ':new';
 export const NONE_GROUP_VALUE = '';
@@ -101,6 +103,39 @@ export const toggleNewGroupInput = (input, show) => {
 	}
 };
 
+export const bindSingleLineEditor = (el, maxLength = 0) => {
+	if (!el) return () => {};
+	const normalizeEditorValue = () => InputValidation.truncateText(normalizeSingleLineText(el.value || ''), maxLength || Number.MAX_SAFE_INTEGER);
+	const scheduleResize = setupAutoResizeTextarea(el);
+
+	el.addEventListener('keydown', (event) => {
+		if (event.key === 'Enter') {
+			event.preventDefault();
+		}
+	});
+
+	el.addEventListener('paste', (event) => {
+		event.preventDefault();
+		const clipboardText = event.clipboardData ? event.clipboardData.getData('text/plain') : '';
+		const text = normalizeSingleLineText(clipboardText || '');
+		const selectionStart = el.selectionStart;
+		const selectionEnd = el.selectionEnd;
+		const nextValue = `${el.value.slice(0, selectionStart)}${text}${el.value.slice(selectionEnd)}`;
+		const normalizedValue = InputValidation.truncateText(normalizeSingleLineText(nextValue), maxLength || Number.MAX_SAFE_INTEGER);
+		const nextCursor = Math.min(normalizeSingleLineText(`${el.value.slice(0, selectionStart)}${text}`).length, normalizedValue.length);
+		el.value = normalizedValue;
+		el.setSelectionRange(nextCursor, nextCursor);
+		scheduleResize();
+	});
+
+	el.addEventListener('blur', () => {
+		el.value = normalizeEditorValue();
+		scheduleResize();
+	});
+
+	return scheduleResize;
+};
+
 export const buildTaskRow = (task = {}) => {
 	const name = task.name || '';
 	const enabled = task.enabled !== false;
@@ -111,6 +146,7 @@ export const buildTaskRow = (task = {}) => {
 	const useKillStop = task.use_kill_stop === true;
 	const strictRestart = task.strict_restart === true || legacyStrictRestart;
 	const showCommand = action === 'command';
+	const showStartCommand = action === 'start' || action === 'restart';
 	const showStopOptions = action === 'stop' || action === 'restart';
 	const showStrictRestart = action === 'restart';
 
@@ -140,6 +176,13 @@ export const buildTaskRow = (task = {}) => {
 		createOption({ value: 'restart', text: 'RESTART' }),
 		createOption({ value: 'command', text: 'COMMAND' }),
 	);
+
+	const startCmdInput = document.createElement('textarea');
+	startCmdInput.className = 'input auto-textarea auto-textarea-single-line instance-task-start-command';
+	startCmdInput.rows = 1;
+	startCmdInput.maxLength = InputValidation.limits.taskCommand;
+	startCmdInput.spellcheck = false;
+	startCmdInput.placeholder = ' USE BASIC START COMMAND';
 
 	const cmdInput = document.createElement('input');
 	cmdInput.className = 'instance-task-command instance-task-input';
@@ -212,51 +255,36 @@ export const buildTaskRow = (task = {}) => {
 	selectWrapper.appendChild(actionSelect);
 	fields.append(exprInput, selectWrapper);
 
-	main.append(meta, fields, stopOptions, cmdInput);
+	main.append(meta, fields, startCmdInput, stopOptions, cmdInput);
 	row.append(actions, main);
-	if (enabledInput) {
-		enabledInput.checked = enabled;
-	}
-	if (nameInput) {
-		nameInput.value = name;
-	}
-	if (exprInput) {
-		exprInput.value = expr;
-	}
-	if (actionSelect) {
-		actionSelect.value = action;
-	}
-	if (cmdInput) {
-		cmdInput.value = command;
-		cmdInput.classList.toggle('hidden', !showCommand);
-	}
-	if (useKillStopInput) {
-		useKillStopInput.checked = useKillStop;
-	}
-	if (strictRestartInput) {
-		strictRestartInput.checked = strictRestart;
-	}
-	if (strictRestartLabel) {
-		strictRestartLabel.classList.toggle('hidden', !showStrictRestart);
-	}
-	if (stopOptions) {
-		stopOptions.classList.toggle('hidden', !showStopOptions);
-	}
-	if (actionSelect && cmdInput && stopOptions) {
-		actionSelect.onchange = () => {
-			const shouldShow = actionSelect.value === 'command';
-			const shouldShowStopOptions = actionSelect.value === 'stop' || actionSelect.value === 'restart';
-			const shouldShowStrictRestart = actionSelect.value === 'restart';
-			cmdInput.classList.toggle('hidden', !shouldShow);
-			stopOptions.classList.toggle('hidden', !shouldShowStopOptions);
-			strictRestartLabel.classList.toggle('hidden', !shouldShowStrictRestart);
-		};
-	}
-
-	if (delBtn) {
-		delBtn.onclick = () => row.remove();
-	}
-
+	enabledInput.checked = enabled;
+	nameInput.value = name;
+	exprInput.value = expr;
+	actionSelect.value = action;
+	startCmdInput.value = showStartCommand ? InputValidation.truncateText(normalizeSingleLineText(command || ''), InputValidation.limits.taskCommand) : '';
+	startCmdInput.classList.toggle('hidden', !showStartCommand);
+	const scheduleStartCmdResize = bindSingleLineEditor(startCmdInput, InputValidation.limits.taskCommand);
+	cmdInput.value = showCommand ? InputValidation.truncateText(normalizeSingleLineText(command || ''), InputValidation.limits.taskCommand) : '';
+	cmdInput.classList.toggle('hidden', !showCommand);
+	useKillStopInput.checked = useKillStop;
+	strictRestartInput.checked = strictRestart;
+	strictRestartLabel.classList.toggle('hidden', !showStrictRestart);
+	stopOptions.classList.toggle('hidden', !showStopOptions);
+	actionSelect.onchange = () => {
+		const currentAction = actionSelect.value;
+		const shouldShow = currentAction === 'command';
+		const shouldShowStartCommand = currentAction === 'start' || currentAction === 'restart';
+		const shouldShowStopOptions = currentAction === 'stop' || currentAction === 'restart';
+		const shouldShowStrictRestart = currentAction === 'restart';
+		cmdInput.classList.toggle('hidden', !shouldShow);
+		startCmdInput.classList.toggle('hidden', !shouldShowStartCommand);
+		stopOptions.classList.toggle('hidden', !shouldShowStopOptions);
+		strictRestartLabel.classList.toggle('hidden', !shouldShowStrictRestart);
+		if (shouldShowStartCommand) {
+			scheduleStartCmdResize();
+		}
+	};
+	delBtn.onclick = () => row.remove();
 	return row;
 };
 
@@ -289,6 +317,7 @@ export const collectInstanceTasks = (listEl) => {
 		const exprInput = row.querySelector('.instance-task-expr');
 		const actionSelect = row.querySelector('.instance-task-action');
 		const commandInput = row.querySelector('.instance-task-command');
+		const startCommandInput = row.querySelector('.instance-task-start-command');
 		const useKillStopInput = row.querySelector('.instance-task-use-kill-stop-input');
 		const strictRestartInput = row.querySelector('.instance-task-strict-restart-input');
 
@@ -296,7 +325,10 @@ export const collectInstanceTasks = (listEl) => {
 		const enabled = enabledInput.checked !== false;
 		const expr = InputValidation.truncateText(exprInput.value || '', InputValidation.limits.taskExpr).trim();
 		const action = (actionSelect.value || '').trim();
-		const command = InputValidation.truncateText(commandInput.value || '', InputValidation.limits.taskCommand).trim();
+		const rawCommand = (action === 'start' || action === 'restart')
+			? normalizeSingleLineText(startCommandInput.value || '')
+			: (action === 'command' ? normalizeSingleLineText(commandInput.value || '') : '');
+		const command = InputValidation.truncateText(rawCommand, InputValidation.limits.taskCommand).trim();
 		const canUseKillStop = action === 'stop' || action === 'restart';
 		const isRestart = action === 'restart';
 		const useKillStop = canUseKillStop && useKillStopInput.checked === true;

@@ -118,6 +118,7 @@ type InstanceProcess struct {
 	PTYAlternateScreenActive     bool
 	PTYAlternateScreenPending    []byte
 	InputMu                      sync.Mutex
+	overrideCommand              string
 }
 
 type restartRequestMode uint8
@@ -771,6 +772,7 @@ func (sp *InstanceProcess) setStateLocked(state processState) {
 }
 
 func (sp *InstanceProcess) enterStoppedStateLocked() {
+	sp.overrideCommand = ""
 	sp.setStateLocked(processStateStopped)
 }
 
@@ -791,6 +793,7 @@ func (sp *InstanceProcess) enterRestartWaitingLocked() {
 }
 
 func (sp *InstanceProcess) cancelRestartLocked() {
+	sp.overrideCommand = ""
 	if sp.RestartCancel == nil {
 		return
 	}
@@ -880,9 +883,14 @@ func (sp *InstanceProcess) reserveStartLocked(historyLimit int, instanceUpdateSt
 		return nil, errors.New(msg.InstanceRestarting)
 	}
 	if sp.Starting || sp.Running {
+		sp.overrideCommand = ""
 		return nil, nil
 	}
 	ins := sp.InstanceSnapshotLocked()
+	if sp.overrideCommand != "" {
+		ins.Command = sp.overrideCommand
+		sp.overrideCommand = ""
+	}
 	reserved := &startReservation{
 		ins:                      ins,
 		historyLimit:             historyLimit,
@@ -1197,10 +1205,14 @@ func sendDaemonStopRequest(instanceName string, stopCommand string, noTerminal b
 }
 
 func (sp *InstanceProcess) requestRestart(mode restartRequestMode) RestartRequestResult {
-	return sp.requestRestartWithKillStop(mode, false)
+	return sp.requestRestartWithKillStopAndCommand(mode, false, "")
 }
 
 func (sp *InstanceProcess) requestRestartWithKillStop(mode restartRequestMode, useKillStop bool) RestartRequestResult {
+	return sp.requestRestartWithKillStopAndCommand(mode, useKillStop, "")
+}
+
+func (sp *InstanceProcess) requestRestartWithKillStopAndCommand(mode restartRequestMode, useKillStop bool, command string) RestartRequestResult {
 	shouldSchedule := false
 
 	sp.Mu.Lock()
@@ -1217,6 +1229,7 @@ func (sp *InstanceProcess) requestRestartWithKillStop(mode restartRequestMode, u
 		return RestartRequestNoopStarting
 	}
 	if sp.State == processStateStopping {
+		sp.overrideCommand = strings.TrimSpace(command)
 		instanceName := sp.InstanceSnapshotLocked().Name
 		sp.beginStopLocked(processStateStoppingForRestart)
 		NotifyInstanceStatusChanged(instanceName)
@@ -1230,6 +1243,7 @@ func (sp *InstanceProcess) requestRestartWithKillStop(mode restartRequestMode, u
 		return RestartRequestAccepted
 	}
 	if sp.Running {
+		sp.overrideCommand = strings.TrimSpace(command)
 		instanceName := sp.InstanceSnapshotLocked().Name
 		sp.beginStopLocked(processStateStoppingForRestart)
 		stopCommand := sp.InstanceSnapshotLocked().StopCommand
@@ -1247,6 +1261,7 @@ func (sp *InstanceProcess) requestRestartWithKillStop(mode restartRequestMode, u
 		sp.Mu.Unlock()
 		return RestartRequestSkippedStopped
 	}
+	sp.overrideCommand = strings.TrimSpace(command)
 	sp.enterRestartWaitingLocked()
 	NotifyInstanceStatusChanged(sp.InstanceSnapshotLocked().Name)
 	shouldSchedule = true
@@ -1267,7 +1282,11 @@ func (sp *InstanceProcess) RequestRestartResult() RestartRequestResult {
 }
 
 func (sp *InstanceProcess) RequestRestartWithKillStopResult(useKillStop bool) RestartRequestResult {
-	return sp.requestRestartWithKillStop(restartRequestModeDefault, useKillStop)
+	return sp.RequestRestartWithKillStopAndCommand(useKillStop, "")
+}
+
+func (sp *InstanceProcess) RequestRestartWithKillStopAndCommand(useKillStop bool, command string) RestartRequestResult {
+	return sp.requestRestartWithKillStopAndCommand(restartRequestModeDefault, useKillStop, command)
 }
 
 func (sp *InstanceProcess) RequestStrictRestart() RestartRequestResult {
@@ -1275,18 +1294,29 @@ func (sp *InstanceProcess) RequestStrictRestart() RestartRequestResult {
 }
 
 func (sp *InstanceProcess) RequestStrictRestartWithKillStop(useKillStop bool) RestartRequestResult {
-	return sp.requestRestartWithKillStop(restartRequestModeStrict, useKillStop)
+	return sp.RequestStrictRestartWithKillStopAndCommand(useKillStop, "")
+}
+
+func (sp *InstanceProcess) RequestStrictRestartWithKillStopAndCommand(useKillStop bool, command string) RestartRequestResult {
+	return sp.requestRestartWithKillStopAndCommand(restartRequestModeStrict, useKillStop, command)
 }
 
 func (sp *InstanceProcess) Start() error {
+	return sp.StartWithCommand("")
+}
+
+func (sp *InstanceProcess) StartWithCommand(command string) error {
 	historyLimit := cfg.GetHistoryLimit() * 1024
 	instanceUpdateStagingDir := cfg.GetInstanceUpdateStagingDir()
 	sp.Mu.Lock()
+	sp.overrideCommand = strings.TrimSpace(command)
 	reserved, err := sp.reserveStartLocked(historyLimit, instanceUpdateStagingDir)
-	sp.Mu.Unlock()
 	if err != nil {
+		sp.overrideCommand = ""
+		sp.Mu.Unlock()
 		return err
 	}
+	sp.Mu.Unlock()
 	if reserved == nil {
 		return nil
 	}
