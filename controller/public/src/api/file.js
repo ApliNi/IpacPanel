@@ -216,7 +216,7 @@ const uploadTextBlobAsFile = async (instanceName, dirPath, fileName, blob, overw
 
 export const fetchFiles = async (name, path = '', fallback = false, page = 1, search = '', options = {}) => {
 	return await withApiResult(async () => {
-		const res = await authedFetch('/api/file/list', {
+		const requestOptions = {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -227,7 +227,11 @@ export const fetchFiles = async (name, path = '', fallback = false, page = 1, se
 				query: String(search || '').trim(),
 				jump: !!(options && options.jump),
 			}),
-		});
+		};
+		if (options?.signal) {
+			requestOptions.signal = options.signal;
+		}
+		const res = await authedFetch('/api/file/list', requestOptions);
 		return await parseJsonData(res);
 	}, {
 		logMessage: `[API] 获取实例 ${name} 文件列表失败:`,

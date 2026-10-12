@@ -1,4 +1,4 @@
-import { authedFetch, createHttpError, getErrorMessage, parseJsonPayload, withApiFallback } from './core.js';
+import { authedFetch, createHttpError, getErrorMessage, parseJsonData, withApiFallback } from './core.js';
 
 export const getLoginPow = async () => {
 	try {
@@ -6,15 +6,7 @@ export const getLoginPow = async () => {
 			method: 'GET',
 			credentials: 'same-origin',
 		});
-		if (!res.ok) {
-			const err = await createHttpError(res);
-			return { ok: false, message: err.message || `HTTP ${res.status}` };
-		}
-		const payload = await parseJsonPayload(res);
-		const data = payload?.data || null;
-		if (!payload?.ok) {
-			return { ok: false, message: payload?.message || '获取 PoW 参数失败' };
-		}
+		const data = await parseJsonData(res);
 		if (!data || data.enabled === false) {
 			return { ok: true, enabled: false };
 		}
@@ -36,10 +28,7 @@ export const resetToken = async () => {
 		const res = await authedFetch('/api/auth/reset', {
 			method: 'POST',
 		});
-		const payload = await parseJsonPayload(res);
-		if (payload && payload.ok === false) {
-			throw new Error(payload.message || '重置 Token 失败');
-		}
+		await parseJsonData(res);
 		return { ok: true };
 	}, (e) => ({ ok: false, message: getErrorMessage(e) }));
 };
@@ -50,10 +39,7 @@ export const logout = async () => {
 			method: 'POST',
 			suppressUnauthorizedEvent: true,
 		});
-		const payload = await parseJsonPayload(res);
-		if (payload && payload.ok === false) {
-			throw new Error(payload.message || '注销失败');
-		}
+		await parseJsonData(res);
 		return { ok: true };
 	}, (e) => ({ ok: false, message: getErrorMessage(e) }));
 };
@@ -74,10 +60,7 @@ export const login = async (user, pass, proofTimestamp, proofNonces) => {
 			const err = await createHttpError(res);
 			return { ok: false, message: err.message || `HTTP ${res.status}` };
 		}
-		const payload = await parseJsonPayload(res);
-		if (payload && payload.ok === false) {
-			return { ok: false, message: payload.message || '登录失败' };
-		}
+		await parseJsonData(res);
 		return { ok: true };
 	} catch (e) {
 		return { ok: false, message: e?.message || String(e) };

@@ -48,6 +48,7 @@ var Routes = []Route{
 	{Path: "/api/settings/get", Policy: adminGet, Handler: HandleApiSettingsGet},
 	{Path: "/api/settings/update", Policy: adminPost, Handler: HandleApiSettingsUpdate},
 	{Path: "/api/settings/restart-controller", Policy: adminPost, Handler: HandleApiSettingsRestartController},
+	{Path: "/api/settings/stop-daemon", Policy: adminPost, Handler: HandleApiSettingsStopDaemon},
 
 	// Dashboard supports public access when public dashboard is enabled; handlers
 	// trust only the Guard-populated request context for authenticated users.

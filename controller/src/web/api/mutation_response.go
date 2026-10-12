@@ -19,8 +19,7 @@ type mutationResponseMeta struct {
 }
 
 type mutationErrorResponse struct {
-	OK       bool                 `json:"ok"`
-	Message  string               `json:"message,omitempty"`
+	Error    string               `json:"error"`
 	Mutation mutationResponseMeta `json:"mutation"`
 }
 
@@ -38,8 +37,7 @@ func writeMutationRuntimeSyncError(w http.ResponseWriter, statusCode int, userMe
 	}
 
 	web.WriteJSONStatus(w, statusCode, mutationErrorResponse{
-		OK:      false,
-		Message: message,
+		Error: message,
 		Mutation: mutationResponseMeta{
 			Committed:          result.Committed,
 			RuntimeSynced:      result.RuntimeSynced,

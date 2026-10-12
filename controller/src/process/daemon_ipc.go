@@ -4,19 +4,14 @@ import (
 	cfg "IpacPanel/controller/src/config"
 	"IpacPanel/controller/src/msg"
 	"IpacPanel/daemon/ipc"
-	"bufio"
-	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 const daemonOutputBufferPoolMaxBytes = 512 * 1024
@@ -46,14 +41,16 @@ type daemonIPCRequest = ipc.Request
 type daemonIPCResponse = ipc.Response
 
 type daemonIPCClient struct {
-	closer    io.Closer
-	reader    *bufio.Reader
-	writer    *bufio.Writer
-	writeMu   sync.Mutex
+	closer    ipcCloser
+	conn      *ipc.Conn
 	nextID    atomic.Uint64
 	pendingMu sync.Mutex
 	pending   map[uint64]chan daemonIPCResponse
 	done      chan struct{}
+}
+
+type ipcCloser interface {
+	Close() error
 }
 
 var daemonOutputBufferPool = sync.Pool{
@@ -88,10 +85,11 @@ func putDaemonOutputBuffer(buf []byte) {
 var daemonClient *daemonIPCClient
 
 func ConnectDaemonStdio() error {
+	closer := daemonStdioCloser{}
+	conn := ipc.NewConn(os.Stdin, os.Stdout, closer)
 	client := &daemonIPCClient{
-		closer:  daemonStdioCloser{},
-		reader:  bufio.NewReaderSize(os.Stdin, 65536),
-		writer:  bufio.NewWriterSize(os.Stdout, 65536),
+		closer:  closer,
+		conn:    conn,
 		pending: make(map[uint64]chan daemonIPCResponse),
 		done:    make(chan struct{}),
 	}
@@ -109,7 +107,7 @@ func DisconnectDaemon() {
 	if client == nil {
 		return
 	}
-	_ = client.closer.Close()
+	_ = client.conn.Close()
 	daemonClient = nil
 }
 
@@ -126,26 +124,38 @@ func DaemonDisconnected() <-chan struct{} {
 func (c *daemonIPCClient) readLoop() {
 	defer c.closeWithPendingError()
 	for {
-		peek, err := c.reader.Peek(len(":o:"))
-		if err == nil && ipc.IsInstanceOutputPrefix(peek) {
-			instance, body, err := ipc.ReadInstanceOutputFrame(c.reader, getDaemonOutputBuffer, putDaemonOutputBuffer)
-			if err != nil {
-				return
-			}
-			handleDaemonInstanceOutputFrame(instance, body)
-			continue
-		}
-		resp, err := ipc.ReadResponse(c.reader)
+		header, err := c.conn.ReadHeader()
 		if err != nil {
 			return
 		}
-		switch resp.Type {
-		case "instance_exited":
-			HandleDaemonInstanceExited(resp.State)
-		case "cleanup_message":
-			HandleDaemonCleanupMessage(resp.Instance, resp.Placeholder, resp.Args)
+
+		switch header.Type {
+		case ipc.FrameTypeInstanceOut:
+			instance, data, err := c.conn.ReadInstancePayload(header.PayloadLen, getDaemonOutputBuffer, putDaemonOutputBuffer)
+			if err != nil {
+				return
+			}
+			handleDaemonInstanceOutputFrame(instance, data)
+		case ipc.FrameTypeControlResp, ipc.FrameTypeEvent:
+			resp, err := c.conn.ReadResponse(header.PayloadLen)
+			if err != nil {
+				return
+			}
+			resp.ID = uint64(header.ID)
+			if header.Type == ipc.FrameTypeEvent || resp.Type == "instance_exited" || resp.Type == "cleanup_message" {
+				switch resp.Type {
+				case "instance_exited":
+					HandleDaemonInstanceExited(resp.State)
+				case "cleanup_message":
+					HandleDaemonCleanupMessage(resp.Instance, resp.Placeholder, resp.Args)
+				}
+			} else {
+				c.deliverResponse(resp)
+			}
 		default:
-			c.deliverResponse(resp)
+			if _, err := c.conn.ReadPayload(header.PayloadLen); err != nil {
+				return
+			}
 		}
 	}
 }
@@ -209,24 +219,7 @@ func daemonRequest(req daemonIPCRequest) (daemonIPCResponse, error) {
 	respCh := client.registerPending(req.ID)
 	defer client.unregisterPending(req.ID)
 
-	req.BodyLen = len(req.Body)
-	if err := ipc.ValidateBodyLen(req.BodyLen); err != nil {
-		return daemonIPCResponse{}, err
-	}
-	data, err := ipc.EncodeFrame(req.Type, req)
-	if err != nil {
-		return daemonIPCResponse{}, fmt.Errorf(msg.EncodeDaemonIPCRequestFailedFmt, err)
-	}
-	client.writeMu.Lock()
-	_, err = client.writer.Write(data)
-	if err == nil && req.BodyLen > 0 {
-		_, err = client.writer.Write(req.Body)
-	}
-	if err == nil {
-		err = client.writer.Flush()
-	}
-	client.writeMu.Unlock()
-	if err != nil {
+	if err := client.conn.WriteControlRequest(&req); err != nil {
 		return daemonIPCResponse{}, fmt.Errorf(msg.WriteDaemonIPCRequestFailedFmt, err)
 	}
 
@@ -265,7 +258,7 @@ func ListDaemonRuntime() ([]DaemonRuntimeState, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append([]DaemonRuntimeState(nil), resp.Runtime...), nil
+	return resp.Runtime, nil
 }
 
 func SetDaemonDebug(debug bool) error {
@@ -278,7 +271,12 @@ func RestartController() error {
 	return restartControllerWithPurpose(ControllerShutdownPurposeRestart)
 }
 
-// NotifyControllerUpdateExit 在自替换更新完成、管理进程即将退出前调用,
+func StopDaemon() error {
+	_, err := daemonRequest(daemonIPCRequest{Type: "stop_daemon"})
+	return err
+}
+
+// NotifyControllerUpdateExit 在自替换更新完成, 管理进程即将退出前调用,
 // 守护进程收到后立即重启, 无需等待常规重启延时.
 func NotifyControllerUpdateExit() error {
 	return restartControllerWithPurpose(ipc.ControllerShutdownPurposeUpdate)
@@ -300,7 +298,18 @@ func RenameDaemonInstance(oldName string, newName string) error {
 }
 
 func startDaemonInstance(insName string, commandArgv []string, cleanupCommandArgv []string, path string, terminal int, inputEnc string, outputEnc string, cols uint16, rows uint16) (*DaemonRuntimeState, error) {
-	resp, err := daemonRequest(daemonIPCRequest{Type: "start_instance", Instance: insName, CommandArgv: commandArgv, CleanupCommandArgv: cleanupCommandArgv, Path: path, Terminal: terminal, InputEnc: inputEnc, OutputEnc: outputEnc, Cols: cols, Rows: rows})
+	resp, err := daemonRequest(daemonIPCRequest{
+		Type:               "start_instance",
+		Instance:           insName,
+		CommandArgv:        commandArgv,
+		CleanupCommandArgv: cleanupCommandArgv,
+		Path:               path,
+		Terminal:           terminal,
+		InputEnc:           inputEnc,
+		OutputEnc:          outputEnc,
+		Cols:               cols,
+		Rows:               rows,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +317,11 @@ func startDaemonInstance(insName string, commandArgv []string, cleanupCommandArg
 }
 
 func UpdateDaemonInstanceConfig(insName string, cleanupCommandArgv []string) error {
-	_, err := daemonRequest(daemonIPCRequest{Type: "update_instance_config", Instance: insName, CleanupCommandArgv: cleanupCommandArgv})
+	_, err := daemonRequest(daemonIPCRequest{
+		Type:               "update_instance_config",
+		Instance:           insName,
+		CleanupCommandArgv: cleanupCommandArgv,
+	})
 	return err
 }
 
@@ -340,8 +353,7 @@ func stopDaemonInstance(insName string, force bool) error {
 }
 
 func writeDaemonInstanceStdin(insName string, data []byte) error {
-	_, err := daemonRequest(daemonIPCRequest{Type: "write_stdin", Instance: insName, Body: data})
-	return err
+	return writeDaemonInstanceInputFastPath(insName, data)
 }
 
 func writeDaemonInstanceInputFastPath(insName string, data []byte) error {
@@ -351,29 +363,11 @@ func writeDaemonInstanceInputFastPath(insName string, data []byte) error {
 	if insName == "" {
 		return errors.New(msg.DaemonInstanceInputInstanceEmpty)
 	}
-	if strings.Contains(insName, ":") {
-		return errors.New(msg.DaemonInstanceInputInstanceContainsSeparator)
-	}
 	client := daemonClient
 	if client == nil {
 		return errors.New(msg.DaemonIPCNotConnected)
 	}
-
-	header, err := ipc.BuildInputHeader(insName, len(data))
-	if err != nil {
-		return err
-	}
-
-	client.writeMu.Lock()
-	_, err = client.writer.Write(header)
-	if err == nil {
-		_, err = client.writer.Write(data)
-	}
-	if err == nil {
-		err = client.writer.Flush()
-	}
-	client.writeMu.Unlock()
-	if err != nil {
+	if err := client.conn.WriteInstanceInput(insName, data); err != nil {
 		return fmt.Errorf(msg.WriteDaemonIPCRequestFailedFmt, err)
 	}
 	return nil
@@ -391,48 +385,37 @@ func HandleDaemonInstanceOutput(instanceName string, data []byte) {
 	}
 	limit := cfg.GetHistoryLimit() * 1024
 
-	sp.Mu.Lock()
-	defer sp.Mu.Unlock()
-
-	if cfg.IsNoTerminal(sp.ActiveTerminalLocked()) {
+	terminalMode := sp.ActiveTerminalModeSnapshot()
+	if cfg.IsNoTerminal(terminalMode) {
 		return
 	}
 
-	isPTY := cfg.IsPTYTerminal(sp.ActiveTerminalLocked())
-	var historyData, liveData []byte
-	liveData = data
+	isPTY := cfg.IsPTYTerminal(terminalMode)
 
-	if isPTY {
-		historyData = sp.filterPTYHistoryOutputLocked(data)
-		if sp.TerminalStartupProtecting {
-			// 启动保护期: 实时和历史数据均需过滤破坏性序列
-			if len(historyData) > 0 {
-				historyData, _, _, _ = sanitizeTerminalStartupOutput(historyData)
-			}
-			liveData = sp.sanitizeTerminalStartupOutputLocked(data)
-			if len(liveData) == 0 {
-				return
-			}
-		} else {
-			// 常态 PTY: 过滤 \x1b[3J 以保留滚动条/历史
-			historyData = bytes.ReplaceAll(historyData, []byte("\x1b[3J"), nil)
-			liveData = bytes.ReplaceAll(liveData, []byte("\x1b[3J"), nil)
+	sp.outputMu.Lock()
+	defer sp.outputMu.Unlock()
+
+	if !isPTY {
+		sp.appendHistoryLocked(data, limit)
+		sp.wakeTerminalClientsLocked()
+		return
+	}
+	historyData := sp.filterPTYHistoryOutputLocked(data)
+	if !sp.PTYAlternateScreenActive && len(historyData) == len(data) {
+		if len(historyData) > 0 {
+			sp.appendHistoryLocked(historyData, limit)
 		}
-	} else {
-		// 普通终端模式: 直接透传
-		historyData = data
+		sp.wakeTerminalClientsLocked()
+		return
 	}
 
 	if len(historyData) > 0 {
 		sp.appendHistoryLocked(historyData, limit)
+		sp.wakeTerminalClientsLocked()
 	}
-
-	if len(liveData) > 0 {
-		if isPTY {
-			sp.writeTerminalLiveClientsLocked(liveData)
-		} else {
-			sp.writeClientsLocked(websocket.BinaryMessage, liveData)
-		}
+	if (sp.PTYAlternateScreenActive || len(historyData) < len(data)) && len(sp.Clients) > 0 {
+		safeLiveData := append([]byte(nil), data...)
+		sp.writeTerminalLiveClientsLocked(safeLiveData)
 	}
 }
 
@@ -451,10 +434,10 @@ func HandleDaemonCleanupMessage(instanceName string, placeholder string, args []
 		data = BuildWarningTerminalSystemMessage(message)
 	}
 	limit := cfg.GetHistoryLimit() * 1024
-	sp.Mu.Lock()
+	sp.outputMu.Lock()
 	sp.appendHistoryLocked(data, limit)
-	sp.writeClientsLocked(websocket.BinaryMessage, data)
-	sp.Mu.Unlock()
+	sp.wakeTerminalClientsLocked()
+	sp.outputMu.Unlock()
 }
 
 func renderDaemonCleanupMessage(placeholder string, args []string) (string, bool, bool) {

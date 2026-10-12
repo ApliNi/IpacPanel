@@ -198,6 +198,78 @@ const getMonacoAmdLoader = () => {
 	return typeof win.require === 'function' && typeof win.require.config === 'function' ? win.require : null;
 };
 
+const monacoAssetUrls = {
+	css: './lib/monaco-editor/editor/editor.main.css',
+	loader: './lib/monaco-editor/loader.js',
+};
+
+const loadMonacoStyleSheet = (url) => {
+	const win = getGlobalWindow();
+	const doc = win.document;
+	return new Promise((resolve, reject) => {
+		const existing = doc.querySelector(`link[data-monaco-css="true"], link[href="${url}"]`);
+		if (existing) {
+			resolve();
+			return;
+		}
+		const link = doc.createElement('link');
+		link.rel = 'stylesheet';
+		link.dataset.monacoCss = 'true';
+		link.href = url;
+		link.onload = () => resolve();
+		link.onerror = () => {
+			link.remove();
+			reject(new Error(`加载 Monaco CSS 失败: ${url}`));
+		};
+		doc.head.appendChild(link);
+	});
+};
+
+const loadMonacoScript = (url) => {
+	const win = getGlobalWindow();
+	const doc = win.document;
+	return new Promise((resolve, reject) => {
+		if (getMonacoAmdLoader()) {
+			resolve();
+			return;
+		}
+		const existing = doc.querySelector(`script[data-monaco-loader="true"], script[src="${url}"]`);
+		if (existing) {
+			existing.addEventListener('load', () => resolve(), { once: true });
+			existing.addEventListener('error', () => reject(new Error(`加载 Monaco loader 失败: ${url}`)), { once: true });
+			return;
+		}
+		const script = doc.createElement('script');
+		script.dataset.monacoLoader = 'true';
+		script.async = true;
+		script.src = url;
+		script.onload = () => resolve();
+		script.onerror = () => {
+			script.remove();
+			reject(new Error(`加载 Monaco loader 失败: ${url}`));
+		};
+		doc.head.appendChild(script);
+	});
+};
+
+let monacoAssetsPromise = null;
+
+export const loadMonacoAssets = () => {
+	if (monacoAssetsPromise) {
+		return monacoAssetsPromise;
+	}
+	const cssUrl = resolveRuntimeAssetUrl(monacoAssetUrls.css);
+	const loaderUrl = resolveRuntimeAssetUrl(monacoAssetUrls.loader);
+	monacoAssetsPromise = Promise.all([
+		loadMonacoStyleSheet(cssUrl),
+		loadMonacoScript(loaderUrl),
+	]).catch((err) => {
+		monacoAssetsPromise = null;
+		throw err;
+	});
+	return monacoAssetsPromise;
+};
+
 const ensureMonacoRuntime = (() => {
 	let monacoLoadPromise = null;
 	return async () => {
@@ -208,11 +280,11 @@ const ensureMonacoRuntime = (() => {
 		if (monacoLoadPromise) {
 			return monacoLoadPromise;
 		}
-		monacoLoadPromise = new Promise((resolve, reject) => {
+		monacoLoadPromise = (async () => {
+			await loadMonacoAssets();
 			const amdRequire = getMonacoAmdLoader();
 			if (!amdRequire) {
-				reject(new Error('Monaco AMD 加载器不可用'));
-				return;
+				throw new Error('Monaco AMD 加载器不可用');
 			}
 			configureMonacoEnvironment();
 			const nlsLanguage = resolveMonacoNlsLanguage();
@@ -223,20 +295,22 @@ const ensureMonacoRuntime = (() => {
 				monacoLoaderConfig['vs/nls'] = { availableLanguages: { '*': getMonacoNlsModuleLanguage(nlsLanguage) } };
 			}
 			amdRequire.config(monacoLoaderConfig);
-			amdRequire([
-				'vs/editor/editor.main',
-			], () => {
-				const monaco = getMonacoRuntime();
-				if (monaco) {
-					configureMonacoLanguageDefaults(monaco);
-					resolve(monaco);
-					return;
-				}
-				reject(new Error('Monaco 已加载, 但运行时不可用'));
-			}, (err) => {
-				reject(err || new Error('加载 Monaco 运行时失败'));
+			return await new Promise((resolve, reject) => {
+				amdRequire([
+					'vs/editor/editor.main',
+				], () => {
+					const monaco = getMonacoRuntime();
+					if (monaco) {
+						configureMonacoLanguageDefaults(monaco);
+						resolve(monaco);
+						return;
+					}
+					reject(new Error('Monaco 已加载, 但运行时不可用'));
+				}, (err) => {
+					reject(err || new Error('加载 Monaco 运行时失败'));
+				});
 			});
-		});
+		})();
 		try {
 			return await monacoLoadPromise;
 		} catch (error) {
@@ -1023,7 +1097,6 @@ const bindModalEvents = () => {
 export const bootFileEditorModal = (options = {}) => {
     editorState.onRequestRefreshFiles = options.onRequestRefreshFiles || null;
     bindModalEvents();
-    preloadMonaco();
     return {
         open: openFileEditorModal,
         close: closeFileEditorModal,

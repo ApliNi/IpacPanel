@@ -1,5 +1,4 @@
 import { mainContainer, state } from "../ui.js";
-import { bootUserManageModal } from '../module/userManageModal.js';
 import { cleanupFileLastDirs } from '../module/fileList.js';
 import { bootInstanceGroupModal } from '../module/instanceGroupModal.js';
 import { copyTextToClipboard } from '../module/terminal.js';
@@ -54,7 +53,6 @@ mainContainer.insertAdjacentHTML('beforeend', /*html*/`
 				<input type="text" id="instanceSearch" placeholder=" SEARCH INSTANCE" autocomplete="off" maxlength="${InputValidation.limits.fileSearch}">
 				<div class="instance-actions">
 					<button id="createInstanceBtn" class="action-btn">NEW</button>
-					<button id="userManageBtn" class="action-btn" type="button">USER</button>
 					<button id="panelSettingsBtn" class="action-btn" type="button">SETTINGS</button>
 					<button id="logBtn" class="action-btn" type="button">LOG</button>
 				</div>
@@ -71,7 +69,6 @@ const dom = {
 	filterBtns: document.querySelectorAll('#instanceListSection .filter-btn'),
 	createInstanceBtn: document.getElementById('createInstanceBtn'),
 	panelSettingsBtn: document.getElementById('panelSettingsBtn'),
-	userManageBtn: document.getElementById('userManageBtn'),
 	logBtn: document.getElementById('logBtn'),
 };
 
@@ -81,7 +78,6 @@ const pageState = {
 	unsubscribeStatusStore: null,
 };
 
-let userManageModal = null;
 let instanceGroupModal = null;
 let panelSettingsModal = null;
 let logModal = null;
@@ -667,20 +663,13 @@ export const bindInstanceListEvents = ({ onCreateInstance, onOpenInstance, onApp
 	dom.createInstanceBtn.onclick = () => {
 		onCreateInstance();
 	};
-	if (dom.userManageBtn) {
-		dom.userManageBtn.onclick = () => {
-			userManageModal?.open?.();
-		};
-	}
 	if (dom.logBtn) {
 		dom.logBtn.onclick = () => {
 			logModal?.open?.();
 		};
 	}
 	if (dom.panelSettingsBtn) {
-		dom.panelSettingsBtn.classList.toggle('hidden', !state.isAdmin);
 		dom.panelSettingsBtn.onclick = () => {
-			if (!state.isAdmin) return;
 			panelSettingsModal?.open?.();
 		};
 	}
@@ -838,7 +827,6 @@ const hidePage = () => {
 export const bootInstanceListPage = (options = {}) => {
     const { onCreateInstance, onOpenInstance } = options;
 	onPatchCurrentInstance = typeof options.onPatchCurrentInstance === 'function' ? options.onPatchCurrentInstance : null;
-	userManageModal = bootUserManageModal();
 	panelSettingsModal = bootPanelSettingsModal();
 	logModal = bootLogModal({
 		onOpenInstance: (ins) => onOpenInstance?.(ins),

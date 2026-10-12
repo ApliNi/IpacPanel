@@ -1,9 +1,5 @@
-import { dispatchUnauthorized, parseSSEJsonData, postEventStream, readSSEStream } from '../api/core.js';
 import { fetchLogs } from '../api/log.js';
-
-const RECONNECT_BASE_DELAY_MS = 400;
-const RECONNECT_MAX_DELAY_MS = 5000;
-const RECONNECT_JITTER_RATIO = 0.2;
+import { sseClient } from './sseClient.js';
 
 // 与后端 logbuf 缓冲容量保持一致的本地保留上限.
 const MAX_LOCAL_LOG_ENTRIES = 2000;
@@ -15,21 +11,29 @@ const storeState = {
 	entries: [],
 	count: 0,
 	version: 0,
-	stream: null,
-	reconnectTimer: null,
-	reconnectAttempt: 0,
 	started: false,
 	ready: false,
 };
 
-const getReconnectDelay = (attempt) => {
-	const safeAttempt = Math.max(0, Number(attempt) || 0);
-	const rawDelay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * (2 ** Math.max(0, safeAttempt - 1)));
-	const jitterFactor = 1 + ((Math.random() * 2 - 1) * RECONNECT_JITTER_RATIO);
-	return Math.max(RECONNECT_BASE_DELAY_MS, Math.round(rawDelay * jitterFactor));
-};
+let cachedEntries = Object.freeze([]);
+let cachedSnapshot = Object.freeze({
+	entries: cachedEntries,
+	count: 0,
+	version: 0,
+	ready: false,
+});
 
-const cloneEntries = (entries) => Array.isArray(entries) ? entries.map((item) => ({ ...item })) : [];
+const invalidateSnapshot = (entriesChanged = false) => {
+	if (entriesChanged) {
+		cachedEntries = Object.freeze(storeState.entries.slice());
+	}
+	cachedSnapshot = Object.freeze({
+		entries: cachedEntries,
+		count: storeState.count,
+		version: storeState.version,
+		ready: storeState.ready,
+	});
+};
 
 const emit = () => {
 	const snapshot = getSnapshot();
@@ -51,12 +55,9 @@ const rejectReadyWaiters = (error) => {
 	readyWaiters.clear();
 };
 
-export const getSnapshot = () => ({
-	entries: cloneEntries(storeState.entries),
-	count: storeState.count,
-	version: storeState.version,
-	ready: storeState.ready,
-});
+export const getSnapshot = () => {
+	return cachedSnapshot;
+};
 
 export const subscribe = (listener) => {
 	if (typeof listener !== 'function') {
@@ -85,6 +86,52 @@ const applyLogCount = (payload) => {
 		return;
 	}
 	storeState.count = count;
+	invalidateSnapshot(false);
+	emit();
+};
+
+// applyLogEntry 处理服务端推送的单条日志.
+const applyLogEntry = (payload) => {
+	const raw = payload?.entry || payload;
+	if (!raw) return;
+	const seq = Number(raw?.seq) || 0;
+	if (seq <= 0) return;
+	const entry = Object.freeze({
+		seq,
+		time: Number(raw?.time) || 0,
+		level: String(raw?.level || ''),
+		instance: String(raw?.instance || ''),
+		message: String(raw?.message || ''),
+	});
+	let entriesChanged = false;
+	if (storeState.entries.length > 0) {
+		const last = storeState.entries[storeState.entries.length - 1];
+		if (entry.seq > last.seq) {
+			storeState.entries.push(entry);
+			if (storeState.entries.length > MAX_LOCAL_LOG_ENTRIES) {
+				storeState.entries.shift();
+			}
+			entriesChanged = true;
+		} else if (!storeState.entries.some((item) => item.seq === entry.seq)) {
+			storeState.entries.push(entry);
+			storeState.entries.sort((a, b) => a.seq - b.seq);
+			if (storeState.entries.length > MAX_LOCAL_LOG_ENTRIES) {
+				storeState.entries.splice(0, storeState.entries.length - MAX_LOCAL_LOG_ENTRIES);
+			}
+			entriesChanged = true;
+		}
+	} else if (storeState.ready) {
+		storeState.entries.push(entry);
+		entriesChanged = true;
+	}
+	if (storeState.count < seq) {
+		storeState.count = seq;
+	}
+	if (Number.isFinite(payload?.count)) {
+		storeState.count = Math.max(storeState.count, Number(payload.count));
+	}
+	storeState.version = Number(payload?.version) || storeState.count;
+	invalidateSnapshot(entriesChanged);
 	emit();
 };
 
@@ -96,7 +143,7 @@ export const loadAll = async () => {
 	}
 	const entries = Array.isArray(result.data?.entries) ? result.data.entries : [];
 	// 服务端按 seq 倒序返回; 本地以 seq 升序存储.
-	storeState.entries = entries.slice().reverse().map((item) => ({
+	storeState.entries = entries.slice().reverse().map((item) => Object.freeze({
 		seq: Number(item?.seq) || 0,
 		time: Number(item?.time) || 0,
 		level: String(item?.level || ''),
@@ -104,81 +151,50 @@ export const loadAll = async () => {
 		message: String(item?.message || ''),
 	})).filter((item) => item.seq > 0);
 	storeState.ready = true;
+	invalidateSnapshot(true);
 	emit();
 };
 
-const stopSource = () => {
-	if (!storeState.stream) return;
-	storeState.stream.controller.abort();
-	storeState.stream = null;
-};
-
-const scheduleReconnect = (delay = null) => {
-	if (!storeState.started || storeState.reconnectTimer) return;
-	storeState.reconnectAttempt += 1;
-	const reconnectDelay = delay ?? getReconnectDelay(storeState.reconnectAttempt);
-	storeState.reconnectTimer = setTimeout(() => {
-		storeState.reconnectTimer = null;
-		connect();
-	}, reconnectDelay);
-};
-
-const connect = async () => {
-	if (!storeState.started || storeState.stream) return;
-	const controller = new AbortController();
-	const stream = { controller };
-	storeState.stream = stream;
+sseClient.on('log_count', (payload) => {
+	if (!storeState.started) return;
 	try {
-		const res = await postEventStream('/api/instance/events', {}, { signal: controller.signal });
-		await readSSEStream(res, {
-			auth_required() {
-				rejectReadyWaiters(new Error('需要身份验证'));
-				stop();
-				dispatchUnauthorized();
-			},
-			log_count(event) {
-				try {
-					applyLogCount(parseSSEJsonData(event, '运行日志计数事件解析失败'));
-				} catch (error) {
-					console.error('[SSE] 解析运行日志计数事件失败:', error);
-				}
-			},
-		});
+		applyLogCount(payload);
 	} catch (error) {
-		if (error.name !== 'AbortError') {
-			console.error('[SSE] 运行日志流连接失败:', error);
-		}
-	} finally {
-		if (storeState.stream === stream) {
-			storeState.stream = null;
-			if (storeState.started) {
-				scheduleReconnect();
-			}
-		}
+		console.error('[SSE] 解析运行日志计数事件失败:', error);
 	}
-};
+});
+
+sseClient.on('log_entry', (payload) => {
+	if (!storeState.started) return;
+	try {
+		applyLogEntry(payload);
+	} catch (error) {
+		console.error('[SSE] 解析运行日志条目事件失败:', error);
+	}
+});
+
+sseClient.on('auth_required', () => {
+	if (!storeState.started) return;
+	rejectReadyWaiters(new Error('需要身份验证'));
+	stop();
+});
 
 export const start = () => {
+	if (storeState.started) return;
 	storeState.started = true;
-	if (storeState.reconnectTimer) {
-		clearTimeout(storeState.reconnectTimer);
-		storeState.reconnectTimer = null;
-	}
-	connect();
+	sseClient.start();
 };
 
 export const stop = () => {
+	if (!storeState.started) return;
 	storeState.started = false;
-	if (storeState.reconnectTimer) {
-		clearTimeout(storeState.reconnectTimer);
-		storeState.reconnectTimer = null;
-	}
-	stopSource();
+	sseClient.stop();
 	storeState.ready = false;
 	storeState.version = 0;
 	storeState.count = 0;
 	storeState.entries = [];
 	rejectReadyWaiters(new Error('运行日志流已停止'));
+	invalidateSnapshot(true);
 	emit();
 };
 
@@ -186,6 +202,7 @@ export const stop = () => {
 export const resetLocal = () => {
 	storeState.entries = [];
 	storeState.count = 0;
+	invalidateSnapshot(true);
 	emit();
 };
 
@@ -198,3 +215,5 @@ export const logStore = {
 	loadAll,
 	resetLocal,
 };
+
+export default logStore;

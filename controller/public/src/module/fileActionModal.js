@@ -367,7 +367,7 @@ const extractErrorMessage = (error) => {
 			}
 		}
 	} catch (_) {
-		// 非 JSON 错误消息直接展示原文。
+		// 非 JSON 错误消息直接展示原文.
 	}
 	return rawMessage;
 };

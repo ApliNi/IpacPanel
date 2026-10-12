@@ -108,6 +108,9 @@ type settingsPowUpdateRequest struct {
 type settingsRestartControllerResponse struct {
 	Restarting bool `json:"restarting"`
 }
+type settingsStopDaemonResponse struct {
+	Stopping bool `json:"stopping"`
+}
 
 func HandleApiSettingsPublic(w http.ResponseWriter, r *http.Request) {
 	web.WriteOK(w, buildSettingsPublicResponse())
@@ -271,6 +274,18 @@ func HandleApiSettingsRestartController(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	web.WriteOK(w, settingsRestartControllerResponse{Restarting: true})
+	requestControllerShutdown()
+}
+
+func HandleApiSettingsStopDaemon(w http.ResponseWriter, r *http.Request) {
+	if !decodeOptionalJSONBody(w, r) {
+		return
+	}
+	if err := process.StopDaemon(); err != nil {
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.StopDaemonFailed, err)
+		return
+	}
+	web.WriteOK(w, settingsStopDaemonResponse{Stopping: true})
 	requestControllerShutdown()
 }
 

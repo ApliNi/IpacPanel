@@ -6,20 +6,19 @@
 	<meta name="theme-color" content="#202124">
     <title>IpacPanel</title>
 	<base href="/${IpacPanelVersion}/">
-	<link rel="preload" href="/lib/JetBrainsMono-Regular.woff2" as="font" type="font/woff2">
-	<link rel="stylesheet" href="/lib/JetBrainsMapleMono-Regular/result.css" />
-	<link rel="stylesheet" href="/lib/xterm.css" />
-	<link rel="stylesheet" href="/lib/uPlot.min.css" />
-	<link rel="stylesheet" href="/lib/monaco-editor/editor/editor.main.css" />
+	<link rel="preload" href="./lib/JetBrainsMono-Regular.woff2" as="font" type="font/woff2">
+	<link rel="stylesheet" href="./lib/JetBrainsMapleMono-Regular/result.css" />
+	<link rel="stylesheet" href="./lib/xterm.css" />
+	<link rel="stylesheet" href="./lib/uPlot.min.css" />
 	<style type="text/css">
 		@font-face {
 			font-family: 'JetBrains Mono';
-			src: url('/lib/JetBrainsMono-Regular.woff2') format('woff2');
+			src: url('./lib/JetBrainsMono-Regular.woff2') format('woff2');
 			font-display: swap;
 		}
 		@font-face {
 			font-family: 'Rotated Square';
-			src: url('/lib/rotated_square.woff2') format('woff2');
+			src: url('./lib/rotated_square.woff2') format('woff2');
 			font-display: swap;
 		}
 	</style>
@@ -32,10 +31,9 @@
     <div id="mainContainer" style="display:none;"></div>
 	<div id="mainModalOverlay"></div>
 
-	<script src="/lib/xterm.js"></script>
-	<script src="/lib/xterm-addon-fit.js"></script>
-	<script src="/lib/uPlot.iife.min.js"></script>
-	<script src="/lib/monaco-editor/loader.js"></script>
+	<script src="./lib/xterm.js"></script>
+	<script src="./lib/xterm-addon-fit.js"></script>
+	<script src="./lib/uPlot.iife.min.js"></script>
 	<script type="module" src="./src/ui.js"></script>
 </body>
 </html>

@@ -4,7 +4,7 @@ import { controlInstance, createWebSocket, fetchInstance } from '../api/instance
 import { normalizeTerminalMode, terminalMode } from '../utils/enum.js';
 import { icons } from '../utils/icon.js';
 import { InputValidation } from '../utils/inputValidation.js';
-import { showConfirm } from './dialog.js';
+import { showAlert, showConfirm } from './dialog.js';
 const getTerminalRuntime = () => {
 	const win = window;
 	const TerminalCtor = win.Terminal;
@@ -98,6 +98,7 @@ const cardState = {
 	isBound: false,
 	ctrlCConfirming: false,
 	terminalWriteQueue: [],
+	terminalWriteHead: 0,
 	terminalWriteRunning: false,
 	terminalWriteGeneration: 0,
 	terminalModeAtInit: null,
@@ -205,23 +206,37 @@ const createTerminalWriteEntry = (data, afterWrite = null) => {
 
 const resetTerminalWriteQueue = () => {
 	cardState.terminalWriteQueue.length = 0;
+	cardState.terminalWriteHead = 0;
 	cardState.terminalWriteRunning = false;
 	cardState.terminalWriteGeneration += 1;
 };
 
 const takeTerminalWriteBatch = () => {
-	const first = cardState.terminalWriteQueue.shift();
+	if (cardState.terminalWriteHead >= cardState.terminalWriteQueue.length) {
+		cardState.terminalWriteQueue.length = 0;
+		cardState.terminalWriteHead = 0;
+		return null;
+	}
+	const first = cardState.terminalWriteQueue[cardState.terminalWriteHead++];
 	if (!first || first.afterWrite || typeof first.chunk !== 'string') {
 		return first;
 	}
 
 	const parts = [first.chunk];
-	while (parts.length < TERMINAL_WRITE_BATCH_LIMIT) {
-		const next = cardState.terminalWriteQueue[0];
+	while (parts.length < TERMINAL_WRITE_BATCH_LIMIT && cardState.terminalWriteHead < cardState.terminalWriteQueue.length) {
+		const next = cardState.terminalWriteQueue[cardState.terminalWriteHead];
 		if (!next || next.afterWrite || typeof next.chunk !== 'string') {
 			break;
 		}
-		parts.push(cardState.terminalWriteQueue.shift().chunk);
+		parts.push(next.chunk);
+		cardState.terminalWriteHead++;
+	}
+	if (cardState.terminalWriteHead >= cardState.terminalWriteQueue.length) {
+		cardState.terminalWriteQueue.length = 0;
+		cardState.terminalWriteHead = 0;
+	} else if (cardState.terminalWriteHead > 512) {
+		cardState.terminalWriteQueue = cardState.terminalWriteQueue.slice(cardState.terminalWriteHead);
+		cardState.terminalWriteHead = 0;
 	}
 	return { chunk: parts.join(''), afterWrite: null };
 };
@@ -1211,20 +1226,20 @@ const bindCardEvents = () => {
     }
     cardState.isBound = true;
 
-	// 终端区域滚动优先：当鼠标/焦点在终端内时，禁止滚轮滚动外层 mainContainer
-	// 这样外层滚动条不会消失（不像 overflow-y: hidden），但滚动也不会被传递
+	// 终端区域滚动优先: 当鼠标/焦点在终端内时, 禁止滚轮滚动外层 mainContainer
+	// 这样外层滚动条不会消失 (不像 overflow-y: hidden), 但滚动也不会被传递
 	if (dom.terminalWrapper) {
 		dom.terminalWrapper.addEventListener('wheel', (event) => {
-			// 只在需要时阻断外层滚动；不能用 capture/stopPropagation，否则会拦截到 xterm 的 wheel
+			// 只在需要时阻断外层滚动; 不能用 capture/stopPropagation, 否则会拦截到 xterm 的 wheel
 			if (!mainContainer) return;
 			const el = mainContainer;
 			if (el.scrollHeight <= el.clientHeight) return;
-			// 如果内部（xterm viewport）已经处理并 preventDefault，则外层不会滚动
+			// 如果内部 (xterm viewport) 已经处理并 preventDefault, 则外层不会滚动
 			if (event.defaultPrevented) return;
 
-			// 尽量不影响终端自身滚动：
-			// - 若 xterm 走原生滚动（viewport scrollTop），仅在触顶/触底继续滚动时阻断外层滚动链
-			// - 若 xterm 走自定义 wheel 处理但未 preventDefault，则直接阻断外层滚动链
+			// 终端自身滚动处理:
+			// - 若 xterm 走原生滚动 (viewport scrollTop), 仅在触顶/触底继续滚动时阻断外层滚动链
+			// - 若 xterm 走自定义 wheel 处理但未 preventDefault, 则直接阻断外层滚动链
 			const viewport = dom.terminalWrapper.querySelector('.xterm-viewport');
 			if (viewport && viewport.scrollHeight > viewport.clientHeight) {
 				const dy = event.deltaY;
@@ -1241,37 +1256,46 @@ const bindCardEvents = () => {
 	}
 
 	if (dom.ctrlStart) {
-        dom.ctrlStart.onclick = async () => {
+		dom.ctrlStart.onclick = async () => {
 			const name = state.currentInstanceName;
 			if (!name) return;
 			const result = await controlInstance(name, 'start');
-	            if (result.ok) {
+			if (result.ok) {
 				patchCurrentSvc({ restarting: false });
-	                updateStatusDisplay(getCurrentSvc());
-	            }
-        };
-    }
+				updateStatusDisplay(getCurrentSvc());
+			} else {
+				showAlert(result.error || result.message || '启动实例失败.', { title: 'START FAILED', tone: 'danger' });
+			}
+		};
+	}
 
 	if (dom.ctrlStop) {
-        dom.ctrlStop.onclick = async () => {
+		dom.ctrlStop.onclick = async () => {
 			const name = state.currentInstanceName;
 			if (!name) return;
 			const result = await controlInstance(name, 'stop');
-	            if (result.ok) {
+			if (result.ok) {
 				patchCurrentSvc({ restarting: false });
-	                updateStatusDisplay(getCurrentSvc());
-	            }
-        };
-    }
-
-    if (dom.ctrlRestart) {
-        dom.ctrlRestart.onclick = async () => {
-			const name = state.currentInstanceName;
-			if (name) {
-				void controlInstance(name, 'restart');
+				updateStatusDisplay(getCurrentSvc());
+			} else {
+				showAlert(result.error || result.message || '停止实例失败.', { title: 'STOP FAILED', tone: 'danger' });
 			}
-        };
-    }
+		};
+	}
+
+	if (dom.ctrlRestart) {
+		dom.ctrlRestart.onclick = async () => {
+			const name = state.currentInstanceName;
+			if (!name) return;
+			const result = await controlInstance(name, 'restart');
+			if (result.ok) {
+				patchCurrentSvc({ restarting: true });
+				updateStatusDisplay(getCurrentSvc());
+			} else {
+				showAlert(result.error || result.message || '重启实例失败.', { title: 'RESTART FAILED', tone: 'danger' });
+			}
+		};
+	}
 
 	if (dom.ctrlKill) {
 		dom.ctrlKill.onclick = async () => {
@@ -1285,7 +1309,13 @@ const bindCardEvents = () => {
 				tone: 'danger',
 			});
 			if (ok) {
-				void controlInstance(name, 'kill');
+				const result = await controlInstance(name, 'kill');
+				if (result.ok) {
+					patchCurrentSvc({ restarting: false });
+					updateStatusDisplay(getCurrentSvc());
+				} else {
+					showAlert(result.error || result.message || '强制结束实例失败.', { title: 'KILL FAILED', tone: 'danger' });
+				}
 			}
 		};
 	}

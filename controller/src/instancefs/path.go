@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"unicode/utf8"
 )
@@ -37,6 +38,12 @@ func (fs *InstanceFS) Resolve(relativePath string) (SafePath, error) {
 	relativePath = strings.TrimSpace(relativePath)
 	if textTooLong(relativePath, maxFilePathTextLen) {
 		return SafePath{}, errors.New(msg.PathTooLong)
+	}
+	if strings.ContainsRune(relativePath, '\x00') {
+		return SafePath{}, ErrPathOutsideInstanceRoot
+	}
+	if runtime.GOOS == "windows" && strings.Contains(relativePath, ":") {
+		return SafePath{}, ErrPathOutsideInstanceRoot
 	}
 	if relativePath != "" {
 		osPath := strings.ReplaceAll(relativePath, "\\", string(filepath.Separator))

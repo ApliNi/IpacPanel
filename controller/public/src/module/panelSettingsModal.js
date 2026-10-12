@@ -1,9 +1,10 @@
-import { applyWebTitle, mainModalOverlay } from '../ui.js';
+import { applyWebTitle, mainModalOverlay, state } from '../ui.js';
 import { abortControllerUpdateUpload, completeControllerUpdateUpload, initControllerUpdateUpload, uploadControllerUpdateChunk } from '../api/controllerUpdate.js';
 import { clearTimer, formatFileSize, getUploadErrorText, withActionsDisabled } from '../utils/utils.js';
-import { fetchSettings, restartController, updateSettings } from '../api/settings.js';
+import { fetchSettings, restartController, stopDaemon, updateSettings } from '../api/settings.js';
 import { InputValidation } from '../utils/inputValidation.js';
 import { showAlert, showConfirm } from './dialog.js';
+import { bootUserManageTab, USER_SCOPE_TEXT_MAX_LENGTH } from './userManageTab.js';
 
 const UPDATE_UPLOAD_CHUNK_SIZE = 9 * 1024 * 1024;
 const UPDATE_UPLOAD_CONCURRENCY = 4;
@@ -21,6 +22,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 				<div class="filter-group panel-settings-main-tabs">
 					<button id="panelSettingsMainTabConfig" class="filter-btn active" type="button" data-page="config">CONFIG</button>
 					<button id="panelSettingsMainTabWebUi" class="filter-btn" type="button" data-page="web-ui">WEB UI</button>
+					<button id="panelSettingsMainTabUser" class="filter-btn" type="button" data-page="user">USER</button>
 					<button id="panelSettingsMainTabUpload" class="filter-btn" type="button" data-page="upload">UPDATE</button>
 					<button id="panelSettingsMainTabDebug" class="filter-btn" type="button" data-page="debug">DEBUG</button>
 				</div>
@@ -29,6 +31,11 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 					<button id="panelSettingsConfigTabMetrics" class="filter-btn" type="button" data-page="metrics">METRICS</button>
 					<button id="panelSettingsConfigTabWeb" class="filter-btn" type="button" data-page="web">WEB</button>
 					<button id="panelSettingsConfigTabPow" class="filter-btn" type="button" data-page="pow">POW</button>
+				</div>
+				<div id="panelSettingsUserTabs" class="filter-group filter-group-v2 hidden">
+					<button id="panelSettingsUserTabMe" class="filter-btn active" type="button" data-page="me">ME</button>
+					<button id="panelSettingsUserTabUsers" class="filter-btn" type="button" data-page="users">USERS</button>
+					<button id="panelSettingsUserTabEdit" class="filter-btn" type="button" data-page="edit">EDIT</button>
 				</div>
 				<form id="panelSettingsOptionsPage" class="panel-settings-page modal-card-loading-content active" novalidate>
 					<div class="field-group">
@@ -203,6 +210,10 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 						<span>CONTROLLER</span>
 						<button id="panelSettingsRestartController" class="btn" type="button">RESTART CONTROLLER</button>
 					</div>
+					<div class="field-group">
+						<span>DAEMON</span>
+						<button id="panelSettingsStopDaemon" class="btn" type="button">STOP DAEMON</button>
+					</div>
 					<div class="modal-actions modal-actions-split">
 						<span id="panelSettingsDebugStatus" aria-live="polite"></span>
 						<div class="modal-actions-group">
@@ -224,7 +235,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 					<div class="field-group field-group-dynamic-label">
 						<label class="checkbox-group instance-advanced-toggle">
 							<input id="controllerUpdateReplaceMode" type="checkbox" autocomplete="off">
-							<span>以替换方式更新</span>
+							<span>同时更新守护进程且不重启</span>
 						</label>
 					</div>
 						<div id="controllerUpdateProgressWrap" class="file-upload-item hidden">
@@ -247,7 +258,86 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 							<button id="controllerUpdateApply" class="btn btn-start" type="button">UPDATE</button>
 						</div>
 					</div>
+					</div>
+				<form id="userManagePageMe" class="user-manage-page user-manage-page-me modal-card-loading-content" novalidate>
+					<div class="field-group">
+						<span>NAME</span>
+						<input id="userManageMeName" type="text" maxlength="32" autocomplete="off">
+					</div>
+					<div class="user-manage-pass-row">
+						<div class="field-group user-manage-pass-field">
+							<span>PASSWORD</span>
+							<input id="userManageMePass" type="password" maxlength="4096" autocomplete="new-password" placeholder=" Empty to keep">
+						</div>
+						<div class="field-group user-manage-pass-confirm">
+							<span>CONFIRM PASSWORD</span>
+							<input id="userManageMePass2" type="password" maxlength="4096" autocomplete="new-password" placeholder=" Repeat password">
+						</div>
+					</div>
+					<div id="userManageMeActions" class="modal-actions">
+						<span id="userManageMeStatus" aria-live="polite"></span>
+						<button class="btn" type="button" id="userManageResetToken">RESET TOKEN</button>
+						<button class="btn" type="button" id="userManageLogout">LOGOUT</button>
+						<span class="controls-divider" aria-hidden="true">|</span>
+						<button class="btn" type="button" id="userManageCancel">CLOSE</button>
+						<button class="btn btn-start" type="submit" id="userManageMeSave">SAVE</button>
+					</div>
+				</form>
+				<div id="userManagePageUsers" class="user-manage-page modal-card-loading-content">
+					<div class="field-group">
+						<div id="userManageList" class="user-manage-list"></div>
+					</div>
+					<div id="userManageActions" class="modal-actions">
+						<button class="btn" type="button" id="userManageCancel2">CLOSE</button>
+					</div>
 				</div>
+				<form id="userManagePageEdit" class="user-manage-page user-manage-page-edit modal-card-loading-content" novalidate>
+					<div class="field-group">
+						<span>USER</span>
+						<div class="select-wrapper"><select id="userManageEditSelect" autocomplete="off"></select></div>
+					</div>
+					<div class="user-manage-user-pass-row">
+						<div class="field-group">
+							<span>NAME</span>
+							<input id="userManageEditName" type="text" maxlength="32" autocomplete="off">
+						</div>
+						<div class="field-group">
+							<span>PASSWORD</span>
+							<input id="userManageEditPass" type="password" maxlength="4096" autocomplete="new-password" placeholder=" Empty to keep">
+						</div>
+					</div>
+					<div class="field-group">
+						<span>PERM</span>
+						<div class="select-wrapper"><select id="userManageEditPerm" autocomplete="off"></select></div>
+					</div>
+					<div class="field-group field-group-dynamic-label">
+						<span>ALLOW GROUPS</span>
+						<div class="user-manage-scope-row">
+							<div class="select-wrapper">
+								<select id="userManageEditGroupAdd" autocomplete="off"></select>
+							</div>
+							<button id="userManageEditGroupAddBtn" class="btn" type="button">ADD</button>
+						</div>
+						<textarea id="userManageEditGroups" rows="3" maxlength="${USER_SCOPE_TEXT_MAX_LENGTH}" placeholder=" one per line"></textarea>
+					</div>
+					<div class="field-group field-group-dynamic-label">
+						<span>ALLOW INSTANCES</span>
+						<div class="user-manage-scope-row">
+							<div class="select-wrapper">
+								<select id="userManageEditInstanceAdd" autocomplete="off"></select>
+							</div>
+							<button id="userManageEditInstanceAddBtn" class="btn" type="button">ADD</button>
+						</div>
+						<textarea id="userManageEditInstances" rows="4" maxlength="${USER_SCOPE_TEXT_MAX_LENGTH}" placeholder=" one per line"></textarea>
+					</div>
+					<div id="userManageEditActions" class="modal-actions">
+						<span id="userManageEditStatus" aria-live="polite"></span>
+						<button class="btn" type="button" id="userManageEditDelete">DELETE</button>
+						<span class="controls-divider" aria-hidden="true">|</span>
+						<button class="btn" type="button" id="userManageEditClose">CLOSE</button>
+						<button class="btn btn-start" type="submit" id="userManageEditSave">SAVE</button>
+					</div>
+				</form>
 			</div>
 		</div>
 	</div>
@@ -259,9 +349,14 @@ const dom = {
 	close: document.getElementById('panelSettingsClose'),
 	configMainTab: document.getElementById('panelSettingsMainTabConfig'),
 	webUiMainTab: document.getElementById('panelSettingsMainTabWebUi'),
+	userMainTab: document.getElementById('panelSettingsMainTabUser'),
 	uploadMainTab: document.getElementById('panelSettingsMainTabUpload'),
 	debugMainTab: document.getElementById('panelSettingsMainTabDebug'),
 	configTabs: document.getElementById('panelSettingsConfigTabs'),
+	userTabs: document.getElementById('panelSettingsUserTabs'),
+	userTabMe: document.getElementById('panelSettingsUserTabMe'),
+	userTabUsers: document.getElementById('panelSettingsUserTabUsers'),
+	userTabEdit: document.getElementById('panelSettingsUserTabEdit'),
 	optionsConfigTab: document.getElementById('panelSettingsConfigTabOptions'),
 	metricsConfigTab: document.getElementById('panelSettingsConfigTabMetrics'),
 	webConfigTab: document.getElementById('panelSettingsConfigTabWeb'),
@@ -273,6 +368,9 @@ const dom = {
 	debugPage: document.getElementById('panelSettingsDebugPage'),
 	webUiPage: document.getElementById('panelSettingsWebUiPage'),
 	uploadPage: document.getElementById('panelSettingsUploadPage'),
+	userPageMe: document.getElementById('userManagePageMe'),
+	userPageUsers: document.getElementById('userManagePageUsers'),
+	userPageEdit: document.getElementById('userManagePageEdit'),
 	webTitle: document.getElementById('panelSettingsWebTitle'),
 	listen: document.getElementById('panelSettingsListen'),
 	webEnableHttps: document.getElementById('panelSettingsWebEnableHttps'),
@@ -310,6 +408,7 @@ const dom = {
 	debugCancel: document.getElementById('panelSettingsDebugCancel'),
 	debugSave: document.getElementById('panelSettingsDebugSave'),
 	restartController: document.getElementById('panelSettingsRestartController'),
+	stopDaemon: document.getElementById('panelSettingsStopDaemon'),
 	settingsCancel: document.getElementById('panelSettingsCancel'),
 	settingsSave: document.getElementById('panelSettingsSave'),
 	settingsStatus: document.getElementById('panelSettingsStatus'),
@@ -329,6 +428,8 @@ const dom = {
 	cancel: document.getElementById('controllerUpdateCancel'),
 	apply: document.getElementById('controllerUpdateApply'),
 };
+
+let userTab = null;
 
 const panelSettingsState = {
 	closeTimer: null,
@@ -602,17 +703,30 @@ const applyConfigPage = (page) => {
 	dom.powPage.classList.toggle('active', targetPage === 'pow');
 };
 
-const applyMainPage = (page, configPage = panelSettingsState.currentConfigPage) => {
-	const targetPage = page === 'upload' || page === 'debug' || page === 'web-ui' ? page : 'config';
+const applyMainPage = async (page, subPage = null) => {
+	const targetPage = (!state.isAdmin)
+		? 'user'
+		: (page === 'upload' || page === 'debug' || page === 'web-ui' || page === 'user' ? page : 'config');
 	panelSettingsState.currentMainPage = targetPage;
 	dom.configMainTab.classList.toggle('active', targetPage === 'config');
 	dom.webUiMainTab.classList.toggle('active', targetPage === 'web-ui');
+	dom.userMainTab.classList.toggle('active', targetPage === 'user');
 	dom.uploadMainTab.classList.toggle('active', targetPage === 'upload');
 	dom.debugMainTab.classList.toggle('active', targetPage === 'debug');
 	dom.configTabs.classList.toggle('hidden', targetPage !== 'config');
+	dom.userTabs.classList.toggle('hidden', targetPage !== 'user');
 	if (targetPage === 'config') {
-		applyConfigPage(configPage);
+		userTab?.deactivatePages?.();
+		applyConfigPage(subPage || panelSettingsState.currentConfigPage);
+	} else if (targetPage === 'user') {
+		dom.optionsPage.classList.remove('active');
+		dom.metricsPage.classList.remove('active');
+		dom.webPage.classList.remove('active');
+		dom.powPage.classList.remove('active');
+		const userTargetSubPage = (!state.isAdmin) ? 'me' : (subPage || userTab?.getCurrentPage?.() || 'me');
+		await userTab?.applyUserPage?.(userTargetSubPage);
 	} else {
+		userTab?.deactivatePages?.();
 		dom.optionsPage.classList.remove('active');
 		dom.metricsPage.classList.remove('active');
 		dom.webPage.classList.remove('active');
@@ -861,7 +975,7 @@ const saveDebugSettings = async () => {
 };
 
 const restartControllerFromSettings = async () => {
-	const ok = await showConfirm('确认后管理进程会重启. 实例进程会继续运行, 页面可能短暂断开.', { title: 'RESTART CONTROLLER', okText: 'RESTART' });
+	const ok = await showConfirm('确认后管理进程将会重启. 实例进程会继续运行, 页面可能短暂断开.', { title: 'RESTART CONTROLLER', okText: 'RESTART' });
 	if (!ok) return false;
 	setDebugStatus('RESTARTING');
 	const result = await restartController();
@@ -870,6 +984,20 @@ const restartControllerFromSettings = async () => {
 		return false;
 	}
 	void showAlert('管理进程正在重启, 请稍候后刷新页面或等待页面自动恢复.', { title: 'RESTARTING', okText: 'OK' });
+	return true;
+};
+
+const stopDaemonFromSettings = async () => {
+	const ok = await showConfirm('确认后守护进程将直接退出. 所有运行中的实例将被终止.', { title: 'STOP DAEMON', okText: 'STOP' });
+	if (!ok) return false;
+	setDebugStatus('STOPPING');
+	const result = await stopDaemon();
+	if (!result.ok) {
+		setDebugStatus(result.error || 'STOP DAEMON FAILED', true);
+		return false;
+	}
+	setDebugStatus('STOPPED');
+	void showAlert('守护进程已停止, 所有实例与管理进程已退出.', { title: 'STOPPED', okText: 'OK' });
 	return true;
 };
 
@@ -1099,7 +1227,7 @@ const uploadSelectedFileAndApply = async () => {
 	panelSettingsState.selectedFile = null;
 	if (uploaded.replaced) {
 		setActionStatus('REPLACED');
-		void showAlert('程序文件已替换, 重启服务器后生效.', { title: 'REPLACED', okText: 'OK' });
+		void showAlert('程序文件已替换, 重启服务后生效.', { title: 'REPLACED', okText: 'OK' });
 		return true;
 	}
 	setActionStatus('RESTARTING');
@@ -1112,9 +1240,11 @@ const uploadSelectedFileAndApply = async () => {
 const bindEvents = () => {
 	if (panelSettingsState.isBound) return;
 	panelSettingsState.isBound = true;
+	userTab = bootUserManageTab({ closeModal });
 	dom.close.addEventListener('click', closeModal);
 	dom.configMainTab.addEventListener('click', () => applyMainPage('config'));
 	dom.webUiMainTab.addEventListener('click', () => applyMainPage('web-ui'));
+	dom.userMainTab.addEventListener('click', () => applyMainPage('user'));
 	dom.uploadMainTab.addEventListener('click', () => applyMainPage('upload'));
 	dom.debugMainTab.addEventListener('click', () => applyMainPage('debug'));
 	dom.optionsConfigTab.addEventListener('click', () => applyConfigPage('options'));
@@ -1150,6 +1280,9 @@ const bindEvents = () => {
 	dom.restartController.addEventListener('click', () => {
 		void withActionsDisabled(dom.restartController.parentElement, restartControllerFromSettings);
 	});
+	dom.stopDaemon.addEventListener('click', () => {
+		void withActionsDisabled(dom.stopDaemon.parentElement, stopDaemonFromSettings);
+	});
 	dom.dropzone.addEventListener('click', () => {
 		if (!panelSettingsState.locked) dom.fileInput.click();
 	});
@@ -1182,11 +1315,28 @@ export const bootPanelSettingsModal = () => {
 	return {
 		open: async () => {
 			panelSettingsState.closeTimer = clearTimer(panelSettingsState.closeTimer);
-			applyMainPage('config', 'options');
-			beginSettingsLoad();
+			const isAdmin = !!state.isAdmin;
+			dom.configMainTab.classList.toggle('hidden', !isAdmin);
+			dom.webUiMainTab.classList.toggle('hidden', !isAdmin);
+			dom.uploadMainTab.classList.toggle('hidden', !isAdmin);
+			dom.debugMainTab.classList.toggle('hidden', !isAdmin);
+			dom.userMainTab.classList.remove('hidden');
+
+			userTab?.syncUserTabVisibility?.(isAdmin);
+
 			dom.modal.style.display = 'flex';
 			dom.modal.classList.remove('closing');
 			requestAnimationFrame(() => dom.modal.classList.add('visible'));
+
+			if (!isAdmin) {
+				await applyMainPage('user', 'me');
+				userTab?.focusMeNameAfterLoad?.();
+				setActionStatus('');
+				return;
+			}
+
+			applyMainPage('config', 'options');
+			beginSettingsLoad();
 			const loaded = await refreshSettings();
 			finishSettingsLoad(loaded);
 			setActionStatus('');

@@ -391,8 +391,7 @@ func HandleApiInstanceDelete(w http.ResponseWriter, r *http.Request) {
 					cfg.ManagerMu.Unlock()
 					web.MarkAPIError(w, http.StatusConflict, msg.InactiveInstanceUsesSameDir, nil)
 					web.WriteJSONStatus(w, http.StatusConflict, web.APIResponse{
-						OK:      false,
-						Message: msg.InactiveInstanceUsesSameDir,
+						Error: msg.InactiveInstanceUsesSameDir,
 						Data: map[string]any{
 							"confirm_required": true,
 						},

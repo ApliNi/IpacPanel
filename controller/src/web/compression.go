@@ -18,11 +18,22 @@ import (
 
 var zstdEncoderPool = sync.Pool{
 	New: func() any {
-		encoder, err := zstd.NewWriter(nil)
+		encoder, err := zstd.NewWriter(nil,
+			zstd.WithEncoderConcurrency(1),
+			zstd.WithLowerEncoderMem(true),
+			zstd.WithEncoderLevel(zstd.SpeedFastest),
+			zstd.WithWindowSize(128*1024),
+		)
 		if err != nil {
 			panic(err)
 		}
 		return encoder
+	},
+}
+
+var gzipEncoderPool = sync.Pool{
+	New: func() any {
+		return gzip.NewWriter(io.Discard)
 	},
 }
 
@@ -149,6 +160,8 @@ func (w *compressionResponseWriter) Close() {
 	_ = w.compressor.Close()
 	if encoder, ok := w.compressor.(*zstd.Encoder); ok {
 		zstdEncoderPool.Put(encoder)
+	} else if gw, ok := w.compressor.(*gzip.Writer); ok {
+		gzipEncoderPool.Put(gw)
 	}
 	w.compressor = nil
 }
@@ -203,7 +216,9 @@ func (w *compressionResponseWriter) startCompression() error {
 		encoder.Reset(w.ResponseWriter)
 		w.compressor = encoder
 	case contentEncodingGzip:
-		w.compressor = gzip.NewWriter(w.ResponseWriter)
+		gw := gzipEncoderPool.Get().(*gzip.Writer)
+		gw.Reset(w.ResponseWriter)
+		w.compressor = gw
 	default:
 		return nil
 	}

@@ -48,6 +48,7 @@ const (
 	TooManyStreams          = "并发流数量已达上限"
 	DirectoryPathEmpty      = "目录路径为空"
 	DestinationNotDirectory = "目标路径不是目录"
+	FileBatchRulesTooMany   = "批量操作规则数量超出限制"
 
 	FileNameRequired              = "名称不能为空"
 	FileNameInvalid               = "名称无效"
@@ -333,6 +334,7 @@ const (
 	RemoveControllerUpdateTaskDirFailedLogFmt                       = "清理控制器更新任务目录失败: %v"
 	RemoveReplacedOldBinaryFailedLogFmt                             = "删除替换模式更新遗留的二进制备份失败: path=%s err=%v"
 	RestartControllerFailed                                         = "重启管理进程失败"
+	StopDaemonFailed                                                = "停止守护进程失败"
 	UploadDirectoryManifestInvalid                                  = "上传目录清单无效"
 	UploadTargetIsDirectory                                         = "目标路径是目录"
 	UploadTargetFileAlreadyExists                                   = "目标文件已存在"
@@ -432,6 +434,7 @@ const (
 	DashboardCollectDiskMetricsFailedLogFmt                         = "采集仪表板磁盘指标失败: %v"
 	DashboardCollectTCPConnectionMetricsFailedLogFmt                = "采集仪表板 TCP 连接指标失败: %v"
 	DashboardCollectUDPConnectionMetricsFailedLogFmt                = "采集仪表板 UDP 连接指标失败: %v"
+	DashboardCollectSocketMetricsFailedLogFmt                       = "采集仪表板套接字指标失败: %v"
 	DashboardSQLiteInitFailedWarningLogFmt                          = "仪表板 SQLite 警告: 初始化数据库失败: %v"
 	DashboardSQLiteWriteDataFailedWarningLogFmt                     = "仪表板 SQLite 警告: 写入仪表板数据失败: %v"
 	DashboardSQLiteCreateDirFailedWarningLogFmt                     = "仪表板 SQLite 警告: 创建仪表板数据库目录失败: %v"
@@ -569,4 +572,6 @@ const (
 	WaitControllerServerExitTimeoutAfterShutdownLog         = "管理进程关闭后等待服务器退出超时"
 	ControllerShutdownTimeoutForceCloseLogFmt               = "管理进程关闭超时, 强制关闭服务器: %v"
 	ForceCloseControllerServerAfterShutdownTimeoutFailedFmt = "管理进程关闭超时后强制关闭服务器失败: %w"
+	ControllerDaemonDisconnectedExitLog                     = "与守护进程连接断开, 管理进程正在退出..."
+	ControllerReceivedSignalExitLogFmt                      = "收到退出信号 %v, 管理进程正在退出..."
 )

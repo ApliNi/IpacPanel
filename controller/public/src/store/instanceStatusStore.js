@@ -1,8 +1,4 @@
-import { dispatchUnauthorized, parseSSEJsonData, postEventStream, readSSEStream } from '../api/core.js';
-
-const RECONNECT_BASE_DELAY_MS = 400;
-const RECONNECT_MAX_DELAY_MS = 5000;
-const RECONNECT_JITTER_RATIO = 0.2;
+import { sseClient } from './sseClient.js';
 
 const listeners = new Set();
 const readyWaiters = new Set();
@@ -10,18 +6,8 @@ const readyWaiters = new Set();
 const storeState = {
 	instances: [],
 	version: 0,
-	stream: null,
-	reconnectTimer: null,
-	reconnectAttempt: 0,
 	started: false,
 	ready: false,
-};
-
-const getReconnectDelay = (attempt) => {
-	const safeAttempt = Math.max(0, Number(attempt) || 0);
-	const rawDelay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * (2 ** Math.max(0, safeAttempt - 1)));
-	const jitterFactor = 1 + ((Math.random() * 2 - 1) * RECONNECT_JITTER_RATIO);
-	return Math.max(RECONNECT_BASE_DELAY_MS, Math.round(rawDelay * jitterFactor));
 };
 
 const cloneInstances = (instances) => Array.isArray(instances)
@@ -86,7 +72,6 @@ const replaceSnapshot = (payload) => {
 	storeState.instances = cloneInstances(payload?.items);
 	storeState.version = Number.isFinite(payload?.version) ? Number(payload.version) : 0;
 	storeState.ready = true;
-	storeState.reconnectAttempt = 0;
 	emit();
 };
 
@@ -94,8 +79,7 @@ const applyPatch = (payload) => {
 	const version = Number.isFinite(payload?.version) ? Number(payload.version) : 0;
 	const items = Array.isArray(payload?.items) ? payload.items : [];
 	if (version <= 0 || (storeState.version > 0 && version !== storeState.version + 1)) {
-		stopSource();
-		scheduleReconnect(0);
+		sseClient.reconnect(0);
 		return;
 	}
 	const patchMap = new Map();
@@ -122,87 +106,49 @@ const applyPatch = (payload) => {
 	}
 	storeState.version = version;
 	if (requiresFull) {
-		stopSource();
-		scheduleReconnect(0);
+		sseClient.reconnect(0);
 		return;
 	}
 	emit(changedNames);
 };
 
-const stopSource = () => {
-	if (!storeState.stream) return;
-	storeState.stream.controller.abort();
-	storeState.stream = null;
-};
-
-const scheduleReconnect = (delay = null) => {
-	if (!storeState.started || storeState.reconnectTimer) return;
-	storeState.reconnectAttempt += 1;
-	const reconnectDelay = delay ?? getReconnectDelay(storeState.reconnectAttempt);
-	storeState.reconnectTimer = setTimeout(() => {
-		storeState.reconnectTimer = null;
-		connect();
-	}, reconnectDelay);
-};
-
-const connect = async () => {
-	if (!storeState.started || storeState.stream) return;
-	const controller = new AbortController();
-	const stream = { controller };
-	storeState.stream = stream;
+sseClient.on('snapshot', (payload) => {
+	if (!storeState.started) return;
 	try {
-		const res = await postEventStream('/api/instance/events', {}, { signal: controller.signal });
-		await readSSEStream(res, {
-			auth_required() {
-				rejectReadyWaiters(new Error('需要身份验证'));
-				stop();
-				dispatchUnauthorized();
-			},
-			instances_full(event) {
-				try {
-					replaceSnapshot(parseSSEJsonData(event, '实例全量事件解析失败'));
-				} catch (error) {
-					console.error('[SSE] 解析实例全量事件失败:', error);
-				}
-			},
-			instances_patch(event) {
-				try {
-					applyPatch(parseSSEJsonData(event, '实例增量事件解析失败'));
-				} catch (error) {
-					console.error('[SSE] 解析实例增量事件失败:', error);
-				}
-			},
-		});
+		replaceSnapshot(payload);
 	} catch (error) {
-		if (error.name !== 'AbortError') {
-			console.error('[SSE] 实例状态流连接失败:', error);
-		}
-	} finally {
-		if (storeState.stream === stream) {
-			storeState.stream = null;
-			if (storeState.started) {
-				scheduleReconnect();
-			}
-		}
+		console.error('[SSE] 解析实例全量事件失败:', error);
 	}
-};
+});
+
+sseClient.on('patch', (payload) => {
+	if (!storeState.started) return;
+	try {
+		applyPatch(payload);
+	} catch (error) {
+		console.error('[SSE] 解析实例增量事件失败:', error);
+	}
+});
+
+sseClient.on('auth_required', () => {
+	if (!storeState.started) return;
+	rejectReadyWaiters(new Error('需要身份验证'));
+	stop();
+});
 
 export const start = () => {
+	if (storeState.started) return;
 	storeState.started = true;
-	if (storeState.reconnectTimer) {
-		clearTimeout(storeState.reconnectTimer);
-		storeState.reconnectTimer = null;
+	sseClient.start();
+	if (sseClient.isConnected() && storeState.version === 0) {
+		sseClient.reconnect(0);
 	}
-	connect();
 };
 
 export const stop = () => {
+	if (!storeState.started) return;
 	storeState.started = false;
-	if (storeState.reconnectTimer) {
-		clearTimeout(storeState.reconnectTimer);
-		storeState.reconnectTimer = null;
-	}
-	stopSource();
+	sseClient.stop();
 	storeState.ready = false;
 	storeState.version = 0;
 	storeState.instances = [];
@@ -219,3 +165,5 @@ export const instanceStatusStore = {
 	getInstance,
 	waitForReady,
 };
+
+export default instanceStatusStore;

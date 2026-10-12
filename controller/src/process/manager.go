@@ -79,13 +79,11 @@ func RestoreDaemonRuntimeStates(states []DaemonRuntimeState) {
 		runtimeByName[state.InstanceName] = state
 	}
 
-	cfg.ManagerMu.RLock()
+	cfg.ManagerMu.Lock()
 	processes := make(map[string]*InstanceProcess, len(InstanceProcesses))
 	for name, sp := range InstanceProcesses {
 		processes[name] = sp
 	}
-	cfg.ManagerMu.RUnlock()
-
 	for name, sp := range processes {
 		if sp == nil {
 			continue
@@ -118,6 +116,7 @@ func RestoreDaemonRuntimeStates(states []DaemonRuntimeState) {
 		sp.Mu.Unlock()
 		NotifyInstanceStatusChanged(name)
 	}
+	cfg.ManagerMu.Unlock()
 }
 
 func RestoreDaemonAutoRestarts(states []DaemonRuntimeState) {

@@ -16,9 +16,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	cfg "IpacPanel/controller/src/config"
@@ -47,6 +49,31 @@ func waitControllerServerExit(serverErrCh <-chan error) error {
 	}
 }
 
+func shutdownControllerServer(server *http.Server, stopServerBaseCtx context.CancelFunc, serverErrCh <-chan error) error {
+	stopServerBaseCtx()
+	process.DisconnectAllInstanceClients()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownErr := server.Shutdown(ctx)
+	cancel()
+	if errors.Is(shutdownErr, context.DeadlineExceeded) {
+		log.Printf(msg.ControllerShutdownTimeoutForceCloseLogFmt, shutdownErr)
+		closeErr := server.Close()
+		if !isExpectedControllerServerCloseError(closeErr) {
+			shutdownErr = fmt.Errorf(msg.ForceCloseControllerServerAfterShutdownTimeoutFailedFmt, closeErr)
+		} else {
+			shutdownErr = nil
+		}
+	}
+	serverErr := waitControllerServerExit(serverErrCh)
+	api.CleanupUploadTempDir()
+	if err := file.CleanupRegisteredAtomicTemps(); err != nil {
+		return err
+	}
+	if shutdownErr != nil {
+		return shutdownErr
+	}
+	return serverErr
+}
 func stripVersionedPublicPath(requestPath string) (string, bool) {
 	if !versionedPublicPathPattern.MatchString(requestPath) {
 		return requestPath, false
@@ -328,8 +355,11 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 	}
 	api.CleanupReplacedOldBinaries()
 	api.CleanupUpdateTempDir()
-
 	process.RestoreDaemonAutoRestarts(runtimeStates)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 
 	if !opts.AutoStartInstances {
 		log.Println(msg.ControllerRestartedAutoStartSkipped)
@@ -339,6 +369,12 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 			select {
 			case err := <-serverErrCh:
 				return err
+			case <-process.DaemonDisconnected():
+				log.Println(msg.ControllerDaemonDisconnectedExitLog)
+				return shutdownControllerServer(server, stopServerBaseCtx, serverErrCh)
+			case sig := <-sigCh:
+				log.Printf(msg.ControllerReceivedSignalExitLogFmt, sig)
+				return shutdownControllerServer(server, stopServerBaseCtx, serverErrCh)
 			default:
 			}
 			ins := sp.InstanceSnapshot()
@@ -366,29 +402,13 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 
 	select {
 	case <-shutdownRequested:
-		stopServerBaseCtx()
-		process.DisconnectAllInstanceClients()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		shutdownErr := server.Shutdown(ctx)
-		cancel()
-		if errors.Is(shutdownErr, context.DeadlineExceeded) {
-			log.Printf(msg.ControllerShutdownTimeoutForceCloseLogFmt, shutdownErr)
-			closeErr := server.Close()
-			if !isExpectedControllerServerCloseError(closeErr) {
-				shutdownErr = fmt.Errorf(msg.ForceCloseControllerServerAfterShutdownTimeoutFailedFmt, closeErr)
-			} else {
-				shutdownErr = nil
-			}
-		}
-		serverErr := waitControllerServerExit(serverErrCh)
-		api.CleanupUploadTempDir()
-		if err := file.CleanupRegisteredAtomicTemps(); err != nil {
-			return err
-		}
-		if shutdownErr != nil {
-			return shutdownErr
-		}
-		return serverErr
+		return shutdownControllerServer(server, stopServerBaseCtx, serverErrCh)
+	case <-process.DaemonDisconnected():
+		log.Println(msg.ControllerDaemonDisconnectedExitLog)
+		return shutdownControllerServer(server, stopServerBaseCtx, serverErrCh)
+	case sig := <-sigCh:
+		log.Printf(msg.ControllerReceivedSignalExitLogFmt, sig)
+		return shutdownControllerServer(server, stopServerBaseCtx, serverErrCh)
 	case serverErr := <-serverErrCh:
 		api.CleanupUploadTempDir()
 		if err := file.CleanupRegisteredAtomicTemps(); err != nil {

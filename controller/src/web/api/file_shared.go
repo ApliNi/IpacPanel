@@ -30,7 +30,7 @@ func textTooLong(value string, maxLen int) bool {
 }
 
 // batchFailureReason 将批量文件操作中的底层错误映射为用户可读的失败原因,
-// 避免将底层错误字符串直接透传给前端; 默认返回通用操作失败提示。
+// 避免将底层错误字符串直接透传给前端; 默认返回通用操作失败提示.
 func batchFailureReason(err error) string {
 	switch {
 	case err == nil:
@@ -361,12 +361,12 @@ func compareFileListItems(a fileEntryLite, b fileEntryLite) int {
 	if c := compareFileListNames(a.Name, b.Name); c != 0 {
 		return c
 	}
-	// 自然序下完全等价时用原始名称做确定性稳定排序（如 "1" 与 "01"）
+	// 自然序下完全等价时用原始名称做确定性稳定排序 (如 "1" 与 "01")
 	return strings.Compare(a.Name, b.Name)
 }
 
-// compareFileListNames 对文件名进行自然排序（大小写不敏感, 连续数字按数值比较）。
-// 目录已由调用方在 compareFileListItems 中优先排序, 此处仅处理名称。
+// compareFileListNames 对文件名进行自然排序 (大小写不敏感, 连续数字按数值比较).
+// 目录已由调用方在 compareFileListItems 中优先排序, 此处仅处理名称.
 func compareFileListNames(a string, b string) int {
 	ai, bi := 0, 0
 	for ai < len(a) && bi < len(b) {
@@ -387,7 +387,7 @@ func compareFileListNames(a string, b string) int {
 			continue
 		}
 		if aDigit != bDigit {
-			// 数字段排在文字段之前（保持与原 ASCII 顺序一致: 0-9 在 A-Z/a-z 之前）
+			// 数字段排在文字段之前 (保持与原 ASCII 顺序一致: 0-9 在 A-Z/a-z 之前)
 			if aDigit {
 				return -1
 			}
@@ -414,7 +414,7 @@ func compareFileListNames(a string, b string) int {
 	}
 }
 
-// compareFileDigitRuns 比较两段连续数字的数值大小（忽略前导零）。
+// compareFileDigitRuns 比较两段连续数字的数值大小 (忽略前导零).
 func compareFileDigitRuns(a string, b string) int {
 	ai, bi := 0, 0
 	for ai < len(a)-1 && a[ai] == '0' {
@@ -472,56 +472,52 @@ func (h *fileListMaxHeap) Pop() any {
 	return item
 }
 
-func countFileListEntries(targetPath string, query string) (int, error) {
-	dir, err := os.Open(targetPath)
-	if err != nil {
-		return 0, err
+func scanFileListPage(targetPath string, page int, query string, pageSize int) ([]fileEntryLite, int, int, int, error) {
+	if page < 0 {
+		return nil, 0, 0, 0, errors.New(msg.InvalidPage)
 	}
-	defer dir.Close()
-
-	totalCount := 0
-	for {
-		entries, readErr := dir.ReadDir(fileListScanBatchSize)
-		for _, entry := range entries {
-			name := entry.Name()
-			if query != "" && !strings.Contains(strings.ToLower(name), query) {
-				continue
-			}
-			totalCount++
-		}
-		if readErr == nil {
-			continue
-		}
-		if errors.Is(readErr, io.EOF) {
-			break
-		}
-		return 0, readErr
+	if page == 0 {
+		page = 1
 	}
-	return totalCount, nil
-}
+	if pageSize <= 0 {
+		pageSize = fileListPageSize
+	}
+	if textTooLong(query, maxFileSearchLen) {
+		return nil, 0, 0, 0, errors.New(msg.FileQueryTooLong)
+	}
+	query = strings.ToLower(strings.TrimSpace(query))
 
-func scanFileListPageItems(targetPath string, page int, query string, pageSize int) ([]fileEntryLite, error) {
-	topK := page * pageSize
+	topK := maxFileListHeapItems
+	if page <= maxFileListHeapItems/pageSize {
+		topK = page * pageSize
+	}
 
 	dir, err := os.Open(targetPath)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, 0, err
 	}
 	defer dir.Close()
 
 	items := &fileListMaxHeap{}
 	heap.Init(items)
+	totalCount := 0
+
 	for {
 		entries, readErr := dir.ReadDir(fileListScanBatchSize)
 		for _, entry := range entries {
 			name := entry.Name()
+			lowerName := strings.ToLower(name)
+			if query != "" && !strings.Contains(lowerName, query) {
+				continue
+			}
+			totalCount++
+			if topK <= 0 {
+				continue
+			}
 			item := fileEntryLite{
 				Name:      name,
-				LowerName: strings.ToLower(name),
+				LowerName: lowerName,
 				IsDir:     entry.IsDir(),
-			}
-			if query != "" && !strings.Contains(item.LowerName, query) {
-				continue
 			}
 			if items.Len() < topK {
 				heap.Push(items, item)
@@ -538,7 +534,20 @@ func scanFileListPageItems(targetPath string, page int, query string, pageSize i
 		if errors.Is(readErr, io.EOF) {
 			break
 		}
-		return nil, readErr
+		return nil, 0, 0, 0, readErr
+	}
+
+	totalPages := (totalCount + pageSize - 1) / pageSize
+	if totalPages == 0 {
+		return []fileEntryLite{}, totalCount, totalPages, 1, nil
+	}
+
+	clampedPage := page
+	if clampedPage > totalPages {
+		clampedPage = totalPages
+	}
+	if clampedPage > maxFileListHeapItems/pageSize {
+		return nil, 0, 0, 0, errors.New(msg.FileListPageTooDeep)
 	}
 
 	selected := make([]fileEntryLite, items.Len())
@@ -547,65 +556,30 @@ func scanFileListPageItems(targetPath string, page int, query string, pageSize i
 		return compareFileListItems(selected[i], selected[j]) < 0
 	})
 
-	start := (page - 1) * pageSize
+	start := (clampedPage - 1) * pageSize
 	if start >= len(selected) {
-		return []fileEntryLite{}, nil
+		return []fileEntryLite{}, totalCount, totalPages, clampedPage, nil
 	}
 	end := start + pageSize
 	if end > len(selected) {
 		end = len(selected)
 	}
 	pageItems := selected[start:end]
-	filteredItems := pageItems[:0]
+	filteredItems := make([]fileEntryLite, 0, len(pageItems))
 	for _, item := range pageItems {
 		info, infoErr := os.Lstat(filepath.Join(targetPath, item.Name))
 		if infoErr != nil {
 			if errors.Is(infoErr, os.ErrNotExist) {
 				continue
 			}
-			return nil, infoErr
+			return nil, 0, 0, 0, infoErr
 		}
 		item.Size = info.Size()
 		item.ModTime = info.ModTime().Format(cfg.FileTimeLayout)
 		filteredItems = append(filteredItems, item)
 	}
 
-	return filteredItems, nil
-}
-
-func scanFileListPage(targetPath string, page int, query string, pageSize int) ([]fileEntryLite, int, int, int, error) {
-	if page < 0 {
-		return nil, 0, 0, 0, errors.New(msg.InvalidPage)
-	}
-	if page == 0 {
-		page = 1
-	}
-	if textTooLong(query, maxFileSearchLen) {
-		return nil, 0, 0, 0, errors.New(msg.FileQueryTooLong)
-	}
-	query = strings.ToLower(strings.TrimSpace(query))
-
-	totalCount, err := countFileListEntries(targetPath, query)
-	if err != nil {
-		return nil, 0, 0, 0, err
-	}
-	totalPages := (totalCount + pageSize - 1) / pageSize
-	if totalPages == 0 {
-		return []fileEntryLite{}, totalCount, totalPages, 1, nil
-	}
-	if page > totalPages {
-		page = totalPages
-	}
-	if page > maxFileListHeapItems/pageSize {
-		return nil, 0, 0, 0, errors.New(msg.FileListPageTooDeep)
-	}
-
-	pageItems, err := scanFileListPageItems(targetPath, page, query, pageSize)
-	if err != nil {
-		return nil, 0, 0, 0, err
-	}
-
-	return pageItems, totalCount, totalPages, page, nil
+	return filteredItems, totalCount, totalPages, clampedPage, nil
 }
 
 func buildFileListResponse(sp *process.InstanceProcess, relativePath string, page int, query string) (*fileListResponse, error) {

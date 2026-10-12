@@ -1,4 +1,4 @@
-import { mainModalOverlay } from "../ui.js";
+import { state } from '../ui.js';
 import { clearTimer, withActionsDisabled } from '../utils/utils.js';
 import { formatUserPerm, userPermOptions } from '../utils/enum.js';
 import { logout, resetToken } from '../api/auth.js';
@@ -7,158 +7,60 @@ import { instanceStatusStore } from '../store/instanceStatusStore.js';
 import { createAdminUser, deleteAdminUser, fetchAdminUser, fetchMe, fetchUsers, updateAdminUser, updateMe } from '../api/user.js';
 import { showAlert, showConfirm } from './dialog.js';
 
-const USER_NAME_MAX_LENGTH = 32;
-const USER_PASSWORD_MAX_LENGTH = 4096;
-const USER_SCOPE_MAX_ITEMS = 4096;
-const USER_SCOPE_TEXT_MAX_LENGTH = USER_SCOPE_MAX_ITEMS * (USER_NAME_MAX_LENGTH + 1);
+export const USER_NAME_MAX_LENGTH = 32;
+export const USER_PASSWORD_MAX_LENGTH = 4096;
+export const USER_SCOPE_MAX_ITEMS = 4096;
+export const USER_SCOPE_TEXT_MAX_LENGTH = USER_SCOPE_MAX_ITEMS * (USER_NAME_MAX_LENGTH + 1);
+
 const truncateText = (value, maxLength) => Array.from(String(value || '')).slice(0, maxLength).join('');
+const CREATE_USER_VALUE = '__create__';
+const SEP_VALUE = '__sep__';
 
-mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
-	<div id="userManageModal" class="modal-overlay">
-		<div class="modal-card user-manage-modal-card">
-			<div class="modal-header">
-				<span class="modal-title">USER</span>
-				<button id="userManageClose" class="modal-close" type="button">×</button>
-			</div>
-			<div class="modal-form user-manage-form">
-				<div class="filter-group user-manage-tabs">
-					<button id="userManageTabMe" class="filter-btn active" type="button" data-page="me">ME</button>
-					<button id="userManageTabUsers" class="filter-btn" type="button" data-page="users">USERS</button>
-					<button id="userManageTabEdit" class="filter-btn" type="button" data-page="edit">EDIT</button>
-				</div>
-				<div class="user-manage-body">
-					<form id="userManagePageMe" class="user-manage-page user-manage-page-me modal-card-loading-content active">
-						<div class="field-group">
-							<span>NAME</span>
-							<input id="userManageMeName" type="text" maxlength="32" autocomplete="off">
-						</div>
-						<div class="user-manage-pass-row">
-							<div class="field-group user-manage-pass-field">
-								<span>PASSWORD</span>
-								<input id="userManageMePass" type="password" maxlength="4096" autocomplete="new-password" placeholder=" Empty to keep">
-							</div>
-							<div class="field-group user-manage-pass-confirm">
-								<span>CONFIRM PASSWORD</span>
-								<input id="userManageMePass2" type="password" maxlength="4096" autocomplete="new-password" placeholder=" Repeat password">
-							</div>
-						</div>
-						<div id="userManageMeActions" class="modal-actions">
-							<span id="userManageMeStatus" aria-live="polite"></span>
-							<button class="btn" type="button" id="userManageResetToken">RESET TOKEN</button>
-							<button class="btn" type="button" id="userManageLogout">LOGOUT</button>
-							<span class="controls-divider" aria-hidden="true">|</span>
-							<button class="btn" type="button" id="userManageCancel">CLOSE</button>
-							<button class="btn btn-start" type="submit" id="userManageMeSave">SAVE</button>
-						</div>
-					</form>
-					<div id="userManagePageUsers" class="user-manage-page modal-card-loading-content">
-						<div class="field-group">
-							<div id="userManageList" class="user-manage-list"></div>
-						</div>
-						<div id="userManageActions" class="modal-actions">
-							<button class="btn" type="button" id="userManageCancel2">CLOSE</button>
-						</div>
-					</div>
-					<form id="userManagePageEdit" class="user-manage-page user-manage-page-edit modal-card-loading-content" novalidate>
-						<div class="field-group">
-							<span>USER</span>
-							<div class="select-wrapper"><select id="userManageEditSelect" autocomplete="off"></select></div>
-						</div>
-						<div class="user-manage-user-pass-row">
-							<div class="field-group">
-								<span>NAME</span>
-								<input id="userManageEditName" type="text" maxlength="32" autocomplete="off">
-							</div>
-							<div class="field-group">
-								<span>PASSWORD</span>
-								<input id="userManageEditPass" type="password" maxlength="4096" autocomplete="new-password" placeholder=" Empty to keep">
-							</div>
-						</div>
-						<div class="field-group">
-							<span>PERM</span>
-							<div class="select-wrapper"><select id="userManageEditPerm" autocomplete="off"></select></div>
-						</div>
-						<div class="field-group field-group-dynamic-label">
-							<span>ALLOW GROUPS</span>
-							<div class="user-manage-scope-row">
-								<div class="select-wrapper">
-									<select id="userManageEditGroupAdd" autocomplete="off"></select>
-								</div>
-								<button id="userManageEditGroupAddBtn" class="btn" type="button">ADD</button>
-							</div>
-							<textarea id="userManageEditGroups" rows="3" maxlength="${USER_SCOPE_TEXT_MAX_LENGTH}" placeholder=" one per line"></textarea>
-						</div>
-						<div class="field-group field-group-dynamic-label">
-							<span>ALLOW INSTANCES</span>
-							<div class="user-manage-scope-row">
-								<div class="select-wrapper">
-									<select id="userManageEditInstanceAdd" autocomplete="off"></select>
-								</div>
-								<button id="userManageEditInstanceAddBtn" class="btn" type="button">ADD</button>
-							</div>
-							<textarea id="userManageEditInstances" rows="4" maxlength="${USER_SCOPE_TEXT_MAX_LENGTH}" placeholder=" one per line"></textarea>
-						</div>
-						<div id="userManageEditActions" class="modal-actions">
-							<span id="userManageEditStatus" aria-live="polite"></span>
-							<button class="btn" type="button" id="userManageEditDelete">DELETE</button>
-							<span class="controls-divider" aria-hidden="true">|</span>
-							<button class="btn" type="button" id="userManageEditClose">CLOSE</button>
-							<button class="btn btn-start" type="submit" id="userManageEditSave">SAVE</button>
-						</div>
-					</form>
-				</div>
-			</div>
-		</div>
-	</div>
-`);
+const dom = {};
 
-const dom = {
-	modal: document.getElementById('userManageModal'),
-	close: document.getElementById('userManageClose'),
-	cancel: document.getElementById('userManageCancel'),
-	cancel2: document.getElementById('userManageCancel2'),
-	actions: document.getElementById('userManageActions'),
-	list: document.getElementById('userManageList'),
-	tabMe: document.getElementById('userManageTabMe'),
-	tabUsers: document.getElementById('userManageTabUsers'),
-	tabEdit: document.getElementById('userManageTabEdit'),
-	pageMe: document.getElementById('userManagePageMe'),
-	pageUsers: document.getElementById('userManagePageUsers'),
-	pageEdit: document.getElementById('userManagePageEdit'),
-	meName: document.getElementById('userManageMeName'),
-	mePass: document.getElementById('userManageMePass'),
-	mePass2: document.getElementById('userManageMePass2'),
-	meActions: document.getElementById('userManageMeActions'),
-	meStatus: document.getElementById('userManageMeStatus'),
-	meSave: document.getElementById('userManageMeSave'),
-	logout: document.getElementById('userManageLogout'),
-	resetToken: document.getElementById('userManageResetToken'),
-	editActions: document.getElementById('userManageEditActions'),
-	editStatus: document.getElementById('userManageEditStatus'),
-	editSave: document.getElementById('userManageEditSave'),
-	editClose: document.getElementById('userManageEditClose'),
-	editDelete: document.getElementById('userManageEditDelete'),
-	editSelect: document.getElementById('userManageEditSelect'),
-	editName: document.getElementById('userManageEditName'),
-	editPerm: document.getElementById('userManageEditPerm'),
-	editPass: document.getElementById('userManageEditPass'),
-	editGroups: document.getElementById('userManageEditGroups'),
-	editInstances: document.getElementById('userManageEditInstances'),
-	editGroupAdd: document.getElementById('userManageEditGroupAdd'),
-	editGroupAddBtn: document.getElementById('userManageEditGroupAddBtn'),
-	editInstanceAdd: document.getElementById('userManageEditInstanceAdd'),
-	editInstanceAddBtn: document.getElementById('userManageEditInstanceAddBtn'),
+const initDom = () => {
+	dom.tabMe = document.getElementById('panelSettingsUserTabMe');
+	dom.tabUsers = document.getElementById('panelSettingsUserTabUsers');
+	dom.tabEdit = document.getElementById('panelSettingsUserTabEdit');
+	dom.pageMe = document.getElementById('userManagePageMe');
+	dom.pageUsers = document.getElementById('userManagePageUsers');
+	dom.pageEdit = document.getElementById('userManagePageEdit');
+	dom.cancel = document.getElementById('userManageCancel');
+	dom.cancel2 = document.getElementById('userManageCancel2');
+	dom.actions = document.getElementById('userManageActions');
+	dom.list = document.getElementById('userManageList');
+	dom.meName = document.getElementById('userManageMeName');
+	dom.mePass = document.getElementById('userManageMePass');
+	dom.mePass2 = document.getElementById('userManageMePass2');
+	dom.meActions = document.getElementById('userManageMeActions');
+	dom.meStatus = document.getElementById('userManageMeStatus');
+	dom.meSave = document.getElementById('userManageMeSave');
+	dom.logout = document.getElementById('userManageLogout');
+	dom.resetToken = document.getElementById('userManageResetToken');
+	dom.editActions = document.getElementById('userManageEditActions');
+	dom.editStatus = document.getElementById('userManageEditStatus');
+	dom.editSave = document.getElementById('userManageEditSave');
+	dom.editClose = document.getElementById('userManageEditClose');
+	dom.editDelete = document.getElementById('userManageEditDelete');
+	dom.editSelect = document.getElementById('userManageEditSelect');
+	dom.editName = document.getElementById('userManageEditName');
+	dom.editPerm = document.getElementById('userManageEditPerm');
+	dom.editPass = document.getElementById('userManageEditPass');
+	dom.editGroups = document.getElementById('userManageEditGroups');
+	dom.editInstances = document.getElementById('userManageEditInstances');
+	dom.editGroupAdd = document.getElementById('userManageEditGroupAdd');
+	dom.editGroupAddBtn = document.getElementById('userManageEditGroupAddBtn');
+	dom.editInstanceAdd = document.getElementById('userManageEditInstanceAdd');
+	dom.editInstanceAddBtn = document.getElementById('userManageEditInstanceAddBtn');
 };
 
 const modalState = {
-	closeTimer: null,
 	editStatusTimer: null,
 	editLoadSeq: 0,
 	isBound: false,
 	currentPage: 'me',
 	meUser: '',
 	mePerm: 0,
-	isAdmin: false,
 	editUser: '',
 	editMode: 'edit',
 	meLoading: false,
@@ -173,15 +75,26 @@ const setMeStatus = (text, options = {}) => {
 	dom.meStatus.classList.toggle('error', !!options.error);
 };
 
-const applyPage = (page) => {
-	const p = page === 'users' ? 'users' : (page === 'edit' ? 'edit' : 'me');
-	modalState.currentPage = p;
-	dom.tabMe.classList.toggle('active', p === 'me');
-	dom.tabUsers.classList.toggle('active', p === 'users');
-	dom.tabEdit.classList.toggle('active', p === 'edit');
-	dom.pageMe.classList.toggle('active', p === 'me');
-	dom.pageUsers.classList.toggle('active', p === 'users');
-	dom.pageEdit.classList.toggle('active', p === 'edit');
+const setPageUI = (page) => {
+	modalState.currentPage = page;
+	dom.tabMe?.classList.toggle('active', page === 'me');
+	dom.tabUsers?.classList.toggle('active', page === 'users');
+	dom.tabEdit?.classList.toggle('active', page === 'edit');
+	dom.pageMe?.classList.toggle('active', page === 'me');
+	dom.pageUsers?.classList.toggle('active', page === 'users');
+	dom.pageEdit?.classList.toggle('active', page === 'edit');
+};
+
+const deactivatePages = () => {
+	dom.pageMe?.classList.remove('active');
+	dom.pageUsers?.classList.remove('active');
+	dom.pageEdit?.classList.remove('active');
+};
+
+const syncUserTabVisibility = (isAdmin) => {
+	dom.tabMe?.classList.remove('hidden');
+	dom.tabUsers?.classList.toggle('hidden', !isAdmin);
+	dom.tabEdit?.classList.toggle('hidden', !isAdmin);
 };
 
 const applyMeData = (me) => {
@@ -189,37 +102,32 @@ const applyMeData = (me) => {
 	const perm = Number.isInteger(me?.perm) ? me.perm : Number(me?.perm || 0);
 	modalState.meUser = user;
 	modalState.mePerm = Number.isFinite(perm) ? perm : 0;
-	modalState.isAdmin = modalState.mePerm === 7;
+	if (Number.isFinite(perm)) {
+		state.isAdmin = perm === 7;
+	}
 	if (dom.meName) {
 		dom.meName.value = user || '';
 	}
-	if (dom.tabUsers) {
-		dom.tabUsers.classList.toggle('hidden', !modalState.isAdmin);
-	}
-	if (dom.tabEdit) {
-		dom.tabEdit.classList.toggle('hidden', !modalState.isAdmin);
-	}
-	if (!modalState.isAdmin && modalState.currentPage === 'users') {
-		applyPage('me');
-	}
-	if (!modalState.isAdmin && modalState.currentPage === 'edit') {
-		applyPage('me');
+	const isAdmin = !!state.isAdmin;
+	syncUserTabVisibility(isAdmin);
+	if (!isAdmin && (modalState.currentPage === 'users' || modalState.currentPage === 'edit')) {
+		void applyUserPage('me');
 	}
 };
 
 const updatePassConfirmVisibility = () => {
 	const pass = dom.mePass ? String(dom.mePass.value || '') : '';
 	const shouldShow = !!pass.trim();
-	dom.pageMe.classList.toggle('show-pass-confirm', shouldShow);
+	dom.pageMe?.classList.toggle('show-pass-confirm', shouldShow);
 	if (!shouldShow && dom.mePass2) {
 		dom.mePass2.value = '';
 	}
 };
 
 const syncPageLoading = () => {
-	dom.pageMe.classList.toggle('modal-card-loading', modalState.meLoading);
-	dom.pageEdit.classList.toggle('modal-card-loading', modalState.editLoading);
-	dom.pageUsers.classList.toggle('modal-card-loading', modalState.usersLoading);
+	dom.pageMe?.classList.toggle('modal-card-loading', modalState.meLoading);
+	dom.pageEdit?.classList.toggle('modal-card-loading', modalState.editLoading);
+	dom.pageUsers?.classList.toggle('modal-card-loading', modalState.usersLoading);
 };
 
 const setEditLoading = (loading) => {
@@ -266,9 +174,6 @@ const flashEditStatus = (text, duration = 1000) => {
 	}, Math.max(0, Number(duration) || 0));
 };
 
-const CREATE_USER_VALUE = '__create__';
-const SEP_VALUE = '__sep__';
-
 const createOption = ({ value = '', text = '', disabled = false } = {}) => {
 	const option = document.createElement('option');
 	option.value = String(value);
@@ -306,28 +211,6 @@ const ensureEditPermOptions = () => {
 		const value = Number(p);
 		return createOption({ value, text: formatUserPerm(value) });
 	}));
-};
-
-const openEditPageWithSelection = async (selectionValue) => {
-	if (!modalState.isAdmin) return;
-	ensureEditPermOptions();
-	applyPage('edit');
-	// Reset to create mode first, then load options.
-	modalState.editLoadSeq += 1;
-	setEditLoading(true);
-	clearEditFormForLoad();
-	if (dom.editSelect) {
-		dom.editSelect.value = CREATE_USER_VALUE;
-	}
-	applyEditModeUI();
-	await loadEditOptions();
-	if (dom.editSelect) {
-		const selected = String(selectionValue || CREATE_USER_VALUE);
-		dom.editSelect.value = selected === SEP_VALUE ? CREATE_USER_VALUE : selected;
-	}
-	applyEditModeUI();
-	const loaded = await loadEditUser(dom.editSelect.value);
-	setEditLoading(!loaded);
 };
 
 const splitLines = (text) => String(text || '')
@@ -371,7 +254,7 @@ const addLineToTextarea = async (textarea, value, maxLength) => {
 };
 
 const loadEditOptions = async () => {
-	if (!modalState.isAdmin) return;
+	if (!state.isAdmin) return;
 	const usersResult = await fetchUsers();
 	const users = usersResult.ok ? (usersResult.data?.users || []) : [];
 	if (dom.editSelect) {
@@ -380,7 +263,7 @@ const loadEditOptions = async () => {
 			createOption({ value: CREATE_USER_VALUE, text: '+ CREATE USER' }),
 			createOption({ value: SEP_VALUE, text: '────────', disabled: true }),
 			...users.map((u) => {
-			const name = String(u?.user || '').trim();
+				const name = String(u?.user || '').trim();
 				return createOption({ value: name, text: name });
 			}),
 		);
@@ -413,7 +296,7 @@ const loadEditOptions = async () => {
 		dom.editInstanceAdd.replaceChildren(
 			createOption({ value: '', text: '-' }),
 			...instances.map((ins) => {
-			const name = String(ins?.name || '').trim();
+				const name = String(ins?.name || '').trim();
 				return createOption({ value: name, text: name });
 			}),
 		);
@@ -421,7 +304,7 @@ const loadEditOptions = async () => {
 };
 
 const loadEditUser = async (username) => {
-	if (!modalState.isAdmin) return;
+	if (!state.isAdmin) return false;
 	applyEditModeUI();
 	if (String(username || '').trim() === SEP_VALUE) {
 		return false;
@@ -471,9 +354,48 @@ const loadEditUser = async (username) => {
 	}
 };
 
+const openEditPageWithSelection = async (selectionValue) => {
+	if (!state.isAdmin) return false;
+	ensureEditPermOptions();
+	setPageUI('edit');
+	modalState.editLoadSeq += 1;
+	setEditLoading(true);
+	clearEditFormForLoad();
+	if (dom.editSelect) {
+		dom.editSelect.value = CREATE_USER_VALUE;
+	}
+	applyEditModeUI();
+	await loadEditOptions();
+	if (dom.editSelect) {
+		const selected = String(selectionValue || CREATE_USER_VALUE);
+		dom.editSelect.value = selected === SEP_VALUE ? CREATE_USER_VALUE : selected;
+	}
+	applyEditModeUI();
+	const loaded = await loadEditUser(dom.editSelect.value);
+	setEditLoading(!loaded);
+	return loaded;
+};
+
+const applyUserPage = async (page) => {
+	const isAdmin = !!state.isAdmin;
+	const targetPage = (isAdmin && page === 'users') ? 'users' : ((isAdmin && page === 'edit') ? 'edit' : 'me');
+	if (targetPage === 'edit') {
+		return await openEditPageWithSelection(dom.editSelect?.value);
+	}
+	setPageUI(targetPage);
+	if (targetPage === 'me') {
+		return await loadMe();
+	}
+	if (targetPage === 'users') {
+		await loadUsers();
+		return true;
+	}
+	return false;
+};
+
 const saveEditUser = async () => {
 	if (modalState.editLoading) return;
-	if (!modalState.isAdmin) {
+	if (!state.isAdmin) {
 		return;
 	}
 	const selected = dom.editSelect ? String(dom.editSelect.value || '').trim() : '';
@@ -555,7 +477,7 @@ const saveEditUser = async () => {
 };
 
 const deleteEditUser = async () => {
-	if (!modalState.isAdmin) return;
+	if (!state.isAdmin) return;
 	const target = dom.editSelect ? String(dom.editSelect.value || '').trim() : '';
 	if (!target || target === CREATE_USER_VALUE) {
 		return;
@@ -668,7 +590,7 @@ const loadMe = async () => {
 };
 
 const loadUsers = async () => {
-	if (!modalState.isAdmin) {
+	if (!state.isAdmin) {
 		return;
 	}
 	await withActionsDisabled(dom.actions, async () => {
@@ -752,66 +674,38 @@ const focusMeNameAfterLoad = () => {
 	});
 };
 
-const open = async () => {
-	if (!dom.modal) return;
-	modalState.closeTimer = clearTimer(modalState.closeTimer);
-	dom.modal.style.display = 'flex';
-	dom.modal.classList.remove('closing');
-	requestAnimationFrame(() => {
-		dom.modal.classList.add('visible');
-	});
-	applyPage('me');
-	const loaded = await loadMe();
-	if (loaded) {
-		focusMeNameAfterLoad();
-	}
-};
-
-const close = () => {
-	if (!dom.modal) return;
-	dom.modal.classList.remove('visible');
-	dom.modal.classList.add('closing');
-	modalState.closeTimer = setTimeout(() => {
-		dom.modal.style.display = 'none';
-		dom.modal.classList.remove('closing');
-		modalState.closeTimer = null;
-	}, 280);
-};
-
-const bindEvents = () => {
+const bindEvents = (closeModal) => {
 	if (modalState.isBound) return;
 	modalState.isBound = true;
 
-	if (dom.close) {
-		dom.close.onclick = () => close();
-	}
 	if (dom.cancel) {
-		dom.cancel.onclick = () => close();
+		dom.cancel.onclick = () => closeModal?.();
 	}
 	if (dom.cancel2) {
-		dom.cancel2.onclick = () => close();
+		dom.cancel2.onclick = () => closeModal?.();
+	}
+	if (dom.editClose) {
+		dom.editClose.onclick = () => closeModal?.();
 	}
 	if (dom.tabMe) {
-	dom.tabMe.onclick = () => {
-			applyPage('me');
-			void loadMe();
+		dom.tabMe.onclick = () => {
+			void applyUserPage('me');
 		};
 	}
 	if (dom.tabUsers) {
 		dom.tabUsers.onclick = () => {
-			if (!modalState.isAdmin) {
+			if (!state.isAdmin) {
 				return;
 			}
-			applyPage('users');
-			loadUsers();
+			void applyUserPage('users');
 		};
 	}
 	if (dom.tabEdit) {
-		dom.tabEdit.onclick = async () => {
-			if (!modalState.isAdmin) {
+		dom.tabEdit.onclick = () => {
+			if (!state.isAdmin) {
 				return;
 			}
-			await openEditPageWithSelection(dom.editSelect.value);
+			void openEditPageWithSelection(dom.editSelect?.value);
 		};
 	}
 	if (dom.pageMe) {
@@ -841,11 +735,8 @@ const bindEvents = () => {
 		};
 		dom.editInstances.onblur = () => normalizeScopeTextarea(dom.editInstances, USER_NAME_MAX_LENGTH);
 	}
-	if (dom.editClose) {
-		dom.editClose.onclick = () => close();
-	}
 	if (dom.editSelect) {
-	dom.editSelect.onchange = () => {
+		dom.editSelect.onchange = () => {
 			applyEditModeUI();
 			void loadEditUser(dom.editSelect.value);
 		};
@@ -857,7 +748,7 @@ const bindEvents = () => {
 		};
 	}
 	if (dom.editGroupAddBtn) {
-	dom.editGroupAddBtn.onclick = async () => {
+		dom.editGroupAddBtn.onclick = async () => {
 			const v = dom.editGroupAdd ? String(dom.editGroupAdd.value || '').trim() : '';
 			await addLineToTextarea(dom.editGroups, v, USER_NAME_MAX_LENGTH);
 		};
@@ -875,7 +766,7 @@ const bindEvents = () => {
 	}
 	if (dom.list) {
 		dom.list.onclick = (event) => {
-			if (!modalState.isAdmin) {
+			if (!state.isAdmin) {
 				return;
 			}
 			if (!(event.target instanceof Element)) {
@@ -883,7 +774,7 @@ const bindEvents = () => {
 			}
 			const th = event.target.closest('thead');
 			if (th) {
-				openEditPageWithSelection(CREATE_USER_VALUE);
+				void openEditPageWithSelection(CREATE_USER_VALUE);
 				return;
 			}
 			const tr = event.target.closest('tbody tr[data-user]');
@@ -894,7 +785,7 @@ const bindEvents = () => {
 			if (!user) {
 				return;
 			}
-			openEditPageWithSelection(user);
+			void openEditPageWithSelection(user);
 		};
 	}
 	if (dom.logout) {
@@ -935,10 +826,17 @@ const bindEvents = () => {
 	}
 };
 
-export const bootUserManageModal = () => {
-	bindEvents();
+export const bootUserManageTab = ({ closeModal } = {}) => {
+	initDom();
+	bindEvents(closeModal);
 	return {
-		open,
-		close,
+		applyUserPage,
+		loadMe,
+		loadUsers,
+		openEditPageWithSelection,
+		focusMeNameAfterLoad,
+		getCurrentPage: () => modalState.currentPage,
+		deactivatePages,
+		syncUserTabVisibility,
 	};
 };

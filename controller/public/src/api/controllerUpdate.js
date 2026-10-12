@@ -1,38 +1,25 @@
 import {
-	authedFetch,
 	getCSRFToken,
 	dispatchUnauthorized,
 	buildXhrUploadErrorMessage,
 	getXhrJsonResponseData,
-	parseJsonData,
-	withApiResult,
+	postJsonData,
 } from './core.js';
-
-const postJson = async (url, payload = {}) => {
-	const res = await authedFetch(url, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-		},
-		body: JSON.stringify(payload),
-	});
-	return await parseJsonData(res);
-};
 
 export const initControllerUpdateUpload = async (payload) => {
 	const { replaceMode, ...initPayload } = payload || {};
 	if (replaceMode === undefined) {
-		return await postJson('/api/controller/update/upload/init', payload);
+		return await postJsonData('/api/controller/update/upload/init', payload);
 	}
-	return await postJson('/api/controller/update/upload/init', { ...initPayload, replace_mode: !!replaceMode });
+	return await postJsonData('/api/controller/update/upload/init', { ...initPayload, replace_mode: !!replaceMode });
 };
 
 export const completeControllerUpdateUpload = async (uploadId) => {
-	return await postJson('/api/controller/update/upload/complete', { upload_id: uploadId });
+	return await postJsonData('/api/controller/update/upload/complete', { upload_id: uploadId });
 };
 
 export const abortControllerUpdateUpload = async (uploadId) => {
-	return await postJson('/api/controller/update/upload/abort', { upload_id: uploadId });
+	return await postJsonData('/api/controller/update/upload/abort', { upload_id: uploadId });
 };
 
 export const uploadControllerUpdateChunk = (uploadId, index, chunk, onProgress, options = {}) => new Promise((resolve, reject) => {

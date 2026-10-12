@@ -18,11 +18,19 @@ import (
 )
 
 var (
-	appBaseDir  string
-	instanceMgr *InstanceManager
-	ipcDebug    atomic.Bool
+	appBaseDir     string
+	instanceMgr    *InstanceManager
+	ipcDebug       atomic.Bool
+	daemonStopping atomic.Bool
 )
 
+func isDaemonStopping() bool {
+	return daemonStopping.Load()
+}
+
+func markDaemonStopping() {
+	daemonStopping.Store(true)
+}
 type versionInfo struct {
 	Role           string `yaml:"role"`
 	Version        string `yaml:"version"`
@@ -144,19 +152,23 @@ func main() {
 	defer server.Close()
 	log.Printf("IPC server using controller stdio pipes")
 
-	// 捕获退出信号, 清理所有实例进程
+	// 捕获退出信号, 清理所有实例进程与管理进程
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
-		log.Printf("received signal %v, shutting down instances", sig)
+		log.Printf("received signal %v, shutting down...", sig)
+		markDaemonStopping()
 		shutdownAllInstances()
+		shutdownController()
 		os.Exit(0)
 	}()
 
 	if err := controllerLoop(controllerPath, server); err != nil {
-		log.Printf("controller loop error, shutting down instances: %v", err)
+		log.Printf("controller loop error, shutting down: %v", err)
+		markDaemonStopping()
 		shutdownAllInstances()
+		shutdownController()
 		os.Exit(1)
 	}
 }

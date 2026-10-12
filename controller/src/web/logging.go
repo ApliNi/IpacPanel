@@ -230,7 +230,7 @@ func WithRecover(next http.Handler) http.Handler {
 				return
 			}
 			if strings.HasPrefix(r.URL.Path, "/api/") {
-				WriteJSONStatus(w, http.StatusInternalServerError, APIResponse{OK: false, Message: msg.InternalServerError}, msg.WritePanicResponseFailed)
+				WriteJSONStatus(w, http.StatusInternalServerError, APIResponse{Error: msg.InternalServerError}, msg.WritePanicResponseFailed)
 				return
 			}
 			http.Error(w, msg.InternalServerError, http.StatusInternalServerError)
@@ -315,9 +315,8 @@ type logField struct {
 }
 
 type APIResponse struct {
-	OK      bool        `json:"ok"`
-	Data    interface{} `json:"data,omitempty"`
-	Message string      `json:"message,omitempty"`
+	Data  interface{} `json:"data,omitempty"`
+	Error string      `json:"error,omitempty"`
 }
 
 func WriteJSONStatus(w http.ResponseWriter, statusCode int, data interface{}, _ string) {
@@ -328,11 +327,11 @@ func WriteJSONStatus(w http.ResponseWriter, statusCode int, data interface{}, _ 
 
 func WriteAPIError(w http.ResponseWriter, statusCode int, userMessage string, err error) {
 	MarkAPIError(w, statusCode, userMessage, err)
-	WriteJSONStatus(w, statusCode, APIResponse{OK: false, Message: strings.TrimSpace(userMessage)}, "")
+	WriteJSONStatus(w, statusCode, APIResponse{Error: strings.TrimSpace(userMessage)}, "")
 }
 
 func WriteOK(w http.ResponseWriter, data interface{}) {
-	WriteJSONStatus(w, http.StatusOK, APIResponse{OK: true, Data: data}, "")
+	WriteJSONStatus(w, http.StatusOK, APIResponse{Data: data}, "")
 }
 
 func LogEvent(fields ...logField) {

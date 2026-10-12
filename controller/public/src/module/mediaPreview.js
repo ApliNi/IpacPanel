@@ -29,7 +29,7 @@ const clearCloseTimer = () => {
 
 const ensureImgFadeTransition = () => {
 	if (!img) return;
-	// 拖拽时可能会把 transition 写成仅 transform / none，导致关闭时 opacity 无渐变
+	// 恢复淡出透明度过渡动画
 	img.style.transition = 'transform 0.4s ease, top 0.4s ease, left 0.4s ease, opacity 0.4s ease';
 };
 
@@ -226,7 +226,7 @@ if (previewBox && img) {
 		const startY = img.offsetTop;
 
 		const onMouseMove = (event) => {
-			// 拖拽需要跟手，不要过渡动画
+			// 拖拽过程中禁用过渡动画以保证跟手
 			img.style.transition = 'none';
 
 			const dx = event.clientX - startMouseX;

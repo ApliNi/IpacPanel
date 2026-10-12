@@ -448,6 +448,13 @@ func openUploadStageFile(session *fileUploadSession, flag int) (*os.File, os.Fil
 	return f, info, nil
 }
 
+var uploadChunkBufferPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 256*1024)
+		return &b
+	},
+}
+
 func writeUploadChunkToStage(session *fileUploadSession, plan uploadChunkPlan, src io.Reader) error {
 	if _, err := uploadStagePath(session, plan); err != nil {
 		return err
@@ -462,7 +469,9 @@ func writeUploadChunkToStage(session *fileUploadSession, plan uploadChunkPlan, s
 			_ = out.Close()
 		}
 	}()
-	buf := make([]byte, 256*1024)
+	bufPtr := uploadChunkBufferPool.Get().(*[]byte)
+	defer uploadChunkBufferPool.Put(bufPtr)
+	buf := *bufPtr
 	written := int64(0)
 	for written < plan.Size {
 		want := int64(len(buf))
@@ -1192,7 +1201,7 @@ func HandleApiFileUploadInit(w http.ResponseWriter, r *http.Request) {
 	relativePath := target.DirRel()
 	targetPath := target.TargetPath()
 
-	// 自动创建目标目录（如果不存在）, 减少前端逐级创建目录的请求
+	// 自动创建目标目录 (如果不存在), 减少前端逐级创建目录的请求
 	fs, err := newInstanceFS(sp)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.FilePathInvalid, err)

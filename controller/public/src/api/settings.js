@@ -39,3 +39,16 @@ export const restartController = async () => {
 		return await parseJsonData(res);
 	}, { logMessage: '[API] 重启管理进程失败:' });
 };
+
+export const stopDaemon = async () => {
+	return await withApiResult(async () => {
+		const res = await authedFetch('/api/settings/stop-daemon', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+			},
+			body: '{}',
+		});
+		return await parseJsonData(res);
+	}, { logMessage: '[API] 停止守护进程失败:' });
+};

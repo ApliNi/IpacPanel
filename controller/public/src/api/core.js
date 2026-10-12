@@ -74,9 +74,7 @@ const getApiErrorMessage = (payload) => {
 		return '';
 	}
 	return String(
-		payload.message
-		|| payload.error
-		|| payload.data?.message
+		payload.error
 		|| payload.data?.error
 		|| ''
 	).trim();
@@ -150,12 +148,6 @@ export const parseJsonData = async (res) => {
 	throw new Error('接口 JSON 响应缺少 data 字段');
 };
 
-export const parseJsonPayload = async (res) => {
-	if (!res.ok) {
-		throw await createHttpError(res);
-	}
-	return await parseJsonPayloadStrict(res);
-};
 
 export const postJson = async (url, payload = {}, options = {}) => {
 	const requestOptions = Object.assign({}, options);
@@ -294,17 +286,11 @@ const pickErrorMessageFromObject = (value) => {
 	if (!value || typeof value !== 'object') {
 		return '';
 	}
-	if (typeof value.message === 'string' && value.message.trim()) {
-		return value.message.trim();
-	}
 	if (typeof value.error === 'string' && value.error.trim()) {
 		return value.error.trim();
 	}
 	if (value.data && typeof value.data === 'object') {
 		return pickErrorMessageFromObject(value.data);
-	}
-	if (typeof value.data === 'string' && value.data.trim()) {
-		return value.data.trim();
 	}
 	return '';
 };

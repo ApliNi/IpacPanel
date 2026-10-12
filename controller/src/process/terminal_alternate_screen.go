@@ -1,7 +1,11 @@
 package process
 
-const ptyAlternateScreenMaxPending = 32
+import "bytes"
 
+const (
+	escapeByte                   = byte(0x1b)
+	ptyAlternateScreenMaxPending = 32
+)
 func (sp *InstanceProcess) trackPTYAlternateScreenLocked(data []byte) {
 	if sp == nil {
 		return
@@ -36,12 +40,18 @@ func filterPTYAlternateScreenHistory(active bool, pending []byte, data []byte) (
 
 	out := make([]byte, 0, len(data))
 	for i := 0; i < len(data); {
-		if data[i] != escapeByte {
+		idx := bytes.IndexByte(data[i:], escapeByte)
+		if idx < 0 {
 			if !active {
-				out = append(out, data[i])
+				out = append(out, data[i:]...)
 			}
-			i++
-			continue
+			break
+		}
+		if idx > 0 {
+			if !active {
+				out = append(out, data[i:i+idx]...)
+			}
+			i += idx
 		}
 		if i+1 >= len(data) {
 			return out, active, append([]byte(nil), data[i:]...)
@@ -118,4 +128,13 @@ func isPTYAlternateScreenParam(param []byte, privateMode bool) bool {
 	default:
 		return false
 	}
+}
+
+func findCSIEnd(data []byte, start int) (int, bool) {
+	for i := start; i < len(data); i++ {
+		if data[i] >= 0x40 && data[i] <= 0x7e {
+			return i, true
+		}
+	}
+	return 0, false
 }

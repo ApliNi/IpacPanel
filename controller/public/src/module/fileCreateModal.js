@@ -128,7 +128,7 @@ const forgetUploadItem = (itemOrId) => {
 	if (!id) {
 		return;
 	}
-	// 如果是文件夹组，递归清理子项
+	// 如果是文件夹组, 递归清理子项
 	const item = modalState.fileUploadItemById.get(id);
 	if (item && item.kind === 'folder-group' && item.children) {
 		item.children.forEach((c) => forgetUploadItem(c.id));
@@ -140,7 +140,7 @@ const forgetUploadItem = (itemOrId) => {
 	modalState.fileUploadActiveContexts.delete(id);
 };
 
-/** 统计扁平（叶子）上传项数量 */
+/** 统计扁平 (叶子) 上传项数量 */
 const countUploadLeafItems = (items) => {
 	let count = 0;
 	for (const item of items || []) {
@@ -153,7 +153,7 @@ const countUploadLeafItems = (items) => {
 	return count;
 };
 
-/** 获取扁平（叶子）上传项数组 */
+/** 获取扁平 (叶子) 上传项数组 */
 const getUploadLeafItems = () => {
 	const result = [];
 	for (const item of modalState.fileUploadItems) {
@@ -167,7 +167,7 @@ const getUploadLeafItems = () => {
 };
 
 /**
- * 递归查找项（支持 folder-group 嵌套）
+ * 递归查找项 (支持 folder-group 嵌套)
  */
 const findUploadItemInTree = (items, id) => {
 	for (const item of items || []) {
@@ -181,8 +181,8 @@ const findUploadItemInTree = (items, id) => {
 };
 
 /**
- * 从树中移除项，支持 folder-group 嵌套；
- * 移除 folder-group 时一并清除子项；清空子项后自动移除空组。
+ * 从树中移除项, 支持 folder-group 嵌套;
+ * 移除 folder-group 时一并清除子项; 清空子项后自动移除空组.
  */
 const removeUploadItemFromTree = (items, id) => {
 	if (!Array.isArray(items)) return null;
@@ -199,7 +199,7 @@ const removeUploadItemFromTree = (items, id) => {
 		if (item.kind === 'folder-group') {
 			const removed = removeUploadItemFromTree(item.children, id);
 			if (removed) {
-				// 重新计算父组聚合（不会更新 DOM，由外层统一渲染）
+				// 重新计算父组聚合 (不会更新 DOM, 由外层统一渲染)
 				updateFolderGroupAggregates(item);
 				if (item.children.length === 0) {
 					// 空组也移除
@@ -417,7 +417,7 @@ const renderFileUploadSpeed = () => {
     el.textContent = speed > 0 ? `${formatFileSize(speed)}/s` : '0 B/s';
 };
 
-/** 启动速度定时器（每秒计算并更新） */
+/** 启动速度定时器 (每秒计算并更新) */
 const startFileUploadSpeedTimer = () => {
     if (modalState.fileUploadSpeedTimer) return;
     modalState.fileUploadSpeedLastTick = Date.now();
@@ -807,8 +807,8 @@ const createFileEntry = async (type, name, content = '', overwrite = false) => {
 };
 
 /**
- * 全部子项成功完成后，调度 500ms 后移除文件夹组（幂等）。
- * 存在未完成/失败子项时取消已排定的移除。
+ * 全部子项成功完成后, 调度 500ms 后移除文件夹组 (幂等).
+ * 存在未完成/失败子项时取消已排定的移除.
  */
 const scheduleFolderGroupRemovalIfDone = (group) => {
 	if (!group || group.kind !== 'folder-group') return;
@@ -857,11 +857,11 @@ const updateFolderGroupAggregates = (group) => {
 	if (row) {
 		applyFileUploadFolderGroupView(row, group);
 	}
-	// 全部完成后调度文件夹组移除（驱动点收敛到聚合更新）
+	// 全部完成后调度文件夹组移除 (驱动点收敛到聚合更新)
 	scheduleFolderGroupRemovalIfDone(group);
 };
 
-/** 如果子项有 parentId，更新对应的父文件夹组 */
+/** 如果子项有 parentId, 更新对应的父文件夹组 */
 const updateParentFolderGroup = (item) => {
 	if (!item || !item.parentId) return;
 	const parent = modalState.fileUploadItemById.get(item.parentId);
@@ -893,7 +893,7 @@ const setFileUploadProgress = (id, payload = {}) => {
 	}
 
 	if (nextStatus === 'DONE') {
-		// 只有完全成功的才自动删除；FAILED 不删除
+		// 只有完全成功的才自动删除; FAILED 不删除
 		if (prevStatus !== 'DONE') {
 			modalState.fileUploadStats.success = (modalState.fileUploadStats.success || 0) + 1;
 		}
@@ -909,7 +909,7 @@ const setFileUploadProgress = (id, payload = {}) => {
 			}
 
 			if (current.parentId) {
-				// 文件夹组子项：只删除 DOM 行，保留数据以保证文件夹聚合稳定；全部完成时由聚合更新调度 500ms 移除文件夹
+				// 文件夹组子项: 只删除 DOM 行, 保留数据以保证文件夹聚合稳定; 全部完成时由聚合更新调度 500ms 移除文件夹
 				const parent = modalState.fileUploadItemById.get(current.parentId);
 				if (parent && parent.kind === 'folder-group') {
 					removeFileUploadItemRow(id);
@@ -921,7 +921,7 @@ const setFileUploadProgress = (id, payload = {}) => {
 				}
 			}
 
-			// 普通文件：完整删除数据和 DOM
+			// 普通文件: 完整删除数据和 DOM
 			removeUploadItemById(id);
 			removeFileUploadItemRow(id);
 			renderFileUploadSummary();
@@ -932,7 +932,7 @@ const setFileUploadProgress = (id, payload = {}) => {
 	}
 
 	if (nextStatus !== 'UPLOADING' && nextStatus !== 'MERGING') {
-		// 状态切换(等待/失败等)直接局部更新一次，避免等待统一刷新间隔
+		// 状态切换 (等待/失败等) 直接局部更新一次, 避免等待统一刷新间隔
 		applyFileUploadItemDom(item);
 		updateParentFolderGroup(item);
 		renderFileUploadSummary();
@@ -1016,7 +1016,7 @@ const abortFolderScan = (groupId) => {
 		controller.abort();
 		modalState.fileUploadScanControllers.delete(groupId);
 	}
-	// 从等待数组中移除该组的扫描 promise，避免 uploadSelectedFiles 等待已中止的扫描
+	// 从等待数组中移除该组的扫描 promise, 避免 uploadSelectedFiles 等待已中止的扫描
 	const promise = modalState.fileUploadScanPromiseByGroupId.get(groupId);
 	if (promise) {
 		const idx = modalState.fileUploadScanPromises.indexOf(promise);
@@ -1065,7 +1065,7 @@ const createUploadItemFromScannedFile = (file, relativePath, groupId, fileIndex)
 	return item;
 };
 
-/** 处理文件夹扫描的一批结果：添加子项、更新计数、调度 UI 刷新 */
+/** 处理文件夹扫描的一批结果: 添加子项, 更新计数, 调度 UI 刷新 */
 const handleFolderScanBatch = (groupItem, { files, scannedCount, scannedSize }) => {
 	const children = files.map((f, i) =>
 		createUploadItemFromScannedFile(f.file, f.relativePath, groupItem.id, groupItem.children.length + i)
@@ -1077,14 +1077,14 @@ const handleFolderScanBatch = (groupItem, { files, scannedCount, scannedSize }) 
 	scheduleFolderScanDomUpdate();
 };
 
-/** 文件夹扫描完成：建立空目录、计算聚合、转回正常模式 */
+/** 文件夹扫描完成: 建立空目录, 计算聚合, 转回正常模式 */
 const handleFolderScanComplete = (groupItem, dirsFound) => {
 	if (groupItem.scanState !== 'scanning') return;
 	groupItem.scanState = null;
 	delete groupItem.scannedCount;
 	delete groupItem.scannedSize;
 
-	// 如果组已被移除，直接清理并返回
+	// 如果组已被移除, 直接清理并返回
 	const stillExists = findUploadItemInTree(modalState.fileUploadItems, groupItem.id);
 	if (!stillExists) {
 		modalState.fileUploadScanControllers.delete(groupItem.id);
@@ -1138,7 +1138,7 @@ const handleFolderScanComplete = (groupItem, dirsFound) => {
 	updateFileUploadDropzoneState();
 };
 
-/** 调度扫描中文件夹组的 DOM 更新（防抖，与 UI 刷新间隔一致） */
+/** 调度扫描中文件夹组的 DOM 更新 (防抖, 与 UI 刷新间隔一致) */
 const scheduleFolderScanDomUpdate = () => {
 	if (modalState.fileUploadScanDebounceTimer) return;
 	modalState.fileUploadScanDebounceTimer = setTimeout(() => {
@@ -1154,7 +1154,7 @@ const scheduleFolderScanDomUpdate = () => {
 	}, DEFAULT_UI_REFRESH_INTERVAL_MS);
 };
 
-/** 使用 FileSystemEntry API 迭代遍历目录树，分批报告进度 */
+/** 使用 FileSystemEntry API 迭代遍历目录树, 分批报告进度 */
 const scanEntryTree = async (entry, groupItem) => {
 	const controller = modalState.fileUploadScanControllers.get(groupItem.id);
 	const queue = [{ entry, path: entry.name }];
@@ -1194,7 +1194,7 @@ const scanEntryTree = async (entry, groupItem) => {
 	handleFolderScanComplete(groupItem, dirsFound);
 };
 
-/** 使用 FileSystemHandle API 迭代遍历目录树，分批报告进度 */
+/** 使用 FileSystemHandle API 迭代遍历目录树, 分批报告进度 */
 const scanHandleTree = async (handle, groupItem) => {
 	const controller = modalState.fileUploadScanControllers.get(groupItem.id);
 	const queue = [{ handle, path: handle.name }];
@@ -1397,7 +1397,7 @@ const readDroppedUploadItems = async (dataTransfer) => {
 		droppedItems.push({ item, entry, file, isDirectoryPlaceholder });
 	}
 
-	// 直接读取的文件（非目录项）
+	// 直接读取的文件 (非目录项)
 	const directFiles = [];
 	// 需要后台扫描的目录项
 	const scanJobs = [];
@@ -1453,7 +1453,7 @@ const readDroppedUploadItems = async (dataTransfer) => {
 		}
 	}
 
-	// 回退：用 DataTransfer.files 补充缺失的明确顶层文件，避免目录扫描路径重复补入目录内部文件
+	// 回退: 用 DataTransfer.files 补充缺失的明确顶层文件, 避免目录扫描路径重复补入目录内部文件
 	const seen = new Set(directFiles.map((entry) => getUploadFileSignature(entry.file)));
 	fallbackFiles.forEach((file) => {
 		if (file.webkitRelativePath) {
@@ -1582,7 +1582,7 @@ const initFileUploadContext = async (instanceName, currentPath, item, overwrite,
 	ctx.uploadId = initResult.upload_id;
 
 	if (ctx.removed) {
-		// init 已经创建了后端临时文件，立即通知后端清理
+		// init 已经创建了后端临时文件, 立即通知后端清理
 		void cleanupFileUploadContext(ctx, {
 			abortController: true,
 			abortRemote: true,
@@ -1738,7 +1738,7 @@ const uploadFileGroupChunks = async (contexts, limit, options = {}) => {
 			scheduleChunkForCtx(ctx);
 		}
 
-		// 2) 文件数不足时，再均匀分配额外分片（选择 in-flight 最少的 ctx）
+		// 2) 文件数不足时, 再均匀分配额外分片 (选择 in-flight 最少的 ctx)
 		while (inFlight.size < limitValue) {
 			let bestCtx = null;
 			let bestCount = Infinity;
@@ -1884,7 +1884,7 @@ const uploadSelectedFiles = async (overwrite) => {
 	resetFileUploadSpeed();
 	startFileUploadSpeedTimer();
 	try {
-		// 等待所有进行中的文件夹扫描完成；上传提交从扫描等待阶段开始锁定。
+		// 等待所有进行中的文件夹扫描完成; 上传提交从扫描等待阶段开始锁定.
 		if (modalState.fileUploadScanPromises.length > 0) {
 			await Promise.all(modalState.fileUploadScanPromises);
 			if (runToken !== modalState.fileUploadRunToken) {
@@ -2029,7 +2029,7 @@ const uploadSelectedFiles = async (overwrite) => {
         await modalState.onRequestReload();
     }
 
-    // DONE 会被自动删除，所以不要依赖最终数组来判断。
+    // DONE 会被自动删除, 所以不要依赖最终数组来判断.
     if (hasFinished) {
         hasDone = true;
     }
@@ -2077,7 +2077,7 @@ const countSuccessLeafItems = (items) => {
 	return count;
 };
 
-/** 追加文件到已有上传列表（去重替换） */
+/** 追加文件到已有上传列表 (去重替换) */
 const appendFileUploadItemsWithItems = (items) => {
     setFileUploadAwaitConfirm(false);
 
@@ -2098,7 +2098,7 @@ const appendFileUploadItemsWithItems = (items) => {
 		const existing = dedupMap.get(key);
 
 		if (newItem.kind === 'folder-group' && existing && existing.kind === 'folder-group') {
-			// 同名文件夹组：合并子项；如果新组正在扫描则中止
+			// 同名文件夹组: 合并子项; 如果新组正在扫描则中止
 			if (newItem.scanState === 'scanning') {
 				abortFolderScan(newItem.id);
 			}
@@ -2118,7 +2118,7 @@ const appendFileUploadItemsWithItems = (items) => {
 					existing.children.push(newChild);
 				}
 			}
-			// 合并后立即重新计算聚合，保持数据一致性
+			// 合并后立即重新计算聚合, 保持数据一致性
 			updateFolderGroupAggregates(existing);
 			dedupMap.set(key, existing);
 			continue;
@@ -2179,11 +2179,11 @@ const removeFileUploadItem = (id) => {
 		abortFolderScan(item.id);
 		cancelFolderGroupChildren(item);
     }
-    // 不 await，保证 UI 立即响应，同时后台会异步清理/取消
+    // 不 await, 保证 UI 立即响应, 同时后台会异步清理/取消
     cancelFileUploadItem(id);
 	clearFileUploadDoneClearTimer(id);
 	removeUploadItemById(id);
-	// 手动删除后重算 PROGRESS 缓存值（文件夹组子项已在 removeUploadItemById 中更新聚合）
+	// 手动删除后重算 PROGRESS 缓存值 (文件夹组子项已在 removeUploadItemById 中更新聚合)
 	modalState.fileUploadStats.total = countUploadLeafItems(modalState.fileUploadItems);
 	modalState.fileUploadStats.success = countSuccessLeafItems(modalState.fileUploadItems);
     renderFileUploadList();
@@ -2299,7 +2299,7 @@ const cancelAllFileUploads = () => {
 	abortAllScans();
     const ids = collectAllUploadIds();
     ids.forEach((id) => {
-        // 不 await，避免阻塞关闭动画
+        // 不 await, 避免阻塞关闭动画
         cancelFileUploadItem(id);
     });
 };

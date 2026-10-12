@@ -3,41 +3,81 @@ package process
 import "unicode/utf8"
 
 type TerminalHistory struct {
-	data    []byte
+	buf     []byte
+	start   int
 	baseSeq uint64
 	endSeq  uint64
 }
 
 func (h *TerminalHistory) Append(data []byte, limit int) {
 	originalLen := len(data)
-	if originalLen == 0 {
+	if originalLen == 0 || limit <= 0 {
 		return
 	}
+
+	capLimit := 2 * limit
+	if originalLen >= limit {
+		drop := safeTerminalHistoryStart(data, originalLen-limit)
+		h.baseSeq = h.endSeq + uint64(drop)
+		h.endSeq += uint64(originalLen)
+		h.start = 0
+		data = data[drop:]
+		if cap(h.buf) < capLimit {
+			h.buf = make([]byte, 0, capLimit)
+		} else {
+			h.buf = h.buf[:0]
+		}
+		h.buf = append(h.buf, data...)
+		return
+	}
+
 	h.endSeq += uint64(originalLen)
-	h.data = append(h.data, data...)
-	if len(h.data) <= limit {
-		return
+	if cap(h.buf) < capLimit {
+		activeLen := len(h.buf) - h.start
+		newBuf := make([]byte, activeLen, capLimit)
+		copy(newBuf, h.buf[h.start:])
+		h.buf = newBuf
+		h.start = 0
+	} else if len(h.buf)+originalLen > cap(h.buf) {
+		activeLen := len(h.buf) - h.start
+		copy(h.buf[:activeLen], h.buf[h.start:])
+		h.buf = h.buf[:activeLen]
+		h.start = 0
 	}
-	drop := len(h.data) - limit
-	drop = safeTerminalHistoryStart(h.data, drop)
-	h.data = h.data[drop:]
-	h.baseSeq += uint64(drop)
+
+	h.buf = append(h.buf, data...)
+	activeLen := len(h.buf) - h.start
+	if activeLen > limit {
+		excess := activeLen - limit
+		newStart := safeTerminalHistoryStart(h.buf, h.start+excess)
+		h.baseSeq += uint64(newStart - h.start)
+		h.start = newStart
+	}
 }
 
 func (h *TerminalHistory) Reset(data []byte, limit int) {
 	originalLen := len(data)
-	h.data = nil
+	h.start = 0
 	h.baseSeq = h.endSeq
 	h.endSeq += uint64(originalLen)
-	if originalLen == 0 {
+	if originalLen == 0 || limit <= 0 {
+		h.buf = h.buf[:0]
 		return
 	}
+
 	if originalLen > limit {
-		drop := safeTerminalHistoryStart(data, len(data)-limit)
-		h.baseSeq = h.endSeq - uint64(len(data)-drop)
+		drop := safeTerminalHistoryStart(data, originalLen-limit)
+		h.baseSeq = h.endSeq - uint64(originalLen-drop)
 		data = data[drop:]
 	}
-	h.data = append(h.data, data...)
+
+	capLimit := 2 * limit
+	if cap(h.buf) < capLimit {
+		h.buf = make([]byte, 0, capLimit)
+	} else {
+		h.buf = h.buf[:0]
+	}
+	h.buf = append(h.buf, data...)
 }
 
 func safeTerminalHistoryStart(data []byte, start int) int {
@@ -97,16 +137,22 @@ func escapeSequenceEnd(data []byte, seqStart int, maxLen int) int {
 }
 
 func (h *TerminalHistory) Snapshot() ([]byte, uint64) {
-	return append([]byte(nil), h.data...), h.endSeq
+	activeLen := len(h.buf) - h.start
+	if activeLen <= 0 {
+		return nil, h.endSeq
+	}
+	cp := make([]byte, activeLen)
+	copy(cp, h.buf[h.start:])
+	return cp, h.endSeq
 }
 
 func (h *TerminalHistory) EndSeq() uint64 {
 	return h.endSeq
 }
 
-func (h *TerminalHistory) ReadFrom(seq uint64, maxBytes int) ([]byte, uint64, bool) {
-	if maxBytes <= 0 || seq >= h.endSeq {
-		return nil, seq, false
+func (h *TerminalHistory) ReadInto(dst []byte, seq uint64) (int, uint64, bool) {
+	if len(dst) == 0 || seq >= h.endSeq {
+		return 0, seq, false
 	}
 	dropped := false
 	if seq < h.baseSeq {
@@ -114,13 +160,39 @@ func (h *TerminalHistory) ReadFrom(seq uint64, maxBytes int) ([]byte, uint64, bo
 		dropped = true
 	}
 	offset := int(seq - h.baseSeq)
-	if offset < 0 || offset >= len(h.data) {
-		return nil, seq, dropped
+	activeLen := len(h.buf) - h.start
+	if offset < 0 || offset >= activeLen {
+		return 0, seq, dropped
 	}
-	available := len(h.data) - offset
+	available := activeLen - offset
+	if available > len(dst) {
+		available = len(dst)
+	}
+	copy(dst[:available], h.buf[h.start+offset:h.start+offset+available])
+	return available, seq + uint64(available), dropped
+}
+
+func (h *TerminalHistory) ReadFrom(seq uint64, maxBytes int) ([]byte, uint64, bool) {
+	if maxBytes <= 0 || seq >= h.endSeq {
+		return nil, seq, false
+	}
+	effectiveSeq := seq
+	if effectiveSeq < h.baseSeq {
+		effectiveSeq = h.baseSeq
+	}
+	offset := int(effectiveSeq - h.baseSeq)
+	activeLen := len(h.buf) - h.start
+	if offset < 0 || offset >= activeLen {
+		return nil, effectiveSeq, seq < h.baseSeq
+	}
+	available := activeLen - offset
 	if available > maxBytes {
 		available = maxBytes
 	}
-	payload := append([]byte(nil), h.data[offset:offset+available]...)
-	return payload, seq + uint64(available), dropped
+	payload := make([]byte, available)
+	n, nextSeq, dropped := h.ReadInto(payload, seq)
+	if n == 0 {
+		return nil, nextSeq, dropped
+	}
+	return payload[:n], nextSeq, dropped
 }

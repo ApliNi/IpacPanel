@@ -137,6 +137,10 @@ func HandleApiFileArchive(w http.ResponseWriter, r *http.Request) {
 	}
 	web.MarkRequestAction(w, "archive")
 
+	if len(req.Include) > maxFileBatchRules || len(req.Exclude) > maxFileBatchRules {
+		web.WriteAPIError(w, http.StatusBadRequest, msg.FileBatchRulesTooMany, nil)
+		return
+	}
 	fs, err := newInstanceFS(sp)
 	if err != nil {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.FilePathInvalid, err)

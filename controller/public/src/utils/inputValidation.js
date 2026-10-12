@@ -18,6 +18,7 @@ const limits = Object.freeze({
 	trustedProxyIp: 128,
 	deviceFilterItemCount: 512,
 	deviceFilterItem: 128,
+	fileBatchRules: 40000,
 });
 
 const settingsLimits = Object.freeze({
@@ -53,23 +54,40 @@ const validateMaxLength = (field, label, value, maxLength) => {
 
 const truncateText = (value, maxLength) => Array.from(String(value || '')).slice(0, maxLength).join('');
 
+const textEncoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+const textDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
+
 const truncateUTF8Bytes = (value, maxBytes) => {
 	const text = String(value || '');
 	const limit = Math.max(0, Number(maxBytes) || 0);
 	if (limit <= 0) return '';
-	if (typeof TextEncoder === 'undefined') {
+	if (typeof TextEncoder === 'undefined' || typeof TextDecoder === 'undefined') {
 		return truncateText(text, limit);
 	}
-	const encoder = new TextEncoder();
-	let used = 0;
-	let out = '';
-	for (const char of Array.from(text)) {
-		const size = encoder.encode(char).length;
-		if (used + size > limit) break;
-		used += size;
-		out += char;
+	const encoder = textEncoder || new TextEncoder();
+	const decoder = textDecoder || new TextDecoder();
+	const encoded = encoder.encode(text);
+	if (encoded.length <= limit) {
+		return text;
 	}
-	return out;
+	let cut = limit;
+	for (let i = limit - 1; i >= 0 && i >= limit - 4; i--) {
+		const byte = encoded[i];
+		if ((byte & 0x80) === 0) {
+			break;
+		}
+		if ((byte & 0xC0) === 0xC0) {
+			let seqLen = 1;
+			if ((byte & 0xE0) === 0xC0) seqLen = 2;
+			else if ((byte & 0xF0) === 0xE0) seqLen = 3;
+			else if ((byte & 0xF8) === 0xF0) seqLen = 4;
+			if (i + seqLen > limit) {
+				cut = i;
+			}
+			break;
+		}
+	}
+	return decoder.decode(encoded.subarray(0, cut));
 };
 
 const normalizeTrustedProxyIps = (value) => {

@@ -156,14 +156,43 @@ export const getFileType = (name, dir = false) => {
 };
 
 
-const iconParser = new DOMParser();
+const iconTemplates = new Map();
+
+const buildIconTemplate = (iconSource) => {
+	if (typeof document === 'undefined') {
+		return null;
+	}
+	const template = document.createElement('template');
+	template.innerHTML = String(iconSource || '').trim();
+	return template;
+};
+
+if (typeof document !== 'undefined') {
+	for (const [key, iconConfig] of Object.entries(icons)) {
+		if (iconConfig && typeof iconConfig.icon === 'string') {
+			iconTemplates.set(key, buildIconTemplate(iconConfig.icon));
+		}
+	}
+}
+
+const getIconTemplate = (name) => {
+	let template = iconTemplates.get(name);
+	if (!template && icons[name]?.icon) {
+		template = buildIconTemplate(icons[name].icon);
+		if (template) {
+			iconTemplates.set(name, template);
+		}
+	}
+	return template || iconTemplates.get('file');
+};
 
 export const cloneIconNode = (name) => {
-	const iconConfig = icons[name] || icons.file;
-	const source = iconConfig.icon;
-	const doc = iconParser.parseFromString(source, 'image/svg+xml');
-	const node = doc.documentElement;
-	return document.importNode(node, true);
+	const template = getIconTemplate(name);
+	if (!template) {
+		return null;
+	}
+	const content = template.content.cloneNode(true);
+	return content.firstElementChild || content;
 };
 
 export const getFileIconNode = (name, dir = false, type = '') => {

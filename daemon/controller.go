@@ -1,6 +1,7 @@
 package main
 
 import (
+	"IpacPanel/daemon/terminal"
 	"IpacPanel/daemon/version"
 	"fmt"
 	"io"
@@ -10,15 +11,18 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 type controllerProcess struct {
-	cmd   *exec.Cmd
-	ipc   *IPCConn
-	ready chan struct{}
+	cmd         *exec.Cmd
+	ipc         *IPCConn
+	ready       chan struct{}
+	exited      chan struct{}
+	processTree *terminal.ProcessTree
 }
 
 type controllerPipeCloser struct {
@@ -99,6 +103,23 @@ func validateControllerProtocol(binaryPath string) error {
 	return nil
 }
 
+var (
+	activeControllerMu   sync.Mutex
+	activeControllerProc *controllerProcess
+)
+
+func setActiveController(proc *controllerProcess) {
+	activeControllerMu.Lock()
+	activeControllerProc = proc
+	activeControllerMu.Unlock()
+}
+
+func getActiveController() *controllerProcess {
+	activeControllerMu.Lock()
+	defer activeControllerMu.Unlock()
+	return activeControllerProc
+}
+
 func startController(binaryPath string, firstStart bool) (*controllerProcess, error) {
 	cmd := exec.Command(binaryPath,
 		"--daemon-stdio",
@@ -106,6 +127,7 @@ func startController(binaryPath string, firstStart bool) (*controllerProcess, er
 	)
 	cmd.Stderr = os.Stderr
 	cmd.Dir = appBaseDir
+	prepareControllerCmd(cmd)
 	controllerStdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("open controller stdin pipe: %w", err)
@@ -126,11 +148,16 @@ func startController(binaryPath string, firstStart bool) (*controllerProcess, er
 		stdout: controllerStdout,
 	})
 	ipcConn.SetDebug(ipcDebug.Load())
-	return &controllerProcess{
-		cmd:   cmd,
-		ipc:   ipcConn,
-		ready: make(chan struct{}),
-	}, nil
+	proc := &controllerProcess{
+		cmd:    cmd,
+		ipc:    ipcConn,
+		ready:  make(chan struct{}),
+		exited: make(chan struct{}),
+	}
+	if err := attachControllerLifecycle(proc); err != nil {
+		log.Printf("attach controller lifecycle warning: %v", err)
+	}
+	return proc, nil
 }
 
 func monitorController(proc *controllerProcess) error {
@@ -140,6 +167,11 @@ func monitorController(proc *controllerProcess) error {
 func controllerLoop(controllerPath string, server *IPCServer) error {
 	firstControllerStart := true
 	for {
+		if isDaemonStopping() {
+			log.Printf("daemon is stopping, controller loop exiting")
+			return nil
+		}
+
 		if firstControllerStart {
 			log.Printf("validating controller protocol...")
 			if err := validateControllerProtocol(controllerPath); err != nil {
@@ -156,15 +188,26 @@ func controllerLoop(controllerPath string, server *IPCServer) error {
 			time.Sleep(3 * time.Second)
 			continue
 		}
+		setActiveController(proc)
 		server.Bind(proc.ipc)
 		go server.Serve(proc.ready)
 		firstControllerStart = false
 
 		monitorDone := make(chan error, 1)
 		go func() {
-			monitorDone <- monitorController(proc)
+			err := monitorController(proc)
+			close(proc.exited)
+			monitorDone <- err
 		}()
 		err = <-monitorDone
+		setActiveController(nil)
+		detachControllerLifecycle(proc)
+
+		if isDaemonStopping() {
+			log.Printf("daemon is stopping, controller will not be restarted")
+			return nil
+		}
+
 		exitCode := -1
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
@@ -186,6 +229,37 @@ func controllerLoop(controllerPath string, server *IPCServer) error {
 
 		// Do not stop daemon-held instances when the controller exits. Controller
 		// restarts are part of the update path, and instance lifetime belongs to the daemon.
+	}
+}
+
+func shutdownController() {
+	proc := getActiveController()
+	if proc == nil || proc.cmd == nil || proc.cmd.Process == nil {
+		return
+	}
+
+	select {
+	case <-proc.exited:
+		return
+	default:
+	}
+
+	log.Printf("stopping controller [pid=%d]...", proc.cmd.Process.Pid)
+	if proc.ipc != nil {
+		_ = proc.ipc.Close()
+	}
+	sendControllerTerminateSignal(proc.cmd)
+
+	select {
+	case <-proc.exited:
+		log.Printf("controller stopped cleanly")
+	case <-time.After(3 * time.Second):
+		log.Printf("controller did not exit in 3 seconds, killing [pid=%d]...", proc.cmd.Process.Pid)
+		_ = proc.cmd.Process.Kill()
+		if proc.processTree != nil {
+			_ = proc.processTree.Kill()
+			_ = proc.processTree.Close()
+		}
 	}
 }
 

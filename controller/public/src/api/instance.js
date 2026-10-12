@@ -5,7 +5,6 @@ import {
 	createHttpError,
 	getCSRFToken,
 	parseJsonData,
-	parseJsonPayload,
 	withApiResult,
 } from './core.js';
 
@@ -18,11 +17,7 @@ export const controlInstance = async (name, action) => {
 			},
 			body: JSON.stringify({ instance: name, action })
 		});
-		const payload = await parseJsonPayload(res);
-		if (payload && payload.ok === false) {
-			throw new Error(payload.message || `实例 ${action} 失败`);
-		}
-		return payload?.data || { ok: true };
+		return await parseJsonData(res);
 	}, { logMessage: `[API] 对实例 ${name} 执行 ${action} 操作失败:` });
 };
 
@@ -97,8 +92,8 @@ export const deleteInstance = async (name, options = {}) => {
 		});
 		if (!res.ok) {
 			const errorPayload = await res.clone().json().catch(() => null);
-			if (errorPayload?.message) {
-				return createApiFailure(new Error(errorPayload.message), {
+			if (errorPayload?.error) {
+				return createApiFailure(new Error(errorPayload.error), {
 					confirmRequired: errorPayload?.data?.confirm_required === true,
 				});
 			}
@@ -106,11 +101,8 @@ export const deleteInstance = async (name, options = {}) => {
 				confirmRequired: errorPayload?.data?.confirm_required === true,
 			});
 		}
-		const payload = await parseJsonPayload(res);
-		if (payload?.ok === false) {
-			return createApiFailure(new Error(payload.message || '删除实例失败'));
-		}
-		return createApiSuccess(payload?.data || { ok: true });
+		const data = await parseJsonData(res);
+		return createApiSuccess(data);
 	} catch (error) {
 		console.error('[API] deleteInstance 失败:', error);
 		return createApiFailure(error);

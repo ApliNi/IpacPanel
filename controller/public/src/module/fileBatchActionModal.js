@@ -247,6 +247,11 @@ const getNormalizedSelectionRules = async () => {
 		await showAlert('未选择任何规则', { title: 'INPUT' });
 		return null;
 	}
+	const maxRules = InputValidation.limits.fileBatchRules || 40000;
+	if (include.length > maxRules || exclude.length > maxRules) {
+		await showAlert(`批量操作规则数量超出限制 (最多 ${maxRules} 条)`, { title: 'INPUT' });
+		return null;
+	}
 	return { include, exclude };
 };
 

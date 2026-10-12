@@ -20,6 +20,8 @@ import (
 	"time"
 )
 
+const maxFileBatchRules = 40000
+
 type fileBatchExcludeMatcher struct {
 	dirs  []string
 	files map[string]struct{}
@@ -260,9 +262,9 @@ func resolveFileBatchActionDestination(rootPath string, destAbs string, srcAbs s
 func fileBatchMoveFailReason(err error) string {
 	var partialErr *moveFileCopiedRemoveSourceError
 	if errors.As(err, &partialErr) {
-		return partialErr.Error()
+		return "文件已复制, 删除源失败: " + deleteFailureReason(partialErr.Err)
 	}
-	return err.Error()
+	return batchFailureReason(err)
 }
 
 func removeEmptyDirectoryTreeWithinRoot(ctx context.Context, rootPath string, targetPath string) error {
@@ -461,6 +463,10 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	web.MarkRequestAction(w, action)
+	if len(req.Include) > maxFileBatchRules || len(req.Exclude) > maxFileBatchRules {
+		web.WriteAPIError(w, http.StatusBadRequest, msg.FileBatchRulesTooMany, nil)
+		return
+	}
 
 	// Resolve destination directory (copy/move use current file list directory).
 	destRoot, destRel, err := resolveInstanceFilePath(sp, req.DestDir)

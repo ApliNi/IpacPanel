@@ -220,7 +220,7 @@ func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse, eventCh chan<- IPC
 	if ins.State == instanceRunning {
 		return nil
 	}
-	if ins.State == instanceStopping {
+	if ins.State == instanceStopping || ins.State == instanceCleaning {
 		return errors.New(daemonInstanceStopping)
 	}
 
@@ -753,7 +753,8 @@ func (ins *DaemonInstance) runCleanupCommand(path string, argv []string, outputC
 func (ins *DaemonInstance) copyCleanupOutput(wg *sync.WaitGroup, outputCh chan<- IPCResponse, runtimeID string, src io.ReadCloser) {
 	defer wg.Done()
 	defer src.Close()
-	buf := make([]byte, daemonOutputReadBufferSize)
+	buf := getDaemonOutputBuffer()
+	defer putDaemonOutputBuffer(buf)
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {

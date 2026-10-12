@@ -11,75 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
-
-const (
-	wsSendQueueSize         = 64
-	maxTerminalCols         = 4000
-	maxTerminalRows         = 2500
-	maxTerminalInputBytes   = 16 * 1024
-	wsWriteTimeout          = 5 * time.Second
-	wsPingInterval          = 25 * time.Second
-	wsTerminalFrameMaxBytes = 256 * 1024
-	terminalSystemBlue      = "\x1b[34m"
-	terminalSystemYellow    = "\x1b[33m"
-)
-
-func buildTerminalMessage(colorCode string, text string) []byte {
-	timestamp := time.Now().Format(cfg.DisplayTimeLayout)
-	return []byte(fmt.Sprintf("\r\n\r\n%s\x1b[1m[%s] [IpacPanel] %s\x1b[0m\r\n\r\n", colorCode, timestamp, text))
-}
-
-func BuildNormalTerminalSystemMessage(text string) []byte {
-	return buildTerminalMessage(terminalSystemBlue, text)
-}
-
-func BuildWarningTerminalSystemMessage(text string) []byte {
-	return buildTerminalMessage(terminalSystemYellow, text)
-}
-
-func appendPlainTerminalInputRune(dst []byte, r rune) []byte {
-	switch {
-	case r == '\t':
-		return append(dst, '\t')
-	case r == 0x1b:
-		return append(dst, '^', '[')
-	case r == 0x7f:
-		return append(dst, '^', '?')
-	case r >= 0 && r < 0x20:
-		return append(dst, '^', byte('@'+r))
-	case r >= 0x80 && r <= 0x9f:
-		return append(dst, fmt.Sprintf("\\x%02X", r)...)
-	default:
-		return append(dst, string(r)...)
-	}
-}
-
-func buildPlainTerminalInputEcho(data []byte) []byte {
-	text := strings.ReplaceAll(string(data), "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	lines := strings.Split(text, "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	if len(lines) == 0 {
-		return nil
-	}
-
-	echo := make([]byte, 0, len(data)+len(lines)*4)
-	for _, line := range lines {
-		echo = append(echo, '>', ' ')
-		for _, r := range line {
-			echo = appendPlainTerminalInputRune(echo, r)
-		}
-		echo = append(echo, '\r', '\n')
-	}
-	return echo
-}
 
 type processState uint8
 
@@ -107,87 +42,17 @@ type InstanceProcess struct {
 	StartTime                    time.Time
 	RestartCount                 int
 	ActiveTerminalMode           int
-	Mu                           sync.Mutex
+	Mu                           sync.RWMutex
+	outputMu                     sync.Mutex
 	Clients                      map[*WSClient]bool
 	History                      TerminalHistory
 	ProxySeq                     uint64
 	StopSeq                      uint64
 	StartSeq                     uint64
-	TerminalStartupProtecting    bool
-	TerminalStartupPendingEscape []byte
 	PTYAlternateScreenActive     bool
 	PTYAlternateScreenPending    []byte
 	InputMu                      sync.Mutex
 	overrideCommand              string
-}
-
-type restartRequestMode uint8
-
-const (
-	restartRequestModeDefault restartRequestMode = iota
-	restartRequestModeStrict
-)
-
-type RestartRequestResult uint8
-
-const (
-	RestartRequestAccepted RestartRequestResult = iota
-	RestartRequestNoopStarting
-	RestartRequestNoopAlreadyRestarting
-	RestartRequestSkippedStopped
-	RestartRequestRejectedDeleting
-)
-
-func (result RestartRequestResult) IsAccepted() bool {
-	return result == RestartRequestAccepted
-}
-
-func (result RestartRequestResult) IsAllowed() bool {
-	return result == RestartRequestAccepted || result == RestartRequestNoopStarting || result == RestartRequestNoopAlreadyRestarting
-}
-
-type startReservation struct {
-	ins                      cfg.Instance
-	historyLimit             int
-	instanceUpdateStagingDir string
-	cols                     uint16
-	rows                     uint16
-	startSeq                 uint64
-	resetRestarting          bool
-	instanceName             string
-	cancelCh                 chan struct{}
-}
-
-type preparedStart struct {
-	state     *DaemonRuntimeState
-	startTime time.Time
-}
-
-type WSClient struct {
-	Conn *websocket.Conn
-	User string
-
-	Send           chan wsOutMessage
-	Done           chan struct{}
-	WriteMu        sync.Mutex
-	TerminalWake   chan struct{}
-	StartOnce      sync.Once
-	CloseOnce      sync.Once
-	Instance       *InstanceProcess
-	TerminalCursor uint64
-	TerminalReady  atomic.Bool
-}
-
-type wsOutMessage struct {
-	Type                     int
-	Data                     []byte
-	SkipTerminalFlush        bool
-	EnableTerminalAfterWrite bool
-}
-
-type TerminalInitialMessage struct {
-	Reset   []byte
-	History []byte
 }
 
 type InstanceStatus struct {
@@ -235,8 +100,8 @@ func (sp *InstanceProcess) ActiveTerminalModeSnapshot() int {
 	if sp == nil {
 		return cfg.Terminal
 	}
-	sp.Mu.Lock()
-	defer sp.Mu.Unlock()
+	sp.Mu.RLock()
+	defer sp.Mu.RUnlock()
 	return sp.activeTerminalLocked()
 }
 
@@ -244,8 +109,8 @@ func (sp *InstanceProcess) StatusSnapshot() InstanceStatus {
 	if sp == nil {
 		return InstanceStatus{}
 	}
-	sp.Mu.Lock()
-	defer sp.Mu.Unlock()
+	sp.Mu.RLock()
+	defer sp.Mu.RUnlock()
 	return sp.StatusSnapshotLocked()
 }
 
@@ -264,8 +129,8 @@ func (sp *InstanceProcess) InstanceSnapshot() cfg.Instance {
 	if sp == nil {
 		return cfg.Instance{}
 	}
-	sp.Mu.Lock()
-	defer sp.Mu.Unlock()
+	sp.Mu.RLock()
+	defer sp.Mu.RUnlock()
 	return sp.InstanceSnapshotLocked()
 }
 
@@ -273,8 +138,8 @@ func (sp *InstanceProcess) IsDeleting() bool {
 	if sp == nil {
 		return false
 	}
-	sp.Mu.Lock()
-	defer sp.Mu.Unlock()
+	sp.Mu.RLock()
+	defer sp.Mu.RUnlock()
 	return sp.Deleting
 }
 
@@ -282,8 +147,8 @@ func (sp *InstanceProcess) IsRunning() bool {
 	if sp == nil {
 		return false
 	}
-	sp.Mu.Lock()
-	defer sp.Mu.Unlock()
+	sp.Mu.RLock()
+	defer sp.Mu.RUnlock()
 	return sp.Running
 }
 
@@ -291,8 +156,8 @@ func (sp *InstanceProcess) IsUpdating() bool {
 	if sp == nil {
 		return false
 	}
-	sp.Mu.Lock()
-	defer sp.Mu.Unlock()
+	sp.Mu.RLock()
+	defer sp.Mu.RUnlock()
 	return sp.Updating
 }
 
@@ -300,450 +165,52 @@ func (sp *InstanceProcess) IsActive() bool {
 	if sp == nil {
 		return false
 	}
-	sp.Mu.Lock()
-	defer sp.Mu.Unlock()
+	sp.Mu.RLock()
+	defer sp.Mu.RUnlock()
 	return sp.Running || sp.Restarting || sp.Starting
 }
 
-func (client *WSClient) startWriter() {
-	if client == nil || client.Conn == nil {
-		return
-	}
-	client.StartOnce.Do(func() {
-		if client.Send == nil {
-			client.Send = make(chan wsOutMessage, wsSendQueueSize)
-		}
-		if client.Done == nil {
-			client.Done = make(chan struct{})
-		}
-		if client.TerminalWake == nil {
-			client.TerminalWake = make(chan struct{}, 1)
-		}
-		go func() {
-			pingTicker := time.NewTicker(wsPingInterval)
-			defer pingTicker.Stop()
-			for {
-				select {
-				case msg, ok := <-client.Send:
-					if !ok {
-						return
-					}
-					if err := client.writeQueuedMessage(msg); err != nil {
-						_ = client.Close()
-						return
-					}
-					continue
-				default:
-				}
-				select {
-				case <-client.Done:
-					return
-				case <-client.TerminalWake:
-					if err := client.flushTerminalHistory(); err != nil {
-						_ = client.Close()
-						return
-					}
-				case <-pingTicker.C:
-					deadline := time.Now().Add(wsWriteTimeout)
-					_ = client.Conn.SetWriteDeadline(deadline)
-					if err := client.Conn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
-						_ = client.Close()
-						return
-					}
-				case msg, ok := <-client.Send:
-					if !ok {
-						return
-					}
-					if err := client.writeQueuedMessage(msg); err != nil {
-						_ = client.Close()
-						return
-					}
-				}
-			}
-		}()
-	})
+
+type restartRequestMode uint8
+
+const (
+	restartRequestModeDefault restartRequestMode = iota
+	restartRequestModeStrict
+)
+
+type RestartRequestResult uint8
+
+const (
+	RestartRequestAccepted RestartRequestResult = iota
+	RestartRequestNoopStarting
+	RestartRequestNoopAlreadyRestarting
+	RestartRequestSkippedStopped
+	RestartRequestRejectedDeleting
+)
+
+func (result RestartRequestResult) IsAccepted() bool {
+	return result == RestartRequestAccepted
 }
 
-func (client *WSClient) writeQueuedMessage(msg wsOutMessage) error {
-	if !msg.SkipTerminalFlush {
-		if err := client.flushTerminalHistory(); err != nil {
-			return err
-		}
-	}
-	if err := client.writeMessage(msg.Type, msg.Data); err != nil {
-		return err
-	}
-	if msg.EnableTerminalAfterWrite {
-		client.EnableTerminalHistory()
-	}
-	return nil
+func (result RestartRequestResult) IsAllowed() bool {
+	return result == RestartRequestAccepted || result == RestartRequestNoopStarting || result == RestartRequestNoopAlreadyRestarting
 }
 
-func (client *WSClient) writeMessage(messageType int, data []byte) error {
-	if client == nil || client.Conn == nil {
-		return nil
-	}
-	client.WriteMu.Lock()
-	defer client.WriteMu.Unlock()
-	_ = client.Conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
-	return client.Conn.WriteMessage(messageType, data)
+type startReservation struct {
+	ins                      cfg.Instance
+	historyLimit             int
+	instanceUpdateStagingDir string
+	cols                     uint16
+	rows                     uint16
+	startSeq                 uint64
+	resetRestarting          bool
+	instanceName             string
+	cancelCh                 chan struct{}
 }
 
-func (client *WSClient) SendControlError(message string) error {
-	if strings.TrimSpace(message) == "" {
-		message = msg.WSControlFrameInvalid
-	}
-	data := []byte(fmt.Sprintf(`{"type":"error","message":%q}`, message))
-	return client.writeMessage(websocket.TextMessage, data)
-}
-
-func (client *WSClient) SendInitialTerminal(initial TerminalInitialMessage) error {
-	if client == nil {
-		return nil
-	}
-	if len(initial.Reset) > 0 {
-		if err := client.writeMessage(websocket.BinaryMessage, initial.Reset); err != nil {
-			return err
-		}
-	}
-	if len(initial.History) > 0 {
-		if err := client.writeMessage(websocket.BinaryMessage, initial.History); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (client *WSClient) flushTerminalHistory() error {
-	if client == nil || client.Conn == nil {
-		return nil
-	}
-	sp := client.Instance
-	if sp == nil {
-		return nil
-	}
-	if !client.TerminalReady.Load() {
-		return nil
-	}
-	sp.Mu.Lock()
-	payload, nextSeq, dropped := sp.History.ReadFrom(client.TerminalCursor, wsTerminalFrameMaxBytes)
-	client.TerminalCursor = nextSeq
-	more := client.TerminalCursor < sp.History.EndSeq()
-	sp.Mu.Unlock()
-
-	if dropped {
-		notice := BuildWarningTerminalSystemMessage(msg.TerminalOutputDroppedWarning)
-		payload = append(notice, payload...)
-	}
-
-	if len(payload) == 0 {
-		return nil
-	}
-	_ = client.Conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
-	if err := client.Conn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
-		return err
-	}
-	if more {
-		client.wakeTerminalWriter()
-	}
-	return nil
-}
-
-func (client *WSClient) StartWriter() {
-	client.startWriter()
-}
-
-func (client *WSClient) Enqueue(messageType int, data []byte) bool {
-	if client == nil {
-		return false
-	}
-	if messageType == websocket.BinaryMessage {
-		if !client.TerminalReady.Load() {
-			return true
-		}
-	}
-	client.startWriter()
-	if client.Send == nil {
-		return false
-	}
-	select {
-	case <-client.Done:
-		return false
-	case client.Send <- wsOutMessage{Type: messageType, Data: data}:
-		return true
-	default:
-		// Slow client. Drop message and close.
-		_ = client.Close()
-		return false
-	}
-}
-
-func (client *WSClient) EnqueueTerminalControl(data []byte) bool {
-	if client == nil {
-		return false
-	}
-	client.startWriter()
-	if client.Send == nil {
-		return false
-	}
-	select {
-	case <-client.Done:
-		return false
-	case client.Send <- wsOutMessage{Type: websocket.BinaryMessage, Data: data, SkipTerminalFlush: true, EnableTerminalAfterWrite: true}:
-		return true
-	default:
-		_ = client.Close()
-		return false
-	}
-}
-
-func (client *WSClient) EnqueueTerminalLive(data []byte) bool {
-	if client == nil {
-		return false
-	}
-	client.startWriter()
-	if client.Send == nil {
-		return false
-	}
-	payload := append([]byte(nil), data...)
-	select {
-	case <-client.Done:
-		return false
-	case client.Send <- wsOutMessage{Type: websocket.BinaryMessage, Data: payload, SkipTerminalFlush: true}:
-		return true
-	default:
-		_ = client.Close()
-		return false
-	}
-}
-
-func (client *WSClient) EnqueueTerminal() bool {
-	if client == nil {
-		return false
-	}
-	if !client.TerminalReady.Load() {
-		return true
-	}
-	client.startWriter()
-	if client.Done == nil || client.TerminalWake == nil {
-		return false
-	}
-	client.wakeTerminalWriter()
-	return true
-}
-
-func (client *WSClient) wakeTerminalWriter() {
-	if client == nil || client.TerminalWake == nil {
-		return
-	}
-	select {
-	case <-client.Done:
-		return
-	case client.TerminalWake <- struct{}{}:
-	default:
-	}
-}
-
-func (client *WSClient) EnableTerminalHistory() {
-	if client == nil {
-		return
-	}
-	client.startWriter()
-	client.TerminalReady.Store(true)
-	client.wakeTerminalWriter()
-}
-
-func (client *WSClient) Close() error {
-	if client == nil {
-		return nil
-	}
-	var err error
-	client.CloseOnce.Do(func() {
-		if client.Done != nil {
-			select {
-			case <-client.Done:
-			default:
-				close(client.Done)
-			}
-		}
-		// NOTE: Do not close Send here.
-		// Enqueue may be called concurrently and sending on a closed channel panics.
-		if client.Conn != nil {
-			err = client.Conn.Close()
-		}
-	})
-	return err
-}
-
-func (sp *InstanceProcess) writeClientsLocked(messageType int, data []byte) {
-	if messageType == websocket.BinaryMessage {
-		for client := range sp.Clients {
-			if !client.EnqueueTerminal() {
-				delete(sp.Clients, client)
-			}
-		}
-		return
-	}
-	for client := range sp.Clients {
-		if !client.Enqueue(messageType, data) {
-			delete(sp.Clients, client)
-		}
-	}
-}
-
-func (sp *InstanceProcess) writeTerminalLiveClientsLocked(data []byte) {
-	if len(data) == 0 {
-		return
-	}
-	endSeq := sp.History.EndSeq()
-	for client := range sp.Clients {
-		if !client.TerminalReady.Load() {
-			continue
-		}
-		client.TerminalCursor = endSeq
-		if !client.EnqueueTerminalLive(data) {
-			delete(sp.Clients, client)
-		}
-	}
-}
-
-func (sp *InstanceProcess) sendClientsLocked(messageType int, data []byte) {
-	for client := range sp.Clients {
-		if !client.Enqueue(messageType, data) {
-			delete(sp.Clients, client)
-		}
-	}
-}
-
-func (sp *InstanceProcess) resetTerminalClientsLocked() {
-	reset := []byte("\x1b[3J")
-	for client := range sp.Clients {
-		client.TerminalReady.Store(false)
-		if !client.EnqueueTerminalControl(reset) {
-			delete(sp.Clients, client)
-		}
-	}
-}
-
-func (sp *InstanceProcess) detachClientsLocked() []*WSClient {
-	clients := make([]*WSClient, 0, len(sp.Clients))
-	for client := range sp.Clients {
-		clients = append(clients, client)
-		delete(sp.Clients, client)
-	}
-	return clients
-}
-
-func (sp *InstanceProcess) DetachClientsLocked() []*WSClient {
-	return sp.detachClientsLocked()
-}
-
-func (sp *InstanceProcess) attachClientsLocked(clients []*WSClient) {
-	for _, client := range clients {
-		if client == nil {
-			continue
-		}
-		sp.Clients[client] = true
-	}
-}
-
-func (sp *InstanceProcess) AttachClientsLocked(clients []*WSClient) {
-	sp.attachClientsLocked(clients)
-}
-
-func (sp *InstanceProcess) closeDetachedClients(clients []*WSClient) {
-	for _, client := range clients {
-		if client == nil {
-			continue
-		}
-		_ = client.Close()
-	}
-}
-
-func (sp *InstanceProcess) CloseDetachedClients(clients []*WSClient) {
-	sp.closeDetachedClients(clients)
-}
-
-func (sp *InstanceProcess) DetachAndCloseAllClients() {
-	if sp == nil {
-		return
-	}
-	sp.Mu.Lock()
-	clients := sp.detachClientsLocked()
-	sp.Mu.Unlock()
-	sp.closeDetachedClients(clients)
-}
-
-func (sp *InstanceProcess) disconnectAllClients() {
-	sp.DetachAndCloseAllClients()
-}
-
-func (sp *InstanceProcess) appendAndBroadcastLocked(messageType int, data []byte, limit int) {
-	if cfg.IsNoTerminal(sp.activeTerminalLocked()) {
-		return
-	}
-	if messageType == websocket.BinaryMessage {
-		sp.appendHistoryLocked(data, limit)
-	}
-	sp.writeClientsLocked(messageType, data)
-}
-
-func (sp *InstanceProcess) AppendAndBroadcastLocked(messageType int, data []byte, limit int) {
-	sp.appendAndBroadcastLocked(messageType, data, limit)
-}
-
-func (sp *InstanceProcess) AppendAndBroadcastNormalSystemMessageLocked(text string, limit int) {
-	sp.appendAndBroadcastLocked(websocket.BinaryMessage, BuildNormalTerminalSystemMessage(text), limit)
-}
-
-func (sp *InstanceProcess) AppendAndBroadcastWarningSystemMessageLocked(text string, limit int) {
-	sp.appendAndBroadcastLocked(websocket.BinaryMessage, BuildWarningTerminalSystemMessage(text), limit)
-}
-
-func (sp *InstanceProcess) AddClientWithHistoryLocked(client *WSClient) []byte {
-	if sp == nil || client == nil {
-		return nil
-	}
-	historyCopy, cursor := sp.History.Snapshot()
-	if sp.shouldSkipHistoryForTerminalInitialLocked() {
-		historyCopy = nil
-	}
-	client.Instance = sp
-	client.TerminalCursor = cursor
-	client.TerminalReady.Store(false)
-	sp.Clients[client] = true
-	return historyCopy
-}
-
-func (sp *InstanceProcess) AddClientTerminalInitialLocked(client *WSClient, reset []byte) TerminalInitialMessage {
-	if sp == nil || client == nil {
-		return TerminalInitialMessage{Reset: append([]byte(nil), reset...)}
-	}
-	historyCopy, cursor := sp.History.Snapshot()
-	if sp.shouldSkipHistoryForTerminalInitialLocked() {
-		historyCopy = nil
-	}
-	client.Instance = sp
-	client.TerminalCursor = cursor
-	client.TerminalReady.Store(false)
-	return TerminalInitialMessage{Reset: append([]byte(nil), reset...), History: historyCopy}
-}
-
-func (sp *InstanceProcess) AttachClientLocked(client *WSClient) {
-	if sp == nil || client == nil {
-		return
-	}
-	client.Instance = sp
-	sp.Clients[client] = true
-}
-
-func (sp *InstanceProcess) shouldSkipHistoryForTerminalInitialLocked() bool {
-	return cfg.IsPTYTerminal(sp.activeTerminalLocked()) && sp.PTYAlternateScreenActive
-}
-
-func (sp *InstanceProcess) resetPTYAlternateScreenStateLocked() {
-	sp.PTYAlternateScreenActive = false
-	sp.PTYAlternateScreenPending = nil
+type preparedStart struct {
+	state     *DaemonRuntimeState
+	startTime time.Time
 }
 
 func (sp *InstanceProcess) syncStatusFlagsLocked() {
@@ -987,26 +454,8 @@ func (sp *InstanceProcess) commitPreparedStartLocked(reserved *startReservation,
 	sp.ActiveTerminalMode = cfg.NormalizeTerminalMode(reserved.ins.Terminal)
 	sp.resetPTYAlternateScreenStateLocked()
 	proxySeq := sp.setProcessStartedLocked(prepared.startTime, startCount)
-	if cfg.IsPTYTerminal(reserved.ins.Terminal) {
-		sp.TerminalStartupProtecting = true
-		sp.TerminalStartupPendingEscape = nil
-	}
 	NotifyInstanceStatusChanged(reserved.ins.Name)
 	return proxySeq, true
-}
-
-func (sp *InstanceProcess) appendHistoryLocked(data []byte, limit int) {
-	if len(data) > limit {
-		limit = len(data)
-	}
-	sp.History.Append(data, limit)
-}
-
-func (sp *InstanceProcess) resetHistoryLocked(data []byte, limit int) {
-	if len(data) > limit {
-		limit = len(data)
-	}
-	sp.History.Reset(data, limit)
 }
 
 func (sp *InstanceProcess) scheduleAutoRestart() {
@@ -1402,45 +851,35 @@ func (sp *InstanceProcess) Stop(force bool) {
 			sendDaemonStopRequest(instanceName, stopCommand, noTerminal, RuntimeCodeManualStop, msg.MarkInstanceManualStopIntentFailedLogFmt, msg.WriteInstanceStopCommandFailedLogFmt)
 			return
 		}
-		if !sp.Running && sp.Starting {
-			sp.cancelStopLocked()
-			sp.cancelStartLocked()
-			sp.enterStoppedStateLocked()
-			NotifyInstanceStatusChanged(sp.InstanceSnapshotLocked().Name)
-		}
 		sp.Mu.Unlock()
 		return
 	}
-	if sp.Starting {
-		instanceName := sp.InstanceSnapshotLocked().Name
+	if !sp.Running {
 		sp.cancelRestartLocked()
 		sp.cancelStopLocked()
 		sp.cancelStartLocked()
 		sp.enterStoppedStateLocked()
-		msg := BuildNormalTerminalSystemMessage(msg.StartingInstanceCanceled)
-		sp.appendAndBroadcastLocked(websocket.BinaryMessage, msg, limit)
-		NotifyInstanceStatusChanged(instanceName)
-		sp.Mu.Unlock()
-		if force {
-			_ = stopDaemonInstance(instanceName, true)
-		}
-		return
-	}
-	if !sp.Running {
 		sp.Mu.Unlock()
 		return
 	}
 	instanceName := sp.InstanceSnapshotLocked().Name
-	sp.beginStopLocked(processStateStopping)
 	stopCommand := sp.InstanceSnapshotLocked().StopCommand
 	noTerminal := cfg.IsNoTerminal(sp.activeTerminalLocked())
+	sp.beginStopLocked(processStateStopping)
 	NotifyInstanceStatusChanged(instanceName)
+	intentCode := RuntimeCodeManualStop
 	if force {
-		sp.Mu.Unlock()
+		intentCode = RuntimeCodeManualKill
+	}
+	sp.Mu.Unlock()
+
+	if err := markDaemonInstanceRuntimeCode(instanceName, intentCode); err != nil {
+		log.Printf(msg.MarkInstanceStopIntentFailedLogFmt, instanceName, err)
+	}
+	if force {
 		_ = stopDaemonInstance(instanceName, true)
 		return
 	}
-	sp.Mu.Unlock()
 	sendDaemonStopRequest(instanceName, stopCommand, noTerminal, RuntimeCodeManualStop, msg.MarkInstanceManualStopIntentFailedLogFmt, msg.WriteInstanceStopCommandFailedLogFmt)
 }
 

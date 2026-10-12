@@ -1245,7 +1245,7 @@ async function connectDashboardStream() {
 			dashboard_error(event) {
 				try {
 					const payload = parseSSEPayload(event);
-					const message = payload && typeof payload === 'object' ? String(payload.message || '').trim() : '';
+					const message = payload && typeof payload === 'object' ? String(payload.error || payload.message || '').trim() : '';
 					setError(message || '仪表板推送发生错误.');
 				} catch (error) {
 					console.error('[Dashboard] 处理错误推送失败:', error);
@@ -1620,11 +1620,19 @@ const resumeRefreshAfterBrowserInactive = () => {
 	resumeRefreshAndHideCrosshairs();
 };
 
-const resumeRefreshAfterVisibilityHidden = () => {
-	if (document.visibilityState !== 'hidden') {
+const handleVisibilityChange = () => {
+	if (document.visibilityState === 'hidden') {
+		resumeRefreshAfterBrowserInactive();
+		if (pageState.active && isSystemDashboardPageActive()) {
+			stopDashboardStream();
+		}
 		return;
 	}
-	resumeRefreshAfterBrowserInactive();
+	if (document.visibilityState === 'visible') {
+		if (pageState.active && isSystemDashboardPageActive()) {
+			connectDashboardStream();
+		}
+	}
 };
 
 const moveLinkedCrosshairs = (sourceChartEl, event) => {
@@ -1768,12 +1776,68 @@ const bindEvents = () => {
 		chartEl.addEventListener('pointerenter', (event) => syncRefreshPauseWithChartCursor(chartEl, event));
 		chartEl.addEventListener('pointerleave', resumeRefreshAfterChartCursor);
 	});
+};
+
+let globalListenersBound = false;
+let resizeRafId = 0;
+
+const scheduleResizeCharts = () => {
+	if (resizeRafId) {
+		return;
+	}
+	resizeRafId = requestAnimationFrame(() => {
+		resizeRafId = 0;
+		resizeCharts();
+	});
+};
+
+const handleWindowResize = () => {
+	scheduleResizeCharts();
+};
+
+const handleDocumentKeydown = (event) => {
+	if (event.key === 'Escape') {
+		resumeRefreshAndHideCrosshairs(false);
+	}
+};
+
+const bindGlobalListeners = () => {
+	if (globalListenersBound) {
+		return;
+	}
+	globalListenersBound = true;
 	document.addEventListener('click', hideLinkedCrosshairsFromNonPlotClick);
 	document.documentElement.addEventListener('mouseleave', resumeRefreshAfterBrowserPointerExit);
 	window.addEventListener('blur', resumeRefreshAfterBrowserInactive);
-	document.addEventListener('visibilitychange', resumeRefreshAfterVisibilityHidden);
-	pageState.resizeObserver = new ResizeObserver(() => resizeCharts());
-	pageState.resizeObserver.observe(dom.section);
+	document.addEventListener('visibilitychange', handleVisibilityChange);
+	window.addEventListener('resize', handleWindowResize);
+	document.addEventListener('keydown', handleDocumentKeydown);
+	if (!pageState.resizeObserver && typeof ResizeObserver !== 'undefined') {
+		pageState.resizeObserver = new ResizeObserver(() => scheduleResizeCharts());
+	}
+	if (pageState.resizeObserver && dom.section) {
+		pageState.resizeObserver.observe(dom.section);
+	}
+};
+
+const unbindGlobalListeners = () => {
+	if (!globalListenersBound) {
+		return;
+	}
+	globalListenersBound = false;
+	document.removeEventListener('click', hideLinkedCrosshairsFromNonPlotClick);
+	document.documentElement.removeEventListener('mouseleave', resumeRefreshAfterBrowserPointerExit);
+	window.removeEventListener('blur', resumeRefreshAfterBrowserInactive);
+	document.removeEventListener('visibilitychange', handleVisibilityChange);
+	window.removeEventListener('resize', handleWindowResize);
+	document.removeEventListener('keydown', handleDocumentKeydown);
+	if (pageState.resizeObserver) {
+		pageState.resizeObserver.disconnect();
+	}
+	if (resizeRafId) {
+		cancelAnimationFrame(resizeRafId);
+		resizeRafId = 0;
+	}
 };
 
 const showPage = () => {
@@ -1783,6 +1847,7 @@ const showPage = () => {
 	syncDashboardPage();
 	pageState.active = true;
 	dom.section.classList.add('active');
+	bindGlobalListeners();
 	if (isSystemDashboardPageActive()) {
 		connectDashboardStream();
 	}
@@ -1793,7 +1858,10 @@ const hidePage = () => {
 	dom.section.classList.remove('active');
 	stopDashboardStream();
 	resumeRefreshAndHideCrosshairs(false);
+	unbindGlobalListeners();
 };
+
+const cleanup = hidePage;
 
 export const bootDashboardPage = () => {
 	pageState.requestedMinutes = readStoredMinutes();
@@ -1812,6 +1880,7 @@ export const bootDashboardPage = () => {
 	return {
 		showPage,
 		hidePage,
+		cleanup,
 		refresh: restartDashboardStream,
 	};
 };

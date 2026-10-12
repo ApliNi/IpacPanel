@@ -608,7 +608,7 @@ export const openTerminalPage = async (svc, historySize, options = {}) => {
 	pageState.currentTerminalSvc = terminalSvc;
 	pageState.currentInstanceUpdateStagingDirName = getUpdateDirDisplayName(terminalSvc.instance_update_staging_dir);
 	state.historySize = Number.isFinite(detail.history_size) ? detail.history_size : historySize;
-	// terminal DOM 是动态插入的，确保 file manager 读到最新节点。
+	// 确保文件管理器绑定最新 DOM 节点
 	ensureFileManagerDom();
     fileManager?.reset();
 

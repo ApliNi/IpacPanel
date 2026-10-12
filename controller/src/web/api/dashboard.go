@@ -109,7 +109,7 @@ type dashboardDisabledEvent struct {
 }
 
 type dashboardErrorEvent struct {
-	Message string `json:"message"`
+	Error string `json:"error"`
 }
 
 var dashboardSampleSchema = []string{"dt", "cpu10", "mem_used", "mem_total", "swap_used", "swap_total", "net_rx_bps", "net_tx_bps", "disk_read_bps", "disk_write_bps", "tcp_conn", "udp_conn"}
@@ -210,7 +210,7 @@ func HandleApiDashboardEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	web.LogWebAccess(w, r, http.StatusOK)
 	if dashboardCollector == nil {
-		_ = sse.SendEvent("dashboard_error", dashboardErrorEvent{Message: msg.DashboardMetricsNotInitialized})
+		_ = sse.SendEvent("dashboard_error", dashboardErrorEvent{Error: msg.DashboardMetricsNotInitialized})
 		return
 	}
 	isAdmin := isDashboardAdmin(authedUser)
@@ -357,7 +357,7 @@ func parseDashboardStreamMinutes(sse *web.SSEWriter, minutes int) (int, bool) {
 		return 30, true
 	}
 	if minutes <= 0 {
-		_ = sse.SendEvent("dashboard_error", dashboardErrorEvent{Message: msg.DashboardMinutesMustBePositiveInteger})
+		_ = sse.SendEvent("dashboard_error", dashboardErrorEvent{Error: msg.DashboardMinutesMustBePositiveInteger})
 		return 0, false
 	}
 	return minutes, true

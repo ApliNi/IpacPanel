@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -170,6 +171,14 @@ func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, c
 		}
 		return true
 	}
+	writeEvent := func(conn *IPCConn, resp IPCResponse) bool {
+		if err := conn.WriteEvent(resp, true); err != nil {
+			log.Printf("IPC write error: %v", err)
+			_ = conn.Close()
+			return false
+		}
+		return true
+	}
 	writeOutput := func(conn *IPCConn, resp IPCResponse) bool {
 		if err := conn.WriteInstanceOutputResponse(resp, false); err != nil {
 			log.Printf("IPC output write error: %v", err)
@@ -204,7 +213,7 @@ func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, c
 					resp.Release()
 					return
 				}
-				if !writeControl(conn, resp) {
+				if !writeEvent(conn, resp) {
 					return
 				}
 				continue
@@ -227,7 +236,7 @@ func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, c
 				resp.Release()
 				return
 			}
-			if !writeControl(conn, resp) {
+			if !writeEvent(conn, resp) {
 				return
 			}
 		case resp := <-s.outputCh:
@@ -267,6 +276,8 @@ func (s *IPCServer) dispatch(req *IPCRequest) *IPCResponse {
 		return s.handleSetDebug(req)
 	case "restart_controller":
 		return s.handleRestartController(req)
+	case "stop_daemon":
+		return s.handleStopDaemon(req)
 	case "controller_ready":
 		return s.handleControllerReady(req)
 	case "rename_daemon_instance":
@@ -349,6 +360,18 @@ func (s *IPCServer) handleRestartController(req *IPCRequest) *IPCResponse {
 	return &resp
 }
 
+func (s *IPCServer) handleStopDaemon(req *IPCRequest) *IPCResponse {
+	resp := NewIPCResponse("ok", "", nil, "")
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		markDaemonStopping()
+		shutdownAllInstances()
+		shutdownController()
+		os.Exit(0)
+	}()
+	return &resp
+}
+
 func (s *IPCServer) ConsumeControllerUpdateRestartPending() bool {
 	return s.controllerUpdateRestartPending.CompareAndSwap(true, false)
 }
@@ -408,7 +431,7 @@ func (s *IPCServer) handleStartInstance(req *IPCRequest) *IPCResponse {
 			resp := IPCResponse{Type: "instance_started", State: &runtime}
 			return &resp
 		}
-		if state == instanceStopping {
+		if state == instanceStopping || state == instanceCleaning {
 			s.Instances.Mu.Unlock()
 			resp := NewIPCResponse("instance_error", req.Instance, nil, daemonInstanceStopping)
 			return &resp
@@ -503,7 +526,11 @@ func (s *IPCServer) handleKillInstance(req *IPCRequest) *IPCResponse {
 		resp := NewIPCResponse("instance_error", req.Instance, nil, "instance not found")
 		return &resp
 	}
-	ins.Kill()
+	runtimeCode := req.RuntimeCode
+	if runtimeCode == RuntimeCodeUnknown {
+		runtimeCode = RuntimeCodeManualKill
+	}
+	ins.Stop(true, runtimeCode)
 	resp := NewIPCResponse("ok", req.Instance, nil, "")
 	return &resp
 }

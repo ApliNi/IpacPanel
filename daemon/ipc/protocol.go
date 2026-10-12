@@ -2,20 +2,33 @@ package ipc
 
 import (
 	"bufio"
-	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
-	"strconv"
-	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
-const MaxHeaderSize = 64 * 1024
-const MaxBodySize = 16 * 1024 * 1024
+const (
+	MagicByte   byte = 0x49 // 'I'
+	HeaderSize       = 12
+	MaxBodySize      = 16 * 1024 * 1024
+	MaxHeaderSize    = 64 * 1024
+)
+
+// 帧类型
+const (
+	FrameTypeControlReq  byte = 0x01 // 控制请求 (JSON)
+	FrameTypeControlResp byte = 0x02 // 控制响应 (JSON)
+	FrameTypeInstanceOut byte = 0x03 // 实例输出 (NameLen 1B + Name + RawData)
+	FrameTypeInstanceIn  byte = 0x04 // 实例输入 (NameLen 1B + Name + RawData)
+	FrameTypeEvent       byte = 0x05 // 异步事件 (JSON)
+)
+
 const RequestInputStdin = "input_stdin"
 
 const (
@@ -23,8 +36,42 @@ const (
 	ControllerShutdownPurposeUpdate  = "update"
 )
 
+type Header struct {
+	Magic      byte
+	Type       byte
+	Flags      uint16
+	ID         uint32
+	PayloadLen uint32
+}
+
+func (h Header) Encode() [HeaderSize]byte {
+	var buf [HeaderSize]byte
+	buf[0] = h.Magic
+	buf[1] = h.Type
+	binary.BigEndian.PutUint16(buf[2:4], h.Flags)
+	binary.BigEndian.PutUint32(buf[4:8], h.ID)
+	binary.BigEndian.PutUint32(buf[8:12], h.PayloadLen)
+	return buf
+}
+
+func DecodeHeader(buf []byte) (Header, error) {
+	if len(buf) < HeaderSize {
+		return Header{}, errors.New("IPC header buffer too small")
+	}
+	if buf[0] != MagicByte {
+		return Header{}, fmt.Errorf("invalid IPC frame magic: 0x%02x", buf[0])
+	}
+	return Header{
+		Magic:      buf[0],
+		Type:       buf[1],
+		Flags:      binary.BigEndian.Uint16(buf[2:4]),
+		ID:         binary.BigEndian.Uint32(buf[4:8]),
+		PayloadLen: binary.BigEndian.Uint32(buf[8:12]),
+	}, nil
+}
+
 type Request struct {
-	Type                      string   `json:"-"`
+	Type                      string   `json:"type,omitempty"`
 	ID                        uint64   `json:"id,omitempty"`
 	Msg                       string   `json:"msg,omitempty"`
 	Debug                     bool     `json:"debug,omitempty"`
@@ -46,10 +93,6 @@ type Request struct {
 	Body                      []byte   `json:"-"`
 }
 
-func (r *Request) setType(frameType string) {
-	r.Type = frameType
-}
-
 func (r *Request) Payload() []byte {
 	if r.Body != nil {
 		return r.Body
@@ -63,14 +106,14 @@ func (r *Request) SetPayload(data []byte) {
 }
 
 type Response struct {
-	Type           string                 `json:"-"`
+	Type           string                 `json:"type,omitempty"`
 	ID             uint64                 `json:"id,omitempty"`
 	Msg            string                 `json:"msg,omitempty"`
 	Placeholder    string                 `json:"placeholder,omitempty"`
 	Args           []string               `json:"args,omitempty"`
 	Instance       string                 `json:"instance,omitempty"`
 	BodyLen        int                    `json:"body_len,omitempty"`
-	Body           []byte                 `json:"-"`
+	Body           []byte                 `json:"body,omitempty"`
 	Error          string                 `json:"error,omitempty"`
 	DaemonProtocol int                    `json:"daemon_protocol,omitempty"`
 	Runtime        []InstanceRuntimeState `json:"runtime,omitempty"`
@@ -91,165 +134,42 @@ func NewResponse(typ string, instance string, data []byte, errMsg string) Respon
 	resp := Response{Type: typ, Instance: instance, Error: errMsg}
 	if len(data) > 0 {
 		resp.Body = data
+		resp.BodyLen = len(data)
 	}
 	return resp
 }
 
-func (r *Response) setType(frameType string) {
-	r.Type = frameType
-}
-
 type Conn struct {
-	closer io.Closer
-	reader *bufio.Reader
-	writer *bufio.Writer
-	debug  atomic.Bool
+	closer  io.Closer
+	reader  *bufio.Reader
+	writer  *bufio.Writer
+	writeMu sync.Mutex
+	debug   atomic.Bool
 }
 
 func NewConn(reader io.Reader, writer io.Writer, closer io.Closer) *Conn {
-	return &Conn{closer: closer, reader: bufio.NewReaderSize(reader, 65536), writer: bufio.NewWriterSize(writer, 65536)}
+	return &Conn{
+		closer: closer,
+		reader: bufio.NewReaderSize(reader, 65536),
+		writer: bufio.NewWriterSize(writer, 65536),
+	}
 }
 
 func (c *Conn) SetDebug(debug bool) {
 	c.debug.Store(debug)
 }
 
-type typedFrame interface{ setType(string) }
-
-func DecodeFrame(line []byte, target typedFrame) error {
-	line = bytes.TrimSuffix(line, []byte{'\n'})
-	line = bytes.TrimSuffix(line, []byte{'\r'})
-	if len(line) == 0 || line[0] != ':' {
-		return fmt.Errorf("invalid IPC frame prefix")
+func (c *Conn) Close() error {
+	if c.closer == nil {
+		return nil
 	}
-	line = line[1:]
-	sep := bytes.Index(line, []byte(": "))
-	if sep <= 0 {
-		return fmt.Errorf("invalid IPC frame header")
-	}
-	frameType := string(line[:sep])
-	if err := json.Unmarshal(line[sep+len(": "):], target); err != nil {
-		return err
-	}
-	target.setType(frameType)
-	return nil
+	return c.closer.Close()
 }
 
-func EncodeFrame(frameType string, payload interface{}) ([]byte, error) {
-	if frameType == "" {
-		return nil, fmt.Errorf("IPC frame type is required")
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-	frame := make([]byte, 0, 1+len(frameType)+len(": ")+len(data)+1)
-	frame = append(frame, ':')
-	frame = append(frame, frameType...)
-	frame = append(frame, ": "...)
-	frame = append(frame, data...)
-	frame = append(frame, '\n')
-	return frame, nil
-}
-
-func ReadHeaderLine(reader *bufio.Reader) ([]byte, error) {
-	var line []byte
-	for {
-		part, err := reader.ReadSlice('\n')
-		line = append(line, part...)
-		if len(line) > MaxHeaderSize {
-			return nil, fmt.Errorf("IPC header too large: %d bytes", len(line))
-		}
-		if err == nil {
-			return line, nil
-		}
-		if errors.Is(err, bufio.ErrBufferFull) {
-			continue
-		}
-		return nil, err
-	}
-}
-
-func readInputToken(reader *bufio.Reader, delimiter byte, name string) ([]byte, error) {
-	var token []byte
-	for {
-		b, err := reader.ReadByte()
-		if err != nil {
-			return nil, fmt.Errorf("read IPC input %s: %w", name, err)
-		}
-		if b == delimiter {
-			if len(token) == 0 {
-				return nil, fmt.Errorf("IPC input %s is required", name)
-			}
-			return token, nil
-		}
-		token = append(token, b)
-		if len(token)+len(":i::") > MaxHeaderSize {
-			return nil, fmt.Errorf("IPC input header too large: %d bytes", len(token)+len(":i::"))
-		}
-	}
-}
-
-func ParseBodyLen(raw []byte) (int, error) {
-	if len(raw) == 0 {
-		return 0, fmt.Errorf("IPC body length is required")
-	}
-	value := 0
-	for _, b := range raw {
-		if b < '0' || b > '9' {
-			return 0, fmt.Errorf("IPC body length is not decimal")
-		}
-		digit := int(b - '0')
-		if value > (MaxBodySize-digit)/10 {
-			return 0, fmt.Errorf("IPC body too large")
-		}
-		value = value*10 + digit
-	}
-	if err := ValidateBodyLen(value); err != nil {
-		return 0, err
-	}
-	return value, nil
-}
-
-func (c *Conn) readInputRequest() (*Request, error) {
-	prefix, err := c.reader.Peek(len(":i:"))
-	if err != nil {
-		return nil, fmt.Errorf("read IPC input prefix: %w", err)
-	}
-	if !bytes.Equal(prefix, []byte(":i:")) {
-		return nil, fmt.Errorf("invalid IPC input prefix")
-	}
-	if _, err := c.reader.Discard(len(":i:")); err != nil {
-		return nil, fmt.Errorf("discard IPC input prefix: %w", err)
-	}
-	instance, err := readInputToken(c.reader, ':', "instance")
-	if err != nil {
-		return nil, err
-	}
-	bodyLenRaw, err := readInputToken(c.reader, ':', "body length")
-	if err != nil {
-		return nil, err
-	}
-	space, err := c.reader.ReadByte()
-	if err != nil {
-		return nil, fmt.Errorf("read IPC input header terminator: %w", err)
-	}
-	if space != ' ' {
-		return nil, fmt.Errorf("invalid IPC input header terminator")
-	}
-	bodyLen, err := ParseBodyLen(bodyLenRaw)
-	if err != nil {
-		return nil, err
-	}
-	req := Request{Type: RequestInputStdin, Instance: string(instance), BodyLen: bodyLen}
-	if bodyLen > 0 {
-		data := make([]byte, bodyLen)
-		if _, err := io.ReadFull(c.reader, data); err != nil {
-			return nil, fmt.Errorf("read IPC input body: %w", err)
-		}
-		req.SetPayload(data)
-	}
-	return &req, nil
+func (c *Conn) Flush() error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.writer.Flush()
 }
 
 func ValidateBodyLen(bodyLen int) error {
@@ -262,131 +182,253 @@ func ValidateBodyLen(bodyLen int) error {
 	return nil
 }
 
-func DebugHeader(header []byte, hasBody bool) string {
-	text := strings.TrimRight(string(header), "\r\n")
-	if hasBody {
-		return text + " [skip body]"
+func (c *Conn) ReadHeader() (Header, error) {
+	var buf [HeaderSize]byte
+	if _, err := io.ReadFull(c.reader, buf[:]); err != nil {
+		return Header{}, err
 	}
-	return text
+	header, err := DecodeHeader(buf[:])
+	if err != nil {
+		return Header{}, err
+	}
+	if header.PayloadLen > MaxBodySize {
+		return Header{}, fmt.Errorf("IPC payload too large: %d bytes", header.PayloadLen)
+	}
+	return header, nil
 }
 
-func (c *Conn) ReadRequest() (*Request, error) {
-	prefix, err := c.reader.Peek(len(":i:"))
-	if err == nil && bytes.Equal(prefix, []byte(":i:")) {
-		return c.readInputRequest()
+func (c *Conn) ReadPayload(payloadLen uint32) ([]byte, error) {
+	if payloadLen == 0 {
+		return nil, nil
 	}
-	if err != nil && !errors.Is(err, bufio.ErrBufferFull) {
-		return nil, fmt.Errorf("read IPC message prefix: %w", err)
-	}
-	line, err := ReadHeaderLine(c.reader)
-	if err != nil {
-		return nil, fmt.Errorf("read IPC message: %w", err)
-	}
-	var req Request
-	if err := DecodeFrame(line, &req); err != nil {
-		return nil, fmt.Errorf("decode IPC message: %w", err)
-	}
-	if err := ValidateBodyLen(req.BodyLen); err != nil {
+	buf := make([]byte, payloadLen)
+	if _, err := io.ReadFull(c.reader, buf); err != nil {
 		return nil, err
 	}
-	if c.debug.Load() {
-		log.Printf("[<] %s", DebugHeader(line, req.BodyLen > 0))
-	}
-	if req.BodyLen > 0 {
-		data := make([]byte, req.BodyLen)
-		if _, err := io.ReadFull(c.reader, data); err != nil {
-			return nil, fmt.Errorf("read IPC body: %w", err)
-		}
-		req.SetPayload(data)
-	}
-	return &req, nil
+	return buf, nil
 }
 
+// ReadInstancePayload 读取高速数据流负载, 格式为 [NameLen 1B][Name (NameLen)][Data (Remaining)]
+func (c *Conn) ReadInstancePayload(payloadLen uint32, getBuf func(int) []byte, putBuf func([]byte)) (string, []byte, error) {
+	if payloadLen == 0 {
+		return "", nil, errors.New("empty instance payload")
+	}
+	nameLenByte, err := c.reader.ReadByte()
+	if err != nil {
+		return "", nil, fmt.Errorf("read instance name len: %w", err)
+	}
+	nameLen := int(nameLenByte)
+	if uint32(1+nameLen) > payloadLen {
+		return "", nil, errors.New("invalid instance name length in payload")
+	}
+	nameBuf := make([]byte, nameLen)
+	if _, err := io.ReadFull(c.reader, nameBuf); err != nil {
+		return "", nil, fmt.Errorf("read instance name: %w", err)
+	}
+	instanceName := string(nameBuf)
+
+	dataLen := int(payloadLen - 1 - uint32(nameLen))
+	var data []byte
+	if dataLen > 0 {
+		if getBuf != nil {
+			data = getBuf(dataLen)
+		} else {
+			data = make([]byte, dataLen)
+		}
+		if _, err := io.ReadFull(c.reader, data[:dataLen]); err != nil {
+			if putBuf != nil {
+				putBuf(data)
+			}
+			return "", nil, fmt.Errorf("read instance data: %w", err)
+		}
+		data = data[:dataLen]
+	}
+	return instanceName, data, nil
+}
+
+// ReadRequest 供 Daemon 端统一读取请求 (支持 ControlReq 与 InstanceIn)
+func (c *Conn) ReadRequest() (*Request, error) {
+	header, err := c.ReadHeader()
+	if err != nil {
+		return nil, err
+	}
+	switch header.Type {
+	case FrameTypeInstanceIn:
+		instance, data, err := c.ReadInstancePayload(header.PayloadLen, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		req := &Request{
+			Type:     RequestInputStdin,
+			Instance: instance,
+			BodyLen:  len(data),
+		}
+		req.SetPayload(data)
+		return req, nil
+	case FrameTypeControlReq:
+		payload, err := c.ReadPayload(header.PayloadLen)
+		if err != nil {
+			return nil, err
+		}
+		var req Request
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, fmt.Errorf("unmarshal IPC request: %w", err)
+		}
+		req.ID = uint64(header.ID)
+		if c.debug.Load() {
+			log.Printf("[<] ControlReq #%d type=%s inst=%s", req.ID, req.Type, req.Instance)
+		}
+		return &req, nil
+	default:
+		return nil, fmt.Errorf("unexpected frame type for request: 0x%02x", header.Type)
+	}
+}
+
+// WriteControlRequest 供 Controller 发送控制请求
+func (c *Conn) WriteControlRequest(req *Request) error {
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal IPC request: %w", err)
+	}
+	header := Header{
+		Magic:      MagicByte,
+		Type:       FrameTypeControlReq,
+		ID:         uint32(req.ID),
+		PayloadLen: uint32(len(payload)),
+	}
+	hdrBuf := header.Encode()
+
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	if _, err := c.writer.Write(hdrBuf[:]); err != nil {
+		return err
+	}
+	if _, err := c.writer.Write(payload); err != nil {
+		return err
+	}
+	return c.writer.Flush()
+}
+
+// WriteControlResponse 供 Daemon 发送控制响应
+func (c *Conn) WriteControlResponse(resp Response, flush bool) error {
+	defer resp.Release()
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("marshal IPC response: %w", err)
+	}
+	header := Header{
+		Magic:      MagicByte,
+		Type:       FrameTypeControlResp,
+		ID:         uint32(resp.ID),
+		PayloadLen: uint32(len(payload)),
+	}
+	hdrBuf := header.Encode()
+
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	if _, err := c.writer.Write(hdrBuf[:]); err != nil {
+		return err
+	}
+	if _, err := c.writer.Write(payload); err != nil {
+		return err
+	}
+	if flush {
+		return c.writer.Flush()
+	}
+	return nil
+}
+
+// WriteEvent 供 Daemon 发送事件
+func (c *Conn) WriteEvent(resp Response, flush bool) error {
+	defer resp.Release()
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("marshal IPC event: %w", err)
+	}
+	header := Header{
+		Magic:      MagicByte,
+		Type:       FrameTypeEvent,
+		ID:         uint32(resp.ID),
+		PayloadLen: uint32(len(payload)),
+	}
+	hdrBuf := header.Encode()
+
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	if _, err := c.writer.Write(hdrBuf[:]); err != nil {
+		return err
+	}
+	if _, err := c.writer.Write(payload); err != nil {
+		return err
+	}
+	if flush {
+		return c.writer.Flush()
+	}
+	return nil
+}
+
+// IsEventResponse 判断响应类型是否为事件
+func IsEventResponse(typ string) bool {
+	return typ == "instance_exited" || typ == "cleanup_message"
+}
+
+// WriteResponse 统一兼容 Daemon 的响应写入
 func (c *Conn) WriteResponse(resp Response) error {
 	if resp.Type == "o" {
 		return c.WriteInstanceOutputResponse(resp, true)
 	}
-	defer resp.Release()
-	return c.writeResponseFrame(resp, true)
+	if IsEventResponse(resp.Type) {
+		return c.WriteEvent(resp, true)
+	}
+	return c.WriteControlResponse(resp, true)
 }
 
-func (c *Conn) writeResponseFrame(resp Response, flush bool) error {
-	resp.BodyLen = len(resp.Body)
-	if err := ValidateBodyLen(resp.BodyLen); err != nil {
-		return err
-	}
-	data, err := EncodeFrame(resp.Type, resp)
-	if err != nil {
-		return fmt.Errorf("encode IPC response: %w", err)
-	}
-	if c.debug.Load() {
-		log.Printf("[>] %s", DebugHeader(data, resp.BodyLen > 0))
-	}
-	if _, err := c.writer.Write(data); err != nil {
-		return fmt.Errorf("write IPC response: %w", err)
-	}
-	if resp.BodyLen > 0 {
-		if _, err := c.writer.Write(resp.Body); err != nil {
-			return fmt.Errorf("write IPC body: %w", err)
-		}
-	}
-	if flush {
-		return c.writer.Flush()
-	}
-	return nil
-}
-
-func BuildInstanceOutputHeader(instance string, bodyLen int) ([]byte, error) {
-	if err := ValidateBodyLen(bodyLen); err != nil {
-		return nil, err
-	}
-	if instance == "" {
-		return nil, fmt.Errorf("instance output instance is required")
-	}
-	if strings.Contains(instance, ":") {
-		return nil, fmt.Errorf("instance output instance contains reserved separator")
-	}
-	header := make([]byte, 0, len(":o:")+len(instance)+1+20+len(": "))
-	header = append(header, ":o:"...)
-	header = append(header, instance...)
-	header = append(header, ':')
-	header = strconv.AppendInt(header, int64(bodyLen), 10)
-	header = append(header, ": "...)
-	return header, nil
-}
-
-func BuildInputHeader(instance string, bodyLen int) ([]byte, error) {
-	if err := ValidateBodyLen(bodyLen); err != nil {
-		return nil, err
-	}
-	if instance == "" {
-		return nil, fmt.Errorf("instance input instance is required")
-	}
-	if strings.Contains(instance, ":") {
-		return nil, fmt.Errorf("instance input instance contains reserved separator")
-	}
-	header := make([]byte, 0, len(":i:")+len(instance)+1+20+len(": "))
-	header = append(header, ":i:"...)
-	header = append(header, instance...)
-	header = append(header, ':')
-	header = strconv.AppendInt(header, int64(bodyLen), 10)
-	header = append(header, ": "...)
-	return header, nil
-}
-
+// WriteInstanceOutputResponse 供 Daemon 转发实例输出
 func (c *Conn) WriteInstanceOutputResponse(resp Response, flush bool) error {
 	defer resp.Release()
-	bodyLen := len(resp.Body)
-	header, err := BuildInstanceOutputHeader(resp.Instance, bodyLen)
-	if err != nil {
+	return c.writeInstanceStream(FrameTypeInstanceOut, resp.Instance, resp.Body, flush)
+}
+
+// WriteInstanceInput 供 Controller 写入实例输入
+func (c *Conn) WriteInstanceInput(instance string, data []byte) error {
+	return c.writeInstanceStream(FrameTypeInstanceIn, instance, data, true)
+}
+
+func (c *Conn) writeInstanceStream(frameType byte, instance string, data []byte, flush bool) error {
+	nameBytes := []byte(instance)
+	nameLen := len(nameBytes)
+	if nameLen > 255 {
+		nameLen = 255
+		nameBytes = nameBytes[:255]
+	}
+	payloadLen := 1 + nameLen + len(data)
+	header := Header{
+		Magic:      MagicByte,
+		Type:       frameType,
+		PayloadLen: uint32(payloadLen),
+	}
+	hdrBuf := header.Encode()
+
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	if _, err := c.writer.Write(hdrBuf[:]); err != nil {
 		return err
 	}
-	if _, err := c.writer.Write(header); err != nil {
-		return fmt.Errorf("write IPC instance output header: %w", err)
+	if err := c.writer.WriteByte(byte(nameLen)); err != nil {
+		return err
 	}
-	if bodyLen > 0 {
-		if _, err := c.writer.Write(resp.Body); err != nil {
-			return fmt.Errorf("write IPC instance output body: %w", err)
+	if nameLen > 0 {
+		if _, err := c.writer.Write(nameBytes); err != nil {
+			return err
+		}
+	}
+	if len(data) > 0 {
+		if _, err := c.writer.Write(data); err != nil {
+			return err
 		}
 	}
 	if flush {
@@ -395,90 +437,15 @@ func (c *Conn) WriteInstanceOutputResponse(resp Response, flush bool) error {
 	return nil
 }
 
-func (c *Conn) Flush() error {
-	return c.writer.Flush()
-}
-
-func (c *Conn) Close() error {
-	if c.closer == nil {
-		return nil
-	}
-	return c.closer.Close()
-}
-
-func IsInstanceOutputPrefix(peek []byte) bool {
-	return len(peek) == 3 && peek[0] == ':' && peek[1] == 'o' && peek[2] == ':'
-}
-
-func readUntil(reader *bufio.Reader, delim byte, fieldName string) ([]byte, error) {
-	part, err := reader.ReadSlice(delim)
-	if err != nil {
-		return nil, fmt.Errorf("read IPC %s: %w", fieldName, err)
-	}
-	if len(part) > MaxHeaderSize {
-		return nil, fmt.Errorf("IPC %s too large: %d bytes", fieldName, len(part))
-	}
-	return part[:len(part)-1], nil
-}
-
-func ReadInstanceOutputFrame(reader *bufio.Reader, getBodyBuffer func(int) []byte, putBodyBuffer func([]byte)) (string, []byte, error) {
-	if _, err := reader.Discard(len(":o:")); err != nil {
-		return "", nil, fmt.Errorf("read IPC instance output prefix: %w", err)
-	}
-	instance, err := readUntil(reader, ':', "instance output instance")
-	if err != nil {
-		return "", nil, err
-	}
-	if len(instance) == 0 {
-		return "", nil, fmt.Errorf("IPC instance output instance is required")
-	}
-	bodyLenText, err := readUntil(reader, ':', "instance output body length")
-	if err != nil {
-		return "", nil, err
-	}
-	bodyLen, err := ParseBodyLen(bodyLenText)
-	if err != nil {
-		return "", nil, fmt.Errorf("invalid IPC instance output body length: %w", err)
-	}
-	space, err := reader.ReadByte()
-	if err != nil {
-		return "", nil, fmt.Errorf("read IPC instance output body separator: %w", err)
-	}
-	if space != ' ' {
-		return "", nil, fmt.Errorf("invalid IPC instance output body separator")
-	}
-	body := make([]byte, bodyLen)
-	if getBodyBuffer != nil {
-		body = getBodyBuffer(bodyLen)
-	}
-	if bodyLen > 0 {
-		if _, err := io.ReadFull(reader, body); err != nil {
-			if putBodyBuffer != nil {
-				putBodyBuffer(body)
-			}
-			return "", nil, fmt.Errorf("read IPC instance output body: %w", err)
-		}
-	}
-	return string(instance), body, nil
-}
-
-func ReadResponse(reader *bufio.Reader) (Response, error) {
-	line, err := ReadHeaderLine(reader)
+// ReadResponse 供 Controller 读取 JSON 类型的响应与事件
+func (c *Conn) ReadResponse(payloadLen uint32) (Response, error) {
+	payload, err := c.ReadPayload(payloadLen)
 	if err != nil {
 		return Response{}, err
 	}
 	var resp Response
-	if err := DecodeFrame(line, &resp); err != nil {
-		return Response{}, err
-	}
-	if err := ValidateBodyLen(resp.BodyLen); err != nil {
-		return Response{}, err
-	}
-	if resp.BodyLen > 0 {
-		resp.Body = make([]byte, resp.BodyLen)
-		if _, err := io.ReadFull(reader, resp.Body); err != nil {
-			return Response{}, err
-		}
+	if err := json.Unmarshal(payload, &resp); err != nil {
+		return Response{}, fmt.Errorf("unmarshal IPC response: %w", err)
 	}
 	return resp, nil
 }
@@ -491,7 +458,6 @@ type InstanceRuntimeState struct {
 	PID          int       `json:"pid,omitempty"`
 	StartTime    time.Time `json:"start_time,omitempty"`
 	ExitTime     time.Time `json:"exit_time,omitempty"`
-	// RestartCount 实为启动计数: 未曾启动为 -1, 每次成功启动 +1.
 	RestartCount int       `json:"restart_count"`
 	Terminal     int       `json:"terminal,omitempty"`
 }

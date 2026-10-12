@@ -36,6 +36,7 @@ func (t *ProcessTree) PrepareCommand(cmd *exec.Cmd, usePTY bool) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
+	setSysProcAttrPdeathsig(cmd.SysProcAttr, syscall.SIGKILL)
 	if usePTY {
 		cmd.SysProcAttr.Setsid = true
 		cmd.SysProcAttr.Setctty = true

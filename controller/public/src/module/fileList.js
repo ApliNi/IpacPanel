@@ -50,10 +50,7 @@ const normalizeRelativeDirPath = (path) => {
 	return value;
 };
 
-// NOTE: 这个模块会在 instanceList/terminal 两个页面都被 import。
-// terminal 的文件面板 DOM 是在 module/terminal.js 中动态插入的。
-// 如果 fileList.js 先于 terminal.js 执行，模块顶层直接 getElementById 会拿到 null，
-// 且后续不会自动恢复，导致“有时刷新有内容、有时刷新没内容”。
+// 动态 DOM 容器绑定: 在模块按需初始化时解析节点
 const dom = {
 	fileList: null,
 	fileCurrentPath: null,
@@ -202,6 +199,7 @@ const fmState = {
 	filePaginationEditing: null,
 	filePaginationCommitting: false,
 	filePaginationLoading: false,
+	activeLoadAbortController: null,
 };
 
 const getCurrentDir = () => String(fmState.currentFilePath || '');
@@ -1046,17 +1044,24 @@ const loadFiles = async (path = getCurrentDir(), pageValue = getFileListPage(), 
 	}
 	const page = Math.max(1, Number(pageValue) || 1);
 	const shouldRestoreFromMemory = !requested && !getCurrentDir() && page === 1 && !fmState.currentFileList;
+	if (fmState.activeLoadAbortController) {
+		fmState.activeLoadAbortController.abort();
+		fmState.activeLoadAbortController = null;
+	}
+	const abortController = new AbortController();
+	fmState.activeLoadAbortController = abortController;
+	const fetchOptions = { ...options, signal: abortController.signal };
 
-    if (dom.fileList) {
-        dom.fileList.classList.add('loading');
-    }
+	if (dom.fileList) {
+		dom.fileList.classList.add('loading');
+	}
 
 	try {
 		if (shouldRestoreFromMemory) {
 			const rel = getRememberedRelDir(name);
 			if (rel) {
-				const restoredResult = await fetchFiles(name, rel, true, 1, useServerSearch ? searchQuery : '');
-				if (isLoadContextStale(context)) {
+				const restoredResult = await fetchFiles(name, rel, true, 1, useServerSearch ? searchQuery : '', fetchOptions);
+				if (isLoadContextStale(context) || abortController.signal.aborted) {
 					return STALE_LOAD_RESULT;
 				}
 				if (restoredResult.ok && restoredResult.data) {
@@ -1066,8 +1071,8 @@ const loadFiles = async (path = getCurrentDir(), pageValue = getFileListPage(), 
 				}
 			}
 
-			const rootResult = await fetchFiles(name, '', false, 1, useServerSearch ? searchQuery : '');
-			if (isLoadContextStale(context)) {
+			const rootResult = await fetchFiles(name, '', false, 1, useServerSearch ? searchQuery : '', fetchOptions);
+			if (isLoadContextStale(context) || abortController.signal.aborted) {
 				return STALE_LOAD_RESULT;
 			}
 			if (rootResult.ok && rootResult.data) {
@@ -1075,18 +1080,22 @@ const loadFiles = async (path = getCurrentDir(), pageValue = getFileListPage(), 
 				applyFileListResponse(rootResult.data, { skipRemember: true, instanceName: name });
 				return rootResult.data;
 			}
-			await showFileListLoadError(rootResult);
+			if (!abortController.signal.aborted) {
+				await showFileListLoadError(rootResult);
+			}
 			return null;
 		}
 
-		const result = await fetchFiles(name, requested, true, page, useServerSearch ? searchQuery : '');
-	        if (isLoadContextStale(context)) {
-	            return STALE_LOAD_RESULT;
-	        }
-	        if (!result.ok || !result.data) {
-			await showFileListLoadError(result);
-	            return null;
-	        }
+		const result = await fetchFiles(name, requested, true, page, useServerSearch ? searchQuery : '', fetchOptions);
+		if (isLoadContextStale(context) || abortController.signal.aborted) {
+			return STALE_LOAD_RESULT;
+		}
+		if (!result.ok || !result.data) {
+			if (!abortController.signal.aborted) {
+				await showFileListLoadError(result);
+			}
+			return null;
+		}
 		const data = result.data;
 		if (!useServerSearch && searchQuery && shouldUseServerSearch(data)) {
 			setFileSearchActivated(true);
@@ -1094,16 +1103,16 @@ const loadFiles = async (path = getCurrentDir(), pageValue = getFileListPage(), 
 			return await loadFiles(requested, 1, options);
 		}
 
-	        applyFileListResponse(data, { instanceName: name });
-	        if (dom.fileList) {
-	            // dom.fileList.scrollTop = 0;
-	        }
-        return data;
-    } finally {
-        if (dom.fileList) {
-            dom.fileList.classList.remove('loading');
-        }
-    }
+		applyFileListResponse(data, { instanceName: name });
+		return data;
+	} finally {
+		if (fmState.activeLoadAbortController === abortController) {
+			fmState.activeLoadAbortController = null;
+		}
+		if (dom.fileList && !fmState.activeLoadAbortController) {
+			dom.fileList.classList.remove('loading');
+		}
+	}
 };
 
 
