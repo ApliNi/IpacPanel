@@ -79,7 +79,7 @@ func AuthUserByUsername(username string) (*cfg.AuthUser, bool) {
 func FindAuthUserLocked(username string) (*cfg.AuthUser, bool) {
 	for i := range cfg.CurrentConfig.Auth {
 		if cfg.CurrentConfig.Auth[i].User == username {
-			return &cfg.CurrentConfig.Auth[i], true
+			return cfg.CloneAuthUser(&cfg.CurrentConfig.Auth[i]), true
 		}
 	}
 	return nil, false

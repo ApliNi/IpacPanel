@@ -190,17 +190,25 @@ func ApplyStagedInstanceUpdate(rootPath string, updateDir string, cancel <-chan 
 		if isPathWithinRoot(targetPath, updateRoot) {
 			return fmt.Errorf(msg.InstanceUpdateTargetContainsUpdateDirFmt, name)
 		}
-		if err := os.RemoveAll(targetPath); err != nil {
-			return err
-		}
-		if err := syncParentDir(targetPath); err != nil {
-			return err
-		}
-		if err := checkInstanceUpdateCanceled(cancel); err != nil {
-			return err
+		backupPath := targetPath + ".ipac_update_backup"
+		_ = os.RemoveAll(backupPath)
+		hasExisting := false
+		if _, err := os.Lstat(targetPath); err == nil {
+			hasExisting = true
+			if err := instanceUpdateRename(targetPath, backupPath); err != nil {
+				return err
+			}
+			_ = syncParentDir(targetPath)
 		}
 		if err := instanceUpdateRename(srcPath, targetPath); err != nil {
+			if hasExisting {
+				_ = instanceUpdateRename(backupPath, targetPath)
+				_ = syncParentDir(targetPath)
+			}
 			return err
+		}
+		if hasExisting {
+			_ = os.RemoveAll(backupPath)
 		}
 		if err := syncParentDir(targetPath); err != nil {
 			return err

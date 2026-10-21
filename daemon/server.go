@@ -15,10 +15,10 @@ import (
 const outputChannelSize = 256
 
 const (
-	ipcControlQueueSize       = 1024
+	ipcControlQueueSize       = 32
 	ipcOutputFlushInterval    = 8 * time.Millisecond
-	ipcOutputDrainMaxMessages = 128
-	eventChannelSize          = 64
+	ipcOutputDrainMaxMessages = 64
+	eventChannelSize          = 32
 )
 
 type IPCServer struct {

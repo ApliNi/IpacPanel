@@ -54,13 +54,17 @@ func (fs *InstanceFS) Resolve(relativePath string) (SafePath, error) {
 	}
 
 	normalizedRelative := NormalizeRelativeFilePath(relativePath)
-	targetPath := fs.rootPath
+	if HasWindowsReservedDeviceComponent(normalizedRelative) {
+		return SafePath{}, ErrPathOutsideInstanceRoot
+	}
+	cleanRoot := cleanAbsPath(fs.rootPath)
+	targetPath := cleanRoot
 	if normalizedRelative != "" {
-		targetPath = filepath.Join(fs.rootPath, normalizedRelative)
+		targetPath = filepath.Join(cleanRoot, normalizedRelative)
 	}
 	targetPath = filepath.Clean(targetPath)
 
-	relToRoot, err := filepath.Rel(fs.rootPath, targetPath)
+	relToRoot, err := filepath.Rel(cleanRoot, targetPath)
 	if err != nil {
 		return SafePath{}, err
 	}
@@ -161,6 +165,10 @@ func (fs *InstanceFS) ResolveExistingDir(relativePath string) (SafePath, os.File
 }
 
 func (fs *InstanceFS) ResolveNewChild(parentRelativePath string, name string) (SafePath, SafePath, error) {
+	name, err := EnsureFileName(name)
+	if err != nil {
+		return SafePath{}, SafePath{}, err
+	}
 	parentPath, err := fs.Resolve(parentRelativePath)
 	if err != nil {
 		return SafePath{}, SafePath{}, err
@@ -190,11 +198,11 @@ func (fs *InstanceFS) ensureResolvedPathWithinRoot(targetPath string) error {
 	if fs == nil || strings.TrimSpace(fs.rootPath) == "" {
 		return errors.New(msg.InstanceNotFound)
 	}
-	rootReal, err := filepath.EvalSymlinks(fs.rootPath)
+	rootReal, err := filepath.EvalSymlinks(cleanAbsPath(fs.rootPath))
 	if err != nil {
 		return fmt.Errorf(msg.InstanceRootPathInvalidFmt, err)
 	}
-	targetReal, err := filepath.EvalSymlinks(targetPath)
+	targetReal, err := filepath.EvalSymlinks(cleanAbsPath(targetPath))
 	if err != nil {
 		return fmt.Errorf(msg.PathInvalidFmt, err)
 	}
@@ -202,18 +210,17 @@ func (fs *InstanceFS) ensureResolvedPathWithinRoot(targetPath string) error {
 		return ErrPathOutsideInstanceRoot
 	}
 	return nil
-
 }
 
 func (fs *InstanceFS) ensureNewPathWithinRoot(targetPath string) error {
 	if fs == nil || strings.TrimSpace(fs.rootPath) == "" {
 		return errors.New(msg.InstanceNotFound)
 	}
-	rootReal, err := filepath.EvalSymlinks(fs.rootPath)
+	rootReal, err := filepath.EvalSymlinks(cleanAbsPath(fs.rootPath))
 	if err != nil {
 		return fmt.Errorf(msg.InstanceRootPathInvalidFmt, err)
 	}
-	parent := filepath.Dir(targetPath)
+	parent := filepath.Dir(cleanAbsPath(targetPath))
 	parentReal, err := filepath.EvalSymlinks(parent)
 	if err != nil {
 		return fmt.Errorf(msg.PathInvalidFmt, err)
@@ -224,22 +231,134 @@ func (fs *InstanceFS) ensureNewPathWithinRoot(targetPath string) error {
 	return nil
 }
 
-func IsPathWithinRoot(rootPath string, targetPath string) bool {
-	rel, err := filepath.Rel(rootPath, targetPath)
+func stripExtendedLengthPrefix(p string) string {
+	p = strings.TrimSpace(p)
+	if runtime.GOOS != "windows" {
+		return p
+	}
+	if len(p) >= 8 && strings.EqualFold(strings.ReplaceAll(p[:8], "/", `\`), `\\?\UNC\`) {
+		return `\\` + p[8:]
+	}
+	if len(p) >= 4 && strings.ReplaceAll(p[:4], "/", `\`) == `\\?\` {
+		return p[4:]
+	}
+	return p
+}
+
+func cleanAbsPath(p string) string {
+	p = stripExtendedLengthPrefix(p)
+	if p == "" {
+		return ""
+	}
+	clean := filepath.Clean(p)
+	if !filepath.IsAbs(clean) {
+		if abs, err := filepath.Abs(clean); err == nil {
+			clean = filepath.Clean(stripExtendedLengthPrefix(abs))
+		}
+	}
+	return clean
+}
+
+func relativePathWithinBase(basePath string, targetPath string) (string, bool) {
+	if basePath == "" || targetPath == "" {
+		return "", false
+	}
+	rel, err := filepath.Rel(basePath, targetPath)
 	if err != nil {
-		return false
+		return "", false
 	}
-	if rel == "." {
-		return true
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", false
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return false
-	}
-	return !filepath.IsAbs(rel)
+	return rel, true
+}
+
+func IsPathWithinRoot(rootPath string, targetPath string) bool {
+	_, ok := relativePathWithinBase(cleanAbsPath(rootPath), cleanAbsPath(targetPath))
+	return ok
 }
 
 func SameCleanPath(a string, b string) bool {
-	return filepath.Clean(a) == filepath.Clean(b)
+	cleanA := cleanAbsPath(a)
+	cleanB := cleanAbsPath(b)
+	if cleanA == cleanB {
+		return true
+	}
+	if cleanA == "" || cleanB == "" {
+		return false
+	}
+	rel, err := filepath.Rel(cleanA, cleanB)
+	return err == nil && rel == "."
+}
+
+func hasNonLeadingDotDot(p string) bool {
+	p = stripExtendedLengthPrefix(p)
+	if p == "" {
+		return false
+	}
+	isAbs := filepath.IsAbs(p) || IsWindowsAbsolutePath(p) || strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`)
+	normalized := strings.ReplaceAll(p, `\`, "/")
+	seenNormal := isAbs
+	for _, part := range strings.Split(normalized, "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			if seenNormal {
+				return true
+			}
+			continue
+		}
+		seenNormal = true
+	}
+	return false
+}
+
+func alignPathWithinRoot(rootPath string, targetPath string) (cleanRootReal string, rel string, err error) {
+	if strings.ContainsRune(rootPath, '\x00') || strings.ContainsRune(targetPath, '\x00') {
+		return "", "", ErrPathOutsideInstanceRoot
+	}
+	if hasNonLeadingDotDot(rootPath) || hasNonLeadingDotDot(targetPath) {
+		return "", "", ErrPathOutsideInstanceRoot
+	}
+	if HasWindowsReservedDeviceComponent(targetPath) {
+		return "", "", ErrPathOutsideInstanceRoot
+	}
+	cleanLogical := cleanAbsPath(rootPath)
+	cleanTarget := cleanAbsPath(targetPath)
+	rootReal, err := filepath.EvalSymlinks(cleanLogical)
+	if err != nil {
+		return "", "", fmt.Errorf(msg.InstanceRootPathInvalidFmt, err)
+	}
+	cleanReal := cleanAbsPath(rootReal)
+	if SameCleanPath(cleanTarget, cleanLogical) || SameCleanPath(cleanTarget, cleanReal) {
+		return cleanReal, ".", nil
+	}
+	if r, ok := relativePathWithinBase(cleanLogical, cleanTarget); ok {
+		return cleanReal, r, nil
+	}
+	if r, ok := relativePathWithinBase(cleanReal, cleanTarget); ok {
+		return cleanReal, r, nil
+	}
+	matchedAncestor := ""
+	for ancestor := cleanTarget; ancestor != ""; {
+		if ancestorReal, evalErr := filepath.EvalSymlinks(ancestor); evalErr == nil {
+			if SameCleanPath(ancestorReal, cleanReal) {
+				matchedAncestor = ancestor
+			}
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			break
+		}
+		ancestor = parent
+	}
+	if matchedAncestor != "" {
+		if r, ok := relativePathWithinBase(matchedAncestor, cleanTarget); ok {
+			return cleanReal, r, nil
+		}
+	}
+	return "", "", ErrPathOutsideInstanceRoot
 }
 
 func EnsureResolvedPathWithinInstanceRoot(sp *process.InstanceProcess, targetPath string) error {
@@ -247,11 +366,11 @@ func EnsureResolvedPathWithinInstanceRoot(sp *process.InstanceProcess, targetPat
 	if err != nil {
 		return err
 	}
-	rootReal, err := filepath.EvalSymlinks(rootAbs)
+	rootReal, err := filepath.EvalSymlinks(cleanAbsPath(rootAbs))
 	if err != nil {
 		return fmt.Errorf(msg.InstanceRootPathInvalidFmt, err)
 	}
-	targetReal, err := filepath.EvalSymlinks(targetPath)
+	targetReal, err := filepath.EvalSymlinks(cleanAbsPath(targetPath))
 	if err != nil {
 		return fmt.Errorf(msg.PathInvalidFmt, err)
 	}
@@ -266,12 +385,12 @@ func EnsureNewPathWithinInstanceRoot(sp *process.InstanceProcess, targetPath str
 	if err != nil {
 		return err
 	}
-	rootReal, err := filepath.EvalSymlinks(rootAbs)
+	rootReal, err := filepath.EvalSymlinks(cleanAbsPath(rootAbs))
 	if err != nil {
 		return fmt.Errorf(msg.InstanceRootPathInvalidFmt, err)
 	}
 
-	parent := filepath.Dir(targetPath)
+	parent := filepath.Dir(cleanAbsPath(targetPath))
 	parentReal, err := filepath.EvalSymlinks(parent)
 	if err != nil {
 		return fmt.Errorf(msg.PathInvalidFmt, err)
@@ -283,26 +402,14 @@ func EnsureNewPathWithinInstanceRoot(sp *process.InstanceProcess, targetPath str
 }
 
 func EnsurePathComponentsWithinRoot(rootPath string, targetPath string, includeLeaf bool) error {
-	rootReal, err := filepath.EvalSymlinks(rootPath)
+	cleanRootReal, rel, err := alignPathWithinRoot(rootPath, targetPath)
 	if err != nil {
-		return fmt.Errorf(msg.InstanceRootPathInvalidFmt, err)
-	}
-	cleanRoot := filepath.Clean(rootReal)
-	cleanTarget := filepath.Clean(targetPath)
-	if cleanTarget == cleanRoot {
-		return nil
-	}
-	rel, err := filepath.Rel(cleanRoot, cleanTarget)
-	if err != nil {
-		return fmt.Errorf(msg.PathInvalidFmt, err)
+		return err
 	}
 	if rel == "." {
 		return nil
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return ErrPathOutsideInstanceRoot
-	}
-	parts := strings.Split(rel, string(filepath.Separator))
+	parts := strings.Split(filepath.Clean(rel), string(filepath.Separator))
 	if len(parts) == 0 {
 		return nil
 	}
@@ -310,8 +417,11 @@ func EnsurePathComponentsWithinRoot(rootPath string, targetPath string, includeL
 	if !includeLeaf {
 		limit--
 	}
-	current := cleanRoot
-	for i := 0; i < limit; i++ {
+	if limit <= 0 {
+		return nil
+	}
+	current := cleanRootReal
+	for i := range limit {
 		part := parts[i]
 		if part == "" || part == "." {
 			continue
@@ -331,7 +441,7 @@ func EnsurePathComponentsWithinRoot(rootPath string, targetPath string, includeL
 		if realErr != nil {
 			return fmt.Errorf(msg.PathInvalidFmt, realErr)
 		}
-		if !IsPathWithinRoot(cleanRoot, realCurrent) {
+		if !IsPathWithinRoot(cleanRootReal, realCurrent) {
 			return ErrPathOutsideInstanceRoot
 		}
 	}
@@ -343,28 +453,18 @@ func EnsurePathComponentsWithinRoot(rootPath string, targetPath string, includeL
 //
 // This is a TOCTOU mitigation (not a full fix) against os.MkdirAll following
 // symlinks that may have been concurrently swapped. A complete solution would
-// require fd‑based openat/no‑follow primitives.
+// require fd-based openat/no-follow primitives.
 func EnsureDirectoryStepwise(rootPath string, dirPath string, mode os.FileMode) error {
-	rootReal, err := filepath.EvalSymlinks(rootPath)
+	cleanRootReal, rel, err := alignPathWithinRoot(rootPath, dirPath)
 	if err != nil {
-		return fmt.Errorf(msg.InstanceRootPathInvalidFmt, err)
+		return err
 	}
-	cleanRoot := filepath.Clean(rootReal)
-	cleanDir := filepath.Clean(dirPath)
-	if cleanDir == cleanRoot {
+	if rel == "." {
 		return nil
 	}
-	if !IsPathWithinRoot(cleanRoot, cleanDir) {
-		return ErrPathOutsideInstanceRoot
-	}
+	parts := strings.Split(filepath.Clean(rel), string(filepath.Separator))
 
-	rel, err := filepath.Rel(cleanRoot, cleanDir)
-	if err != nil {
-		return fmt.Errorf(msg.PathInvalidFmt, err)
-	}
-	parts := strings.Split(rel, string(filepath.Separator))
-
-	current := cleanRoot
+	current := cleanRootReal
 	for _, part := range parts {
 		if part == "" || part == "." {
 			continue
@@ -377,13 +477,13 @@ func EnsureDirectoryStepwise(rootPath string, dirPath string, mode os.FileMode) 
 				return ErrPathOutsideInstanceRoot
 			}
 			if !info.IsDir() {
-				return fmt.Errorf("path component is not a directory: %s", current)
+				return errors.New(msg.PathNotDirectory)
 			}
 			realCurrent, rerr := filepath.EvalSymlinks(current)
 			if rerr != nil {
 				return fmt.Errorf(msg.PathInvalidFmt, rerr)
 			}
-			if !IsPathWithinRoot(cleanRoot, realCurrent) {
+			if !IsPathWithinRoot(cleanRootReal, realCurrent) {
 				return ErrPathOutsideInstanceRoot
 			}
 			continue
@@ -402,13 +502,13 @@ func EnsureDirectoryStepwise(rootPath string, dirPath string, mode os.FileMode) 
 			return ErrPathOutsideInstanceRoot
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("created path component is not a directory: %s", current)
+			return errors.New(msg.PathNotDirectory)
 		}
 		realCurrent, rerr := filepath.EvalSymlinks(current)
 		if rerr != nil {
 			return fmt.Errorf(msg.PathInvalidFmt, rerr)
 		}
-		if !IsPathWithinRoot(cleanRoot, realCurrent) {
+		if !IsPathWithinRoot(cleanRootReal, realCurrent) {
 			return ErrPathOutsideInstanceRoot
 		}
 	}
@@ -448,7 +548,10 @@ func EnsureFileName(name string) (string, error) {
 	if textTooLong(name, maxFileNameLen) {
 		return "", errors.New(msg.FileNameTooLong)
 	}
-	if name == "." || name == ".." {
+	if name == "." || name == ".." || strings.HasSuffix(name, ".") {
+		return "", errors.New(msg.FileNameInvalid)
+	}
+	if IsWindowsReservedDeviceName(name) {
 		return "", errors.New(msg.FileNameInvalid)
 	}
 	if strings.ContainsAny(name, `\\/:*?"<>|`) {
@@ -460,6 +563,32 @@ func EnsureFileName(name string) (string, error) {
 		}
 	}
 	return name, nil
+}
+
+func IsWindowsReservedDeviceName(name string) bool {
+	base := strings.TrimSpace(name)
+	if dot := strings.IndexByte(base, '.'); dot >= 0 {
+		base = base[:dot]
+	}
+	base = strings.ToUpper(strings.TrimSpace(base))
+	switch base {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "COM0",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "LPT0":
+		return true
+	default:
+		return false
+	}
+}
+func HasWindowsReservedDeviceComponent(p string) bool {
+	for _, part := range strings.FieldsFunc(p, func(r rune) bool {
+		return r == '/' || r == '\\'
+	}) {
+		if IsWindowsReservedDeviceName(part) {
+			return true
+		}
+	}
+	return false
 }
 
 func textTooLong(value string, maxLen int) bool {

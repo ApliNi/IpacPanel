@@ -65,6 +65,48 @@ type InstanceStatus struct {
 	ActiveTerminal int    `json:"active_terminal"`
 }
 
+// InstanceStatusProjection 是实例轻量只读状态投影, 不深拷贝 Task 或指针字段.
+type InstanceStatusProjection struct {
+	Name           string `json:"name"`
+	Group          string `json:"group,omitempty"`
+	AccessLinks    string `json:"access_links,omitempty"`
+	Terminal       int    `json:"terminal"`
+	ActiveTerminal int    `json:"active_terminal"`
+	Running        bool   `json:"running"`
+	Updating       bool   `json:"updating"`
+	Restarting     bool   `json:"restarting"`
+	StartTime      string `json:"start_time,omitempty"`
+	RestartCount   int    `json:"restart_count"`
+}
+
+func (sp *InstanceProcess) StatusProjectionLocked() InstanceStatusProjection {
+	startTime := ""
+	if !sp.StartTime.IsZero() {
+		startTime = sp.StartTime.Format(cfg.DisplayTimeLayout)
+	}
+	return InstanceStatusProjection{
+		Name:           sp.Ins.Name,
+		Group:          sp.Ins.Group,
+		AccessLinks:    sp.Ins.AccessLinks,
+		Terminal:       cfg.NormalizeTerminalMode(sp.Ins.Terminal),
+		ActiveTerminal: sp.activeTerminalLocked(),
+		Running:        sp.Running,
+		Updating:       sp.Updating,
+		Restarting:     sp.Restarting,
+		StartTime:      startTime,
+		RestartCount:   sp.RestartCount,
+	}
+}
+
+func (sp *InstanceProcess) StatusProjection() InstanceStatusProjection {
+	if sp == nil {
+		return InstanceStatusProjection{}
+	}
+	sp.Mu.RLock()
+	defer sp.Mu.RUnlock()
+	return sp.StatusProjectionLocked()
+}
+
 func (sp *InstanceProcess) StatusSnapshotLocked() InstanceStatus {
 	startTime := ""
 	if !sp.StartTime.IsZero() {
@@ -306,6 +348,7 @@ func (sp *InstanceProcess) setProcessExitedLocked() {
 	sp.ProxySeq = 0
 	sp.resetPTYAlternateScreenStateLocked()
 	sp.enterStoppedStateLocked()
+	sp.shrinkTerminalHistoryLocked()
 }
 
 func (sp *InstanceProcess) setProcessStartedLocked(startTime time.Time, restartCount int) uint64 {
@@ -537,7 +580,7 @@ func (sp *InstanceProcess) handleDaemonProcessExit(state *DaemonRuntimeState) bo
 	limit := cfg.GetHistoryLimit() * 1024
 	sp.Mu.Lock()
 	defer sp.Mu.Unlock()
-	if sp.State == processStateStopped {
+	if sp.State == processStateStopped && !sp.Starting {
 		return false
 	}
 
@@ -559,6 +602,9 @@ func (sp *InstanceProcess) handleDaemonProcessExit(state *DaemonRuntimeState) bo
 		terminalMsg = BuildNormalTerminalSystemMessage(msg.ProcessExitedWaitingRestart)
 	}
 	sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
+	if !shouldAutoRestart {
+		sp.shrinkTerminalHistoryLocked()
+	}
 
 	NotifyInstanceStatusChanged(ins.Name)
 
@@ -609,23 +655,50 @@ func (sp *InstanceProcess) ScheduleRecoveredAutoRestart(state DaemonRuntimeState
 		}
 
 		sp.Mu.Lock()
-		if sp.RestartCancel != cancelCh || sp.State != processStateRestartWaiting {
+		if sp.State != processStateRestartWaiting || sp.RestartCancel != cancelCh {
 			sp.Mu.Unlock()
 			return
 		}
 		sp.RestartCancel = nil
+		historyLimit := cfg.GetHistoryLimit() * 1024
+		instanceUpdateStagingDir := cfg.GetInstanceUpdateStagingDir()
+		reserved, err := sp.reserveStartLocked(historyLimit, instanceUpdateStagingDir)
 		sp.Mu.Unlock()
-
-		if err := sp.Start(); err != nil {
-			limit := cfg.GetHistoryLimit() * 1024
+		if err != nil {
 			sp.Mu.Lock()
-			terminalMsg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
+			restartMsg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
 			_ = logbuf.EmitInstance(logbuf.LevelError, sp.InstanceSnapshotLocked().Name, fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
 			sp.enterStoppedStateLocked()
-			sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
+			sp.appendAndBroadcastLocked(websocket.BinaryMessage, restartMsg, historyLimit)
 			NotifyInstanceStatusChanged(sp.InstanceSnapshotLocked().Name)
 			sp.Mu.Unlock()
+			return
 		}
+		if reserved == nil {
+			return
+		}
+		prepared, err := sp.prepareStart(reserved)
+		if err != nil {
+			sp.Mu.Lock()
+			if sp.Starting && sp.StartSeq == reserved.startSeq {
+				sp.cancelStartLocked()
+				restartMsg := BuildWarningTerminalSystemMessage(fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
+				_ = logbuf.EmitInstance(logbuf.LevelError, sp.InstanceSnapshotLocked().Name, fmt.Sprintf(msg.AutoRestartFailedFmt, err.Error()))
+				sp.enterStoppedStateLocked()
+				sp.appendAndBroadcastLocked(websocket.BinaryMessage, restartMsg, historyLimit)
+				NotifyInstanceStatusChanged(sp.InstanceSnapshotLocked().Name)
+			}
+			sp.Mu.Unlock()
+			return
+		}
+		sp.Mu.Lock()
+		proxySeq, committed := sp.commitPreparedStartLocked(reserved, prepared)
+		sp.Mu.Unlock()
+		if !committed {
+			_ = stopDaemonInstance(reserved.instanceName, true)
+			return
+		}
+		_ = proxySeq
 	}()
 }
 
@@ -805,6 +878,7 @@ func (sp *InstanceProcess) Stop(force bool) {
 		sp.enterStoppedStateLocked()
 		msg := BuildNormalTerminalSystemMessage(msg.AutoRestartStopped)
 		sp.appendAndBroadcastLocked(websocket.BinaryMessage, msg, limit)
+		sp.shrinkTerminalHistoryLocked()
 		NotifyInstanceStatusChanged(instanceName)
 		sp.Mu.Unlock()
 		if force {

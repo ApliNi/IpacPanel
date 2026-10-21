@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -129,6 +130,12 @@ func (c *ExtractDirCache) Ensure(baseDir string, dir string) error {
 }
 
 func (fs *InstanceFS) ResolveExtractOutputPath(baseDir string, entryName string) (string, error) {
+	if strings.ContainsRune(entryName, '\x00') {
+		return "", ErrArchiveInvalidPath
+	}
+	if runtime.GOOS == "windows" && strings.Contains(entryName, ":") {
+		return "", ErrArchiveInvalidPath
+	}
 	name := strings.TrimSpace(strings.ReplaceAll(entryName, "\\", "/"))
 	name = strings.TrimPrefix(name, "/")
 	if name == "" {
@@ -139,14 +146,17 @@ func (fs *InstanceFS) ResolveExtractOutputPath(baseDir string, entryName string)
 		if part == "" || part == "." {
 			continue
 		}
-		if part == ".." {
+		if part == ".." || strings.HasSuffix(part, ".") || IsWindowsReservedDeviceName(part) {
 			return "", ErrArchiveInvalidPath
 		}
 	}
 	dest := filepath.Join(baseDir, filepath.FromSlash(name))
 	cleanBase := filepath.Clean(baseDir)
 	cleanDest := filepath.Clean(dest)
-	if cleanDest != cleanBase && !strings.HasPrefix(cleanDest, cleanBase+string(filepath.Separator)) {
+	if SameCleanPath(cleanBase, cleanDest) {
+		return "", nil
+	}
+	if !IsPathWithinRoot(cleanBase, cleanDest) {
 		return "", ErrArchiveInvalidPath
 	}
 	return cleanDest, nil

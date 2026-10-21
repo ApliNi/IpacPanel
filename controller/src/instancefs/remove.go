@@ -45,6 +45,9 @@ func (e *PartialDeleteError) add(rootPath string, path string, isDir bool, reaso
 }
 
 func RelativeDeleteFailurePath(rootPath string, path string) string {
+	if _, rel, err := alignPathWithinRoot(rootPath, path); err == nil && rel != "." && rel != "" {
+		return filepath.ToSlash(rel)
+	}
 	rootPath = filepath.Clean(rootPath)
 	path = filepath.Clean(path)
 	rel, err := filepath.Rel(rootPath, path)
@@ -67,26 +70,43 @@ func (fs *InstanceFS) DeleteExisting(relativePath string) (SafePath, bool, error
 }
 
 func RemoveFileWithinRoot(rootPath string, targetPath string) error {
-	if err := EnsurePathComponentsWithinRoot(rootPath, targetPath, true); err != nil {
+	_, rel, err := alignPathWithinRoot(rootPath, targetPath)
+	if err != nil {
+		return err
+	}
+	if rel == "." {
+		return ErrPathOutsideInstanceRoot
+	}
+	if err := EnsurePathComponentsWithinRoot(rootPath, targetPath, false); err != nil {
 		return err
 	}
 	info, err := os.Lstat(targetPath)
 	if err != nil {
 		return err
 	}
-	if info.IsDir() {
-		return ErrUploadTargetIsDirectory
+	if info.Mode()&os.ModeSymlink == 0 && info.IsDir() {
+		return errors.New(msg.TargetIsDirectory)
 	}
 	return os.Remove(targetPath)
 }
 
 func RemoveEmptyDirectoryWithinRoot(rootPath string, targetPath string) error {
-	if err := EnsurePathComponentsWithinRoot(rootPath, targetPath, true); err != nil {
+	_, rel, err := alignPathWithinRoot(rootPath, targetPath)
+	if err != nil {
+		return err
+	}
+	if rel == "." {
+		return ErrPathOutsideInstanceRoot
+	}
+	if err := EnsurePathComponentsWithinRoot(rootPath, targetPath, false); err != nil {
 		return err
 	}
 	info, err := os.Lstat(targetPath)
 	if err != nil {
 		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return os.Remove(targetPath)
 	}
 	if !info.IsDir() {
 		return errors.New(msg.DestinationNotDirectory)
@@ -103,7 +123,14 @@ func RemoveEmptyDirectoryWithinRoot(rootPath string, targetPath string) error {
 // deleted. The returned error (if any) describes only the entries that could
 // not be removed.
 func RemoveAllWithinRootBestEffort(rootPath string, targetPath string) error {
-	if err := EnsurePathComponentsWithinRoot(rootPath, targetPath, true); err != nil {
+	_, rel, err := alignPathWithinRoot(rootPath, targetPath)
+	if err != nil {
+		return err
+	}
+	if rel == "." {
+		return ErrPathOutsideInstanceRoot
+	}
+	if err := EnsurePathComponentsWithinRoot(rootPath, targetPath, false); err != nil {
 		return err
 	}
 
@@ -125,7 +152,7 @@ func RemoveAllWithinRootBestEffort(rootPath string, targetPath string) error {
 			}
 			return nil
 		}
-		if pathErr := EnsurePathComponentsWithinRoot(rootPath, path, true); pathErr != nil {
+		if pathErr := EnsurePathComponentsWithinRoot(rootPath, path, false); pathErr != nil {
 			entries = append(entries, entryInfo{path: path, walkErr: pathErr})
 			if entry.IsDir() {
 				return filepath.SkipDir
@@ -133,10 +160,7 @@ func RemoveAllWithinRootBestEffort(rootPath string, targetPath string) error {
 			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			entries = append(entries, entryInfo{path: path, walkErr: ErrPathOutsideInstanceRoot})
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
+			entries = append(entries, entryInfo{path: path, isDir: false})
 			return nil
 		}
 		entries = append(entries, entryInfo{path: path, isDir: entry.IsDir()})

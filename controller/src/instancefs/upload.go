@@ -45,18 +45,28 @@ func (fs *InstanceFS) ResolveUploadTarget(dirPath string, fileName string) (Uplo
 	if err := EnsurePathComponentsWithinRoot(fs.rootPath, targetDir, false); err != nil {
 		return UploadTarget{}, err
 	}
-	if info, err := os.Lstat(targetDir); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return UploadTarget{}, ErrPathOutsideInstanceRoot
-		}
-		if !info.IsDir() {
-			return UploadTarget{}, errors.New(msg.PathNotDirectory)
-		}
-		if err := EnsurePathComponentsWithinRoot(fs.rootPath, targetDir, true); err != nil {
+	if SameCleanPath(targetDir, fs.rootPath) {
+		if info, err := os.Stat(targetDir); err == nil {
+			if !info.IsDir() {
+				return UploadTarget{}, errors.New(msg.PathNotDirectory)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return UploadTarget{}, err
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return UploadTarget{}, err
+	} else {
+		if info, err := os.Lstat(targetDir); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return UploadTarget{}, ErrPathOutsideInstanceRoot
+			}
+			if !info.IsDir() {
+				return UploadTarget{}, errors.New(msg.PathNotDirectory)
+			}
+			if err := EnsurePathComponentsWithinRoot(fs.rootPath, targetDir, true); err != nil {
+				return UploadTarget{}, err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return UploadTarget{}, err
+		}
 	}
 	targetPath := filepath.Join(targetDir, fileName)
 	return UploadTarget{dirRel: safeDir.RelSlash(), fileName: fileName, targetPath: targetPath}, nil
@@ -80,11 +90,14 @@ func (fs *InstanceFS) EnsureUploadTargetDirectory(target UploadTarget) error {
 }
 
 func (fs *InstanceFS) CheckUploadTargetFile(target UploadTarget, overwrite bool) error {
-	if err := EnsurePathComponentsWithinRoot(fs.rootPath, target.TargetPath(), false); err != nil {
+	if err := EnsurePathComponentsWithinRoot(fs.rootPath, target.TargetPath(), true); err != nil {
 		return err
 	}
-	info, err := os.Stat(target.TargetPath())
+	info, err := os.Lstat(target.TargetPath())
 	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return ErrPathOutsideInstanceRoot
+		}
 		if info.IsDir() {
 			return ErrUploadTargetIsDirectory
 		}

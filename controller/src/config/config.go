@@ -1015,6 +1015,16 @@ func CloneIntPtr(p *int) *int {
 	return &v
 }
 
+func CloneAuthUser(u *AuthUser) *AuthUser {
+	if u == nil {
+		return nil
+	}
+	cp := *u
+	cp.AllowInstances = append([]string(nil), NormalizeUserScopeInstances(u.AllowInstances)...)
+	cp.AllowGroups = append([]string(nil), NormalizeUserScopeGroups(u.AllowGroups)...)
+	return &cp
+}
+
 func CloneAuthUsers(users []AuthUser) []AuthUser {
 	if len(users) == 0 {
 		return nil

@@ -301,18 +301,7 @@ const getReconnectDelay = (attempt) => {
 const formatBytes = (value) => formatScaled(value, DATA_UNITS, 1024, 1);
 const formatBps = (value) => formatScaled(value, DATA_UNITS, 1024, 1);
 
-const formatBytesCeil = (value) => {
-	let numeric = Number(value);
-	if (!Number.isFinite(numeric) || numeric < 0) {
-		numeric = 0;
-	}
-	let unitIndex = 0;
-	while (numeric >= 1024 && unitIndex < DATA_UNITS.length - 1) {
-		numeric /= 1024;
-		unitIndex += 1;
-	}
-	return `${Math.ceil(numeric)} ${DATA_UNITS[unitIndex]}`;
-};
+const formatBytesCeil = (value) => formatBytes(value);
 
 const ceilBytesToDisplayUnit = (value) => {
 	let numeric = Number(value);
@@ -340,7 +329,8 @@ function formatScaled(value, units, base, precision) {
 		unitIndex += 1;
 	}
 	const digits = numeric >= 100 || unitIndex === 0 ? 0 : precision;
-	return `${numeric.toFixed(digits)} ${units[unitIndex]}`;
+	const text = Number(numeric.toFixed(digits));
+	return `${text} ${units[unitIndex]}`;
 }
 
 const formatPercent = (value) => {
@@ -547,6 +537,121 @@ const formatLegendBpsAbs = (value) => formatBps(Math.abs(value));
 
 const formatSparseTimeTicks = (u, values) => {
 	return values.map((value) => formatTimeTick(value));
+};
+
+const formatAxisPercent = (uOrVals, maybeVals) => {
+	const vals = Array.isArray(uOrVals) ? uOrVals : (Array.isArray(maybeVals) ? maybeVals : [uOrVals]);
+	const numericVals = vals.map((value) => Math.max(0, Math.min(100, Number(value) || 0)));
+	const oneDecimal = numericVals.map((value) => Number(value.toFixed(1)));
+	const hasDuplicates = new Set(oneDecimal).size !== numericVals.length;
+	const precision = hasDuplicates ? 2 : 1;
+	const results = numericVals.map((value) => `${Number(value.toFixed(precision))}%`);
+	return Array.isArray(uOrVals) || Array.isArray(maybeVals) ? results : results[0];
+};
+
+const formatAxisCount = (uOrVals, maybeVals) => {
+	const vals = Array.isArray(uOrVals) ? uOrVals : (Array.isArray(maybeVals) ? maybeVals : [uOrVals]);
+	const numericVals = vals.map((value) => Math.max(0, Number(value) || 0));
+	const roundedVals = numericVals.map((value) => Math.round(value));
+	const hasDuplicates = new Set(roundedVals).size !== numericVals.length;
+	let results;
+	if (!hasDuplicates) {
+		results = roundedVals.map(String);
+	} else {
+		const span = Math.abs(numericVals[numericVals.length - 1] - numericVals[0]);
+		const step = numericVals.length > 1 ? span / (numericVals.length - 1) : span;
+		const precision = step < 0.1 ? 2 : 1;
+		results = numericVals.map((value) => String(Number(value.toFixed(precision))));
+	}
+	return Array.isArray(uOrVals) || Array.isArray(maybeVals) ? results : results[0];
+};
+
+const formatAxisBytes = (uOrVals, maybeVals) => {
+	const vals = Array.isArray(uOrVals) ? uOrVals : (Array.isArray(maybeVals) ? maybeVals : [uOrVals]);
+	for (let precision = 1; precision <= 3; precision += 1) {
+		const formatted = vals.map((value) => formatScaled(value, DATA_UNITS, 1024, precision));
+		if (new Set(formatted).size === formatted.length || precision === 3) {
+			return Array.isArray(uOrVals) || Array.isArray(maybeVals) ? formatted : formatted[0];
+		}
+	}
+	return vals.map(formatBytes);
+};
+
+const formatAxisBps = (uOrVals, maybeVals) => {
+	const vals = Array.isArray(uOrVals) ? uOrVals : (Array.isArray(maybeVals) ? maybeVals : [uOrVals]);
+	for (let precision = 1; precision <= 3; precision += 1) {
+		const formatted = vals.map((value) => formatScaled(Math.abs(value), DATA_UNITS, 1024, precision));
+		const nonNegative = formatted.filter((_, idx) => vals[idx] >= 0);
+		if (new Set(nonNegative).size === nonNegative.length || precision === 3) {
+			return Array.isArray(uOrVals) || Array.isArray(maybeVals) ? formatted : formatted[0];
+		}
+	}
+	return vals.map((value) => formatBps(Math.abs(value)));
+};
+
+const computeBottomUpSplits = (scaleMin, scaleMax, lineCount = 6) => {
+	if (!Number.isFinite(scaleMin) || !Number.isFinite(scaleMax)) {
+		return [];
+	}
+	if (scaleMin >= scaleMax) {
+		return [scaleMin];
+	}
+	const count = Math.max(2, Math.round(Number(lineCount) || 6));
+	const intervals = count - 1;
+	const span = scaleMax - scaleMin;
+	const splits = [scaleMin];
+	for (let i = 1; i < intervals; i += 1) {
+		splits.push(scaleMin + (span * i) / intervals);
+	}
+	splits.push(scaleMax);
+	return splits;
+};
+
+const buildBottomUpAxisSplits = (lineCount = 6, ...extra) => {
+	if (typeof lineCount === 'object' && lineCount !== null) {
+		const scaleMin = extra[1];
+		const scaleMax = extra[2];
+		return computeBottomUpSplits(scaleMin, scaleMax, 6);
+	}
+	const count = Math.max(2, Math.round(Number(lineCount) || 6));
+	return (u, axisIdx, scaleMin, scaleMax) => computeBottomUpSplits(scaleMin, scaleMax, count);
+};
+
+const computeCenterOutSplits = (scaleMin, scaleMax, lineCount = 5) => {
+	if (!Number.isFinite(scaleMin) || !Number.isFinite(scaleMax)) {
+		return [];
+	}
+	if (scaleMin >= scaleMax) {
+		return [scaleMin];
+	}
+	const count = Math.max(2, Math.round(Number(lineCount) || 5));
+	if (scaleMin < 0 && scaleMax > 0) {
+		if (count === 5) {
+			return [scaleMin, scaleMin * 0.5, 0, scaleMax * 0.5, scaleMax];
+		}
+		const sideLines = Math.max(1, Math.floor((count - 1) / 2));
+		const splits = [scaleMin];
+		for (let i = sideLines - 1; i >= 1; i -= 1) {
+			splits.push((scaleMin * i) / sideLines);
+		}
+		splits.push(0);
+		for (let i = 1; i < sideLines; i += 1) {
+			splits.push((scaleMax * i) / sideLines);
+		}
+		splits.push(scaleMax);
+		return splits;
+	}
+	return computeBottomUpSplits(scaleMin, scaleMax, count);
+};
+
+const buildCenterOutAxisSplits = (lineCount = 5, ...extra) => {
+	if (typeof lineCount === 'object' && lineCount !== null) {
+		const scaleMin = extra[1];
+		const scaleMax = extra[2];
+		return computeCenterOutSplits(scaleMin, scaleMax, 5);
+	}
+	const count = Math.max(2, Math.round(Number(lineCount) || 5));
+	return (u, axisIdx, scaleMin, scaleMax) => computeCenterOutSplits(scaleMin, scaleMax, count);
 };
 
 const getMaxOf = (values, fallback = 1) => {
@@ -771,11 +876,11 @@ const renderCharts = (samples) => {
 		scales: { ...baseOptions.scales, y: cpuScaleRange },
 		axes: [
 			...baseOptions.axes,
-			{ ...axisCommon, scale: 'y', size: Y_AXIS_FIXED_SIZE, values: (u, vals) => vals.map((value) => `${value}%`) },
+			{ ...axisCommon, scale: 'y', size: Y_AXIS_FIXED_SIZE, splits: buildBottomUpAxisSplits(6), values: (u, vals) => formatAxisPercent(vals) },
 		],
-	series: [
-		{ value: formatLegendTime },
-		{ label: 'CPU', stroke: CHART_BLUE, width: CHART_LINE_WIDTH, fill: CHART_BLUE_FILL, points: HIDDEN_POINTS, value: createLegendValueFormatter(1, formatLegendPercent) },
+		series: [
+			{ value: formatLegendTime },
+			{ label: 'CPU', stroke: CHART_BLUE, width: CHART_LINE_WIDTH, fill: CHART_BLUE_FILL, points: HIDDEN_POINTS, value: createLegendValueFormatter(1, formatLegendPercent) },
 		],
 	}, cpuData);
 	pageState.charts.cpu.setScale('x', windowRange);
@@ -791,7 +896,7 @@ const renderCharts = (samples) => {
 		},
 		axes: [
 			...baseOptions.axes,
-			{ ...axisCommon, scale: 'y', size: Y_AXIS_FIXED_SIZE, values: (u, vals) => vals.map(formatBytesCeil) },
+			{ ...axisCommon, scale: 'y', size: Y_AXIS_FIXED_SIZE, splits: buildBottomUpAxisSplits(6), values: (u, vals) => formatAxisBytes(vals) },
 		],
 		series: [
 			{ value: formatLegendTime },
@@ -809,7 +914,7 @@ const renderCharts = (samples) => {
 		scales: { ...baseOptions.scales, y: diskScaleRange },
 		axes: [
 			...baseOptions.axes,
-			{ ...axisCommon, scale: 'y', size: Y_AXIS_FIXED_SIZE, values: (u, vals) => vals.map((value) => formatBps(Math.abs(value))) },
+			{ ...axisCommon, scale: 'y', size: Y_AXIS_FIXED_SIZE, splits: buildCenterOutAxisSplits(5), values: (u, vals) => formatAxisBps(vals) },
 		],
 		series: [
 			{ value: formatLegendTime },
@@ -826,7 +931,7 @@ const renderCharts = (samples) => {
 		scales: { ...baseOptions.scales, y: networkScaleRange },
 		axes: [
 			...baseOptions.axes,
-			{ ...axisCommon, scale: 'y', size: Y_AXIS_FIXED_SIZE, values: (u, vals) => vals.map((value) => formatBps(Math.abs(value))) },
+			{ ...axisCommon, scale: 'y', size: Y_AXIS_FIXED_SIZE, splits: buildCenterOutAxisSplits(5), values: (u, vals) => formatAxisBps(vals) },
 		],
 		series: [
 			{ value: formatLegendTime },
@@ -843,7 +948,7 @@ const renderCharts = (samples) => {
 		scales: { ...baseOptions.scales, y: connectionScaleRange },
 		axes: [
 			...baseOptions.axes,
-			{ ...axisCommon, scale: 'y', size: Y_AXIS_FIXED_SIZE, values: (u, vals) => vals.map(formatCount) },
+			{ ...axisCommon, scale: 'y', size: Y_AXIS_FIXED_SIZE, splits: buildBottomUpAxisSplits(6), values: (u, vals) => formatAxisCount(vals) },
 		],
 		series: [
 			{ value: formatLegendTime },

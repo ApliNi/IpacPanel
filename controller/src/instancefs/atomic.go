@@ -282,6 +282,19 @@ func CopyFileAtomicWithinRootContext(ctx context.Context, rootPath string, srcPa
 }
 
 func RenameFileOnlyWithinRoot(rootPath string, srcPath string, dstPath string, overwrite bool) error {
+	if err := EnsurePathComponentsWithinRoot(rootPath, srcPath, true); err != nil {
+		return err
+	}
+	srcInfo, err := os.Lstat(srcPath)
+	if err != nil {
+		return err
+	}
+	if srcInfo.Mode()&os.ModeSymlink != 0 {
+		return ErrPathOutsideInstanceRoot
+	}
+	if srcInfo.IsDir() {
+		return errors.New(msg.TargetIsDirectory)
+	}
 	if err := EnsurePathComponentsWithinRoot(rootPath, dstPath, false); err != nil {
 		return err
 	}

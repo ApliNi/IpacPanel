@@ -270,6 +270,7 @@ const open = () => {
 	if (!dom.modal) return;
 	modalState.closeTimer = clearTimer(modalState.closeTimer);
 	resetProgress();
+	modalState.failedFiles = [];
 	updateRules();
 	updateTargets();
 	if (dom.copyOverwrite) dom.copyOverwrite.checked = false;

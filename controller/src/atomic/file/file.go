@@ -51,10 +51,6 @@ func SetRegistryPath(path string) {
 	registryPath = cleanRegistryPath(path)
 }
 
-func CreateTempDir(parent string, mode os.FileMode) (string, error) {
-	return CreateRegisteredTempDir(parent, mode)
-}
-
 func CreateRegisteredTempDir(parent string, mode os.FileMode) (string, error) {
 	parent = strings.TrimSpace(parent)
 	if parent == "" {
@@ -85,10 +81,6 @@ func CreateRegisteredTempDir(parent string, mode os.FileMode) (string, error) {
 	}
 }
 
-func RegisterTempDir(path string) error {
-	return RegisterTempPath(path)
-}
-
 func RegisterTempPath(path string) error {
 	path = cleanRegistryPath(path)
 	if path == "" {
@@ -116,10 +108,6 @@ func RegisterTempPath(path string) error {
 	return writeTempRegistryLocked(registryFile, registry)
 }
 
-func UnregisterTempDir(path string) error {
-	return UnregisterTempPath(path)
-}
-
 func UnregisterTempPath(path string) error {
 	path = cleanRegistryPath(path)
 	if path == "" {
@@ -139,10 +127,6 @@ func UnregisterTempPath(path string) error {
 	return writeTempRegistryLocked(registryFile, registry)
 }
 
-func RemoveRegisteredTempDir(path string) error {
-	return RemoveRegisteredTempPath(path)
-}
-
 func RemoveRegisteredTempPath(path string) error {
 	path = cleanRegistryPath(path)
 	if path == "" {
@@ -155,10 +139,6 @@ func RemoveRegisteredTempPath(path string) error {
 		return err
 	}
 	return UnregisterTempPath(path)
-}
-
-func CleanupRegisteredAtomicTempDirs() error {
-	return CleanupRegisteredAtomicTemps()
 }
 
 func CleanupRegisteredAtomicTemps() error {

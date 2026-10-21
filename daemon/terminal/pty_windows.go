@@ -28,9 +28,6 @@ type Proxy struct {
 	pty          *conpty.ConPty
 	readCloser   io.ReadCloser
 	writeCloser  io.WriteCloser
-	stdout       io.ReadCloser
-	stderr       io.ReadCloser
-	pipeWriter   *io.PipeWriter
 	cmd          *exec.Cmd
 	processTree  *ProcessTree
 	inputWriter  *encodingAwareWriter
@@ -301,7 +298,7 @@ func startWindowsPipe(path string, argv []string) (*Proxy, error) {
 		}
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	pr, pw, err := os.Pipe()
 	if err != nil {
 		_ = stdin.Close()
 		if processTree != nil {
@@ -309,24 +306,18 @@ func startWindowsPipe(path string, argv []string) (*Proxy, error) {
 		}
 		return nil, err
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		if processTree != nil {
-			_ = processTree.Close()
-		}
-		return nil, err
-	}
+	cmd.Stdout = pw
+	cmd.Stderr = pw
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
-		_ = stdout.Close()
-		_ = stderr.Close()
+		_ = pr.Close()
+		_ = pw.Close()
 		if processTree != nil {
 			_ = processTree.Close()
 		}
 		return nil, err
 	}
+	_ = pw.Close()
 	if processTree != nil {
 		if err := processTree.AttachCommand(cmd); err != nil {
 			log.Printf("windows pipe process tree unavailable; job attach is best-effort: %v", err)
@@ -334,21 +325,9 @@ func startWindowsPipe(path string, argv []string) (*Proxy, error) {
 			processTree = nil
 		}
 	}
-	reader, writer := io.Pipe()
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go copyPipeOutput(&wg, writer, stdout)
-	go copyPipeOutput(&wg, writer, stderr)
-	go func() {
-		wg.Wait()
-		_ = writer.Close()
-	}()
 	return newWindowsProxy(&Proxy{
-		readCloser:  reader,
+		readCloser:  pr,
 		writeCloser: stdin,
-		stdout:      stdout,
-		stderr:      stderr,
-		pipeWriter:  writer,
 		cmd:         cmd,
 		processTree: processTree,
 	}), nil
@@ -358,12 +337,6 @@ func newWindowsProxy(p *Proxy) *Proxy {
 	p.waitWake = make(chan struct{})
 	p.readClosed = make(chan struct{})
 	return p
-}
-
-func copyPipeOutput(wg *sync.WaitGroup, dst *io.PipeWriter, src io.ReadCloser) {
-	defer wg.Done()
-	_, _ = io.Copy(dst, src)
-	_ = src.Close()
 }
 
 func (p *Proxy) UpdateEncoding(inputEncoding string, outputEncoding string) error {
@@ -478,15 +451,6 @@ func (p *Proxy) closePipe(killProcess bool) error {
 	var errs []error
 	if p.writeCloser != nil {
 		errs = appendWindowsCloseError(errs, p.writeCloser.Close())
-	}
-	if p.stdout != nil {
-		errs = appendWindowsCloseError(errs, p.stdout.Close())
-	}
-	if p.stderr != nil {
-		errs = appendWindowsCloseError(errs, p.stderr.Close())
-	}
-	if p.pipeWriter != nil {
-		errs = appendWindowsCloseError(errs, p.pipeWriter.Close())
 	}
 	if p.readCloser != nil {
 		errs = appendWindowsCloseError(errs, p.readCloser.Close())

@@ -327,7 +327,7 @@ func removeMovedDirectorySourceWithinRoot(ctx context.Context, rootPath string, 
 }
 
 func removeDirectoryWithinRootRespectingExcludes(ctx context.Context, rootPath string, targetPath string, excludes fileBatchExcludeMatcher) error {
-	if err := ensurePathComponentsWithinRoot(rootPath, targetPath, true); err != nil {
+	if err := ensurePathComponentsWithinRoot(rootPath, targetPath, false); err != nil {
 		return err
 	}
 
@@ -350,26 +350,22 @@ func removeDirectoryWithinRootRespectingExcludes(ctx context.Context, rootPath s
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := ensurePathComponentsWithinRoot(rootPath, path, true); err != nil {
+		if err := ensurePathComponentsWithinRoot(rootPath, path, false); err != nil {
 			partial.Failures = append(partial.Failures, instancefs.DeleteFailure{Path: instancefs.RelativeDeleteFailurePath(rootPath, path), IsDir: entry.IsDir(), Reason: err})
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			partial.Failures = append(partial.Failures, instancefs.DeleteFailure{Path: instancefs.RelativeDeleteFailurePath(rootPath, path), IsDir: entry.IsDir(), Reason: errors.New(msg.PathOutsideInstanceRoot)})
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
 		isDir := entry.IsDir()
 		if path != targetPath && excludes.excludes(path, isDir) {
 			if isDir {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			entries = append(entries, deleteEntry{path: path, isDir: false})
 			return nil
 		}
 
@@ -656,11 +652,13 @@ func HandleApiFileBatch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			fail(rule.Path, msg.PathOutsideInstanceRoot, rule.IsDir)
-			continue
+			if action != "delete" {
+				fail(rule.Path, msg.PathOutsideInstanceRoot, rule.IsDir)
+				continue
+			}
 		}
 
-		isDir := info.IsDir()
+		isDir := info.Mode()&os.ModeSymlink == 0 && info.IsDir()
 		dstAbs := destAbs
 		if action == "copy" || action == "move" {
 			dstAbs, err = resolveFileBatchActionDestination(rootPath, destAbs, srcAbs, isDir, action, req.CopyDuplicate)

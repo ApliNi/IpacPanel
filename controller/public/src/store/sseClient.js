@@ -210,14 +210,14 @@ export const stop = () => {
 	}
 };
 
-export const reconnect = (delay = 0) => {
+export const reconnect = (delay = null) => {
 	if (refCount <= 0) return;
 	if (reconnectTimer) {
 		clearTimeout(reconnectTimer);
 		reconnectTimer = null;
 	}
 	stopSource();
-	if (delay <= 0) {
+	if (delay !== null && delay <= 0) {
 		connect();
 	} else {
 		scheduleReconnect(delay);

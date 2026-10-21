@@ -2,7 +2,6 @@ package main
 
 import (
 	"IpacPanel/daemon/version"
-	"bytes"
 	"flag"
 	"fmt"
 	"log"
@@ -13,8 +12,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
-
-	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -31,30 +28,8 @@ func isDaemonStopping() bool {
 func markDaemonStopping() {
 	daemonStopping.Store(true)
 }
-type versionInfo struct {
-	Role           string `yaml:"role"`
-	Version        string `yaml:"version"`
-	DaemonProtocol int    `yaml:"daemon_protocol"`
-}
-
 func PrintVersion() {
-	info := versionInfo{
-		Role:           "daemon",
-		Version:        version.Version,
-		DaemonProtocol: version.DaemonProtocol,
-	}
-	var out bytes.Buffer
-	enc := yaml.NewEncoder(&out)
-	enc.SetIndent(2)
-	if err := enc.Encode(map[string]versionInfo{"version": info}); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to marshal version: %v\n", err)
-		os.Exit(1)
-	}
-	if err := enc.Close(); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to close version encoder: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Print(out.String())
+	fmt.Printf("version:\n  role: daemon\n  version: %s\n  daemon_protocol: %d\n", version.Version, version.DaemonProtocol)
 }
 
 func detectAppBaseDir() string {

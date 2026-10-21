@@ -82,6 +82,7 @@ let instanceGroupModal = null;
 let panelSettingsModal = null;
 let logModal = null;
 let onPatchCurrentInstance = null;
+let onInstanceRemoved = null;
 
 // Cache instance lookups for click handler: avoids O(n) find() per click.
 const instanceIndex = {
@@ -118,7 +119,7 @@ const parseAccessLinksEntries = (accessLinks) => {
 		}
 		const protocolEntry = parseProtocolAccessLinkLine(line);
 		if (protocolEntry) {
-			const dedupeKey = protocolEntry[0].toLowerCase();
+			const dedupeKey = protocolEntry[1].toLowerCase();
 			if (seen.has(dedupeKey)) {
 				continue;
 			}
@@ -793,7 +794,11 @@ const ensureInstanceStatusSubscription = (onOpenInstance) => {
 		}
 		if (state.currentInstanceName) {
 			const current = snapshot.instances.find((svc) => String(svc?.name || '') === String(state.currentInstanceName));
-			if (current) onPatchCurrentInstance?.(current);
+			if (current) {
+				onPatchCurrentInstance?.(current);
+			} else {
+				onInstanceRemoved?.(state.currentInstanceName);
+			}
 		}
 	});
 };
@@ -827,6 +832,7 @@ const hidePage = () => {
 export const bootInstanceListPage = (options = {}) => {
     const { onCreateInstance, onOpenInstance } = options;
 	onPatchCurrentInstance = typeof options.onPatchCurrentInstance === 'function' ? options.onPatchCurrentInstance : null;
+	onInstanceRemoved = typeof options.onInstanceRemoved === 'function' ? options.onInstanceRemoved : null;
 	panelSettingsModal = bootPanelSettingsModal();
 	logModal = bootLogModal({
 		onOpenInstance: (ins) => onOpenInstance?.(ins),

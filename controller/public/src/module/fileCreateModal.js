@@ -2258,8 +2258,9 @@ const handleFileCreateSubmit = async (event) => {
 	}
 
 	await withActionsDisabled(dom.fileCreateActions, async () => {
-		if (!name) {
-			await showAlert('名称不能为空', { title: 'INPUT' });
+		const validationError = InputValidation.file.validateFileName(name);
+		if (validationError) {
+			await showAlert(validationError, { title: 'INPUT' });
 			if (type === 'dir') {
 				dom.fileCreateDirName.focus();
 			} else {

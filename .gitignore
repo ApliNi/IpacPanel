@@ -2,8 +2,9 @@
 .pi-temp/
 *.log
 test/
-_test/
-*_test.go
+dev/null
+
+data/
 
 # Go build outputs
 build/

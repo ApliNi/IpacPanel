@@ -9,6 +9,23 @@ type TerminalHistory struct {
 	endSeq  uint64
 }
 
+// ShrinkToFit 压缩缓冲区, 释放未使用的多余容量并消除已废弃的前缀数据.
+func (h *TerminalHistory) ShrinkToFit() {
+	activeLen := len(h.buf) - h.start
+	if activeLen <= 0 {
+		h.buf = nil
+		h.start = 0
+		return
+	}
+	if h.start == 0 && cap(h.buf) == activeLen {
+		return
+	}
+	newBuf := make([]byte, activeLen)
+	copy(newBuf, h.buf[h.start:])
+	h.buf = newBuf
+	h.start = 0
+}
+
 func (h *TerminalHistory) Append(data []byte, limit int) {
 	originalLen := len(data)
 	if originalLen == 0 || limit <= 0 {
@@ -22,7 +39,7 @@ func (h *TerminalHistory) Append(data []byte, limit int) {
 		h.endSeq += uint64(originalLen)
 		h.start = 0
 		data = data[drop:]
-		if cap(h.buf) < capLimit {
+		if cap(h.buf) != capLimit {
 			h.buf = make([]byte, 0, capLimit)
 		} else {
 			h.buf = h.buf[:0]
@@ -32,7 +49,7 @@ func (h *TerminalHistory) Append(data []byte, limit int) {
 	}
 
 	h.endSeq += uint64(originalLen)
-	if cap(h.buf) < capLimit {
+	if cap(h.buf) != capLimit {
 		activeLen := len(h.buf) - h.start
 		newBuf := make([]byte, activeLen, capLimit)
 		copy(newBuf, h.buf[h.start:])
@@ -61,7 +78,7 @@ func (h *TerminalHistory) Reset(data []byte, limit int) {
 	h.baseSeq = h.endSeq
 	h.endSeq += uint64(originalLen)
 	if originalLen == 0 || limit <= 0 {
-		h.buf = h.buf[:0]
+		h.buf = nil
 		return
 	}
 
@@ -72,7 +89,7 @@ func (h *TerminalHistory) Reset(data []byte, limit int) {
 	}
 
 	capLimit := 2 * limit
-	if cap(h.buf) < capLimit {
+	if cap(h.buf) != capLimit {
 		h.buf = make([]byte, 0, capLimit)
 	} else {
 		h.buf = h.buf[:0]

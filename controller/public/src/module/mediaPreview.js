@@ -163,8 +163,8 @@ if (previewBox && img) {
 			if(moveX === event.clientX && moveY === event.clientY){
 				closePreview();
 			}
-			previewBox.removeEventListener('mouseup', onMouseUp);
-			previewBox.removeEventListener('mousemove', onMouseMove);
+			window.removeEventListener('mouseup', onMouseUp);
+			window.removeEventListener('mousemove', onMouseMove);
 		};
 
 		const onMouseMove = (event) => {
@@ -172,8 +172,8 @@ if (previewBox && img) {
 			moveY = event.clientY;
 		};
 
-		previewBox.addEventListener('mouseup', onMouseUp);
-		previewBox.addEventListener('mousemove', onMouseMove);
+		window.addEventListener('mouseup', onMouseUp);
+		window.addEventListener('mousemove', onMouseMove);
 	});
 }
 
@@ -220,6 +220,7 @@ if (previewBox) {
 if (previewBox && img) {
 	img.addEventListener('mousedown', (event) => {
 		if (!previewBox || !img || currentPreviewType !== 'img') return;
+		if (event.button !== 0) return;
 		const startMouseX = event.clientX;
 		const startMouseY = event.clientY;
 		const startX = img.offsetLeft;
@@ -236,13 +237,13 @@ if (previewBox && img) {
 		};
 
 		const onMouseUp = () => {
-			previewBox.removeEventListener('mousemove', onMouseMove);
-			previewBox.removeEventListener('mouseup', onMouseUp);
+			window.removeEventListener('mousemove', onMouseMove);
+			window.removeEventListener('mouseup', onMouseUp);
 
 			runAway();
 		};
 
-		previewBox.addEventListener('mousemove', onMouseMove);
-		previewBox.addEventListener('mouseup', onMouseUp);
+		window.addEventListener('mousemove', onMouseMove);
+		window.addEventListener('mouseup', onMouseUp);
 	});
 }

@@ -480,10 +480,6 @@ func (sp *InstanceProcess) attachClientsLocked(clients []*WSClient) {
 	}
 }
 
-func (sp *InstanceProcess) AttachClientsLocked(clients []*WSClient) {
-	sp.attachClientsLocked(clients)
-}
-
 func (sp *InstanceProcess) closeDetachedClients(clients []*WSClient) {
 	for _, client := range clients {
 		if client != nil {
@@ -492,18 +488,35 @@ func (sp *InstanceProcess) closeDetachedClients(clients []*WSClient) {
 	}
 }
 
-func (sp *InstanceProcess) CloseDetachedClients(clients []*WSClient) {
-	sp.closeDetachedClients(clients)
-}
-
 func (sp *InstanceProcess) DetachAndCloseAllClients() {
 	if sp == nil {
 		return
 	}
 	sp.Mu.Lock()
 	clients := sp.detachClientsLocked()
+	if sp.State == processStateStopped {
+		sp.shrinkTerminalHistoryLocked()
+	}
 	sp.Mu.Unlock()
 	sp.closeDetachedClients(clients)
+}
+func (sp *InstanceProcess) DisconnectClientsByUser(user string) {
+	if sp == nil || strings.TrimSpace(user) == "" {
+		return
+	}
+	sp.outputMu.Lock()
+	toClose := make([]*WSClient, 0)
+	for client := range sp.Clients {
+		if client == nil || client.User != user {
+			continue
+		}
+		delete(sp.Clients, client)
+		toClose = append(toClose, client)
+	}
+	sp.outputMu.Unlock()
+	for _, client := range toClose {
+		_ = client.Close()
+	}
 }
 
 func (sp *InstanceProcess) disconnectAllClients() {
@@ -519,10 +532,6 @@ func (sp *InstanceProcess) appendAndBroadcastLocked(messageType int, data []byte
 		return
 	}
 	sp.writeClientsLocked(messageType, data)
-}
-
-func (sp *InstanceProcess) AppendAndBroadcastLocked(messageType int, data []byte, limit int) {
-	sp.appendAndBroadcastLocked(messageType, data, limit)
 }
 
 func (sp *InstanceProcess) AppendAndBroadcastNormalSystemMessageLocked(text string, limit int) {
@@ -602,4 +611,23 @@ func (sp *InstanceProcess) resetHistoryLocked(data []byte, limit int) {
 		limit = len(data)
 	}
 	sp.History.Reset(data, limit)
+}
+
+// ShrinkTerminalHistoryLocked 压缩终端历史缓冲区 (调用者须持有 sp.Mu 或确保并发安全).
+func (sp *InstanceProcess) ShrinkTerminalHistoryLocked() {
+	if sp == nil {
+		return
+	}
+	sp.outputMu.Lock()
+	sp.History.ShrinkToFit()
+	sp.outputMu.Unlock()
+}
+
+func (sp *InstanceProcess) shrinkTerminalHistoryLocked() {
+	sp.ShrinkTerminalHistoryLocked()
+}
+
+// ShrinkTerminalHistory 压缩终端历史缓冲区.
+func (sp *InstanceProcess) ShrinkTerminalHistory() {
+	sp.ShrinkTerminalHistoryLocked()
 }

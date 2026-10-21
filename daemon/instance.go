@@ -22,28 +22,28 @@ const (
 	daemonOutputEncodingInvalid = "Invalid output encoding"
 )
 
-const daemonOutputReadBufferSize = 64 * 1024
+const daemonOutputReadBufferSize = 8 * 1024
 
 const daemonOutputDoneWaitTimeout = 2 * time.Second
 
+type daemonOutputBuffer = [daemonOutputReadBufferSize]byte
+
 var daemonOutputBufferPool = sync.Pool{
 	New: func() any {
-		buf := make([]byte, daemonOutputReadBufferSize)
-		return &buf
+		return new(daemonOutputBuffer)
 	},
 }
 
-func getDaemonOutputBuffer() []byte {
-	buf := *(daemonOutputBufferPool.Get().(*[]byte))
-	return buf[:cap(buf)]
+func getDaemonOutputBuffer() (*daemonOutputBuffer, []byte) {
+	buf := daemonOutputBufferPool.Get().(*daemonOutputBuffer)
+	return buf, buf[:]
 }
 
-func putDaemonOutputBuffer(buf []byte) {
-	if cap(buf) != daemonOutputReadBufferSize {
+func putDaemonOutputBuffer(buf *daemonOutputBuffer) {
+	if buf == nil {
 		return
 	}
-	buf = buf[:cap(buf)]
-	daemonOutputBufferPool.Put(&buf)
+	daemonOutputBufferPool.Put(buf)
 }
 
 type instanceState uint8
@@ -522,7 +522,7 @@ func (ins *DaemonInstance) readOutput(proxy *terminal.Proxy, proxySeq uint64, ru
 		defer close(done)
 	}
 	for {
-		buf := getDaemonOutputBuffer()
+		bufObj, buf := getDaemonOutputBuffer()
 		n, err := proxy.Read(buf)
 		if n > 0 {
 			data := buf[:n]
@@ -534,26 +534,25 @@ func (ins *DaemonInstance) readOutput(proxy *terminal.Proxy, proxySeq uint64, ru
 			ins.Mu.Unlock()
 
 			if currentProxy != nil && currentProxy != proxy {
-				putDaemonOutputBuffer(data)
+				putDaemonOutputBuffer(bufObj)
 				return
 			}
 			if currentSeq != proxySeq {
-				putDaemonOutputBuffer(data)
+				putDaemonOutputBuffer(bufObj)
 				return
 			}
 			if outputCh != nil {
-				releaseData := data
 				select {
-				case outputCh <- IPCResponse{Type: "o", Instance: runtimeID, Body: data, ReleaseFunc: func() { putDaemonOutputBuffer(releaseData) }}:
+				case outputCh <- IPCResponse{Type: "o", Instance: runtimeID, Body: data, ReleaseBuf: bufObj, ReleasePool: &daemonOutputBufferPool}:
 				default:
-					putDaemonOutputBuffer(data)
+					putDaemonOutputBuffer(bufObj)
 					log.Printf("instance %s output dropped (channel full, %d bytes)", runtimeID, len(data))
 				}
 			} else {
-				putDaemonOutputBuffer(data)
+				putDaemonOutputBuffer(bufObj)
 			}
 		} else {
-			putDaemonOutputBuffer(buf)
+			putDaemonOutputBuffer(bufObj)
 		}
 		if err != nil {
 			if !isBenignReadError(err) {
@@ -753,8 +752,8 @@ func (ins *DaemonInstance) runCleanupCommand(path string, argv []string, outputC
 func (ins *DaemonInstance) copyCleanupOutput(wg *sync.WaitGroup, outputCh chan<- IPCResponse, runtimeID string, src io.ReadCloser) {
 	defer wg.Done()
 	defer src.Close()
-	buf := getDaemonOutputBuffer()
-	defer putDaemonOutputBuffer(buf)
+	bufObj, buf := getDaemonOutputBuffer()
+	defer putDaemonOutputBuffer(bufObj)
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {

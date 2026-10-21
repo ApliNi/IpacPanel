@@ -169,48 +169,34 @@ func startUnixPipe(cmd *exec.Cmd) (*Proxy, error) {
 		_ = processTree.Close()
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	pr, pw, err := os.Pipe()
 	if err != nil {
 		_ = stdin.Close()
 		_ = processTree.Close()
 		return nil, err
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		_ = processTree.Close()
-		return nil, err
-	}
+	cmd.Stdout = pw
+	cmd.Stderr = pw
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
-		_ = stdout.Close()
-		_ = stderr.Close()
+		_ = pr.Close()
+		_ = pw.Close()
 		_ = processTree.Close()
 		return nil, err
 	}
+	_ = pw.Close()
 	if err := processTree.AttachCommand(cmd); err != nil {
 		if errors.Is(err, ErrProcessAlreadyExited) {
 			_ = processTree.Close()
-			reader, writer := io.Pipe()
-			var wg sync.WaitGroup
-			wg.Add(2)
-			go copyPipeOutput(&wg, writer, stdout)
-			go copyPipeOutput(&wg, writer, stderr)
-			go func() {
-				wg.Wait()
-				_ = writer.Close()
-			}()
 			return &Proxy{
-				readCloser:  reader,
+				readCloser:  pr,
 				writeCloser: stdin,
 				cmd:         cmd,
 				processTree: nil,
 			}, nil
 		}
 		_ = stdin.Close()
-		_ = stdout.Close()
-		_ = stderr.Close()
+		_ = pr.Close()
 		if killErr := cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) && !errors.Is(killErr, syscall.ESRCH) {
 			_ = processTree.Close()
 			return nil, errors.Join(err, killErr)
@@ -219,27 +205,12 @@ func startUnixPipe(cmd *exec.Cmd) (*Proxy, error) {
 		_ = processTree.Close()
 		return nil, err
 	}
-	reader, writer := io.Pipe()
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go copyPipeOutput(&wg, writer, stdout)
-	go copyPipeOutput(&wg, writer, stderr)
-	go func() {
-		wg.Wait()
-		_ = writer.Close()
-	}()
 	return &Proxy{
-		readCloser:  reader,
+		readCloser:  pr,
 		writeCloser: stdin,
 		cmd:         cmd,
 		processTree: processTree,
 	}, nil
-}
-
-func copyPipeOutput(wg *sync.WaitGroup, dst *io.PipeWriter, src io.ReadCloser) {
-	defer wg.Done()
-	_, _ = io.Copy(dst, src)
-	_ = src.Close()
 }
 
 func (p *Proxy) Read(b []byte) (int, error) {

@@ -8,7 +8,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -27,45 +26,6 @@ const (
 	sqliteCompactBatchDuration   = 2 * time.Hour
 	dashboardSQLiteDBName        = "dashboard.sqlite3"
 )
-
-type sqliteDeviceKey struct {
-	kind int64
-	name string
-}
-
-type sqliteDeviceAggregate struct {
-	count    int64
-	readSum  uint64
-	writeSum uint64
-	readMax  uint64
-	writeMax uint64
-}
-
-type sqliteBucketAggregate struct {
-	bucketTS         int64
-	count            int64
-	cpuSum           float64
-	cpuMax           float64
-	memoryUsedSum    uint64
-	memoryUsedMax    uint64
-	memoryTotalBytes uint64
-	swapUsedSum      uint64
-	swapUsedMax      uint64
-	swapTotalBytes   uint64
-	networkRxSum     uint64
-	networkTxSum     uint64
-	networkRxMax     uint64
-	networkTxMax     uint64
-	diskReadSum      uint64
-	diskWriteSum     uint64
-	diskReadMax      uint64
-	diskWriteMax     uint64
-	tcpConnectionSum uint64
-	udpConnectionSum uint64
-	tcpConnectionMax uint64
-	udpConnectionMax uint64
-	devices          map[sqliteDeviceKey]*sqliteDeviceAggregate
-}
 
 func (c *Collector) takeSQLitePendingLocked() []Sample {
 	if len(c.sqlitePending) == 0 {
@@ -242,13 +202,14 @@ func (c *Collector) currentDBForPath(path string, generation uint64) *sql.DB {
 }
 
 func openSQLite(path string) (*sql.DB, error) {
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)", filepath.ToSlash(path), sqliteBusyTimeoutMS)
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=cache_size(-512)", filepath.ToSlash(path), sqliteBusyTimeoutMS)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf(msg.DashboardSQLiteOpenFailedFmt, err)
 	}
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(4)
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxIdleTime(2 * time.Minute)
 	ctx, cancel := context.WithTimeout(context.Background(), sqliteConnectTimeout)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
@@ -265,6 +226,7 @@ func openSQLite(path string) (*sql.DB, error) {
 func initSQLiteSchema(ctx context.Context, db *sql.DB) error {
 	statements := []string{
 		`PRAGMA auto_vacuum = INCREMENTAL`,
+		`PRAGMA cache_size = -512`,
 		`CREATE TABLE IF NOT EXISTS dashboard_devices (
 	id INTEGER PRIMARY KEY,
 	kind INTEGER NOT NULL,
@@ -558,21 +520,21 @@ ON CONFLICT(device_id, ts, seq) DO UPDATE SET
 		if _, err := sampleStmt.ExecContext(ctx, ts, sample.Seq, normalizedFloat(sample.CPUPercent), sample.MemoryUsedBytes, sample.MemoryTotalBytes, sample.SwapUsedBytes, sample.SwapTotalBytes, sample.NetworkRxBPS, sample.NetworkTxBPS, sample.DiskReadBPS, sample.DiskWriteBPS, sample.TCPConnectionCount, sample.UDPConnectionCount); err != nil {
 			return fmt.Errorf(msg.DashboardSQLiteWriteSampleFailedFmt, err)
 		}
-		for name, counter := range sample.interfaceCounters {
+		for _, dev := range sample.interfaces {
 			var deviceID int64
-			if err := deviceStmt.QueryRowContext(ctx, dashboardDeviceKindNIC, name, ts, ts).Scan(&deviceID); err != nil {
+			if err := deviceStmt.QueryRowContext(ctx, dashboardDeviceKindNIC, dev.name, ts, ts).Scan(&deviceID); err != nil {
 				return fmt.Errorf(msg.DashboardSQLiteWriteDeviceFailedFmt, err)
 			}
-			if _, err := deviceMetricStmt.ExecContext(ctx, ts, sample.Seq, deviceID, counter.rxBytes, counter.txBytes); err != nil {
+			if _, err := deviceMetricStmt.ExecContext(ctx, ts, sample.Seq, deviceID, dev.read, dev.write); err != nil {
 				return fmt.Errorf(msg.DashboardSQLiteWriteDeviceSampleFailedFmt, err)
 			}
 		}
-		for name, counter := range sample.diskCounters {
+		for _, dev := range sample.disks {
 			var deviceID int64
-			if err := deviceStmt.QueryRowContext(ctx, dashboardDeviceKindDisk, name, ts, ts).Scan(&deviceID); err != nil {
+			if err := deviceStmt.QueryRowContext(ctx, dashboardDeviceKindDisk, dev.name, ts, ts).Scan(&deviceID); err != nil {
 				return fmt.Errorf(msg.DashboardSQLiteWriteDeviceFailedFmt, err)
 			}
-			if _, err := deviceMetricStmt.ExecContext(ctx, ts, sample.Seq, deviceID, counter.readBytes, counter.writeBytes); err != nil {
+			if _, err := deviceMetricStmt.ExecContext(ctx, ts, sample.Seq, deviceID, dev.read, dev.write); err != nil {
 				return fmt.Errorf(msg.DashboardSQLiteWriteDeviceSampleFailedFmt, err)
 			}
 		}
@@ -582,107 +544,6 @@ ON CONFLICT(device_id, ts, seq) DO UPDATE SET
 	}
 	committed = true
 	return nil
-}
-
-func aggregateSQLiteSamples(samples []Sample) []sqliteBucketAggregate {
-	buckets := make(map[int64]*sqliteBucketAggregate)
-	for i := range samples {
-		sample := samples[i]
-		bucketTS := sqliteBucketStart(sample.Time)
-		aggregate, ok := buckets[bucketTS]
-		if !ok {
-			aggregate = &sqliteBucketAggregate{bucketTS: bucketTS, devices: make(map[sqliteDeviceKey]*sqliteDeviceAggregate)}
-			buckets[bucketTS] = aggregate
-		}
-		aggregate.addSample(sample)
-	}
-	keys := make([]int64, 0, len(buckets))
-	for bucketTS := range buckets {
-		keys = append(keys, bucketTS)
-	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-	result := make([]sqliteBucketAggregate, 0, len(keys))
-	for _, bucketTS := range keys {
-		result = append(result, *buckets[bucketTS])
-	}
-	return result
-}
-
-func (a *sqliteBucketAggregate) addSample(sample Sample) {
-	a.count += 1
-	cpuPercent := normalizedFloat(sample.CPUPercent)
-	a.cpuSum += cpuPercent
-	a.cpuMax = maxFloat64(a.cpuMax, cpuPercent)
-	a.memoryUsedSum += sample.MemoryUsedBytes
-	a.memoryUsedMax = maxUint64(a.memoryUsedMax, sample.MemoryUsedBytes)
-	a.memoryTotalBytes = sample.MemoryTotalBytes
-	a.swapUsedSum += sample.SwapUsedBytes
-	a.swapUsedMax = maxUint64(a.swapUsedMax, sample.SwapUsedBytes)
-	a.swapTotalBytes = sample.SwapTotalBytes
-	a.networkRxSum += sample.NetworkRxBPS
-	a.networkTxSum += sample.NetworkTxBPS
-	a.networkRxMax = maxUint64(a.networkRxMax, sample.NetworkRxBPS)
-	a.networkTxMax = maxUint64(a.networkTxMax, sample.NetworkTxBPS)
-	a.diskReadSum += sample.DiskReadBPS
-	a.diskWriteSum += sample.DiskWriteBPS
-	a.diskReadMax = maxUint64(a.diskReadMax, sample.DiskReadBPS)
-	a.diskWriteMax = maxUint64(a.diskWriteMax, sample.DiskWriteBPS)
-	a.tcpConnectionSum += sample.TCPConnectionCount
-	a.udpConnectionSum += sample.UDPConnectionCount
-	a.tcpConnectionMax = maxUint64(a.tcpConnectionMax, sample.TCPConnectionCount)
-	a.udpConnectionMax = maxUint64(a.udpConnectionMax, sample.UDPConnectionCount)
-	for name, counter := range sample.interfaceCounters {
-		a.addDeviceSample(sqliteDeviceKey{kind: dashboardDeviceKindNIC, name: name}, counter.rxBytes, counter.txBytes)
-	}
-	for name, counter := range sample.diskCounters {
-		a.addDeviceSample(sqliteDeviceKey{kind: dashboardDeviceKindDisk, name: name}, counter.readBytes, counter.writeBytes)
-	}
-}
-
-func (a *sqliteBucketAggregate) addDeviceSample(key sqliteDeviceKey, read uint64, write uint64) {
-	deviceAggregate := a.devices[key]
-	if deviceAggregate == nil {
-		deviceAggregate = &sqliteDeviceAggregate{}
-		a.devices[key] = deviceAggregate
-	}
-	deviceAggregate.count += 1
-	deviceAggregate.readSum += read
-	deviceAggregate.writeSum += write
-	deviceAggregate.readMax = maxUint64(deviceAggregate.readMax, read)
-	deviceAggregate.writeMax = maxUint64(deviceAggregate.writeMax, write)
-}
-
-func (a sqliteBucketAggregate) cpuAvg() float64 {
-	if a.count <= 0 {
-		return 0
-	}
-	return a.cpuSum / float64(a.count)
-}
-
-func (a sqliteBucketAggregate) uintAvg(sum uint64) uint64 {
-	if a.count <= 0 {
-		return 0
-	}
-	return sum / uint64(a.count)
-}
-
-func (a sqliteDeviceAggregate) readAvg() uint64 {
-	if a.count <= 0 {
-		return 0
-	}
-	return a.readSum / uint64(a.count)
-}
-
-func (a sqliteDeviceAggregate) writeAvg() uint64 {
-	if a.count <= 0 {
-		return 0
-	}
-	return a.writeSum / uint64(a.count)
-}
-
-func sqliteBucketStart(sampleTime time.Time) int64 {
-	unix := sampleTime.Unix()
-	return sqlite1mBucketStart(unix)
 }
 
 func sqlite1mBucketStart(unix int64) int64 {
@@ -848,6 +709,15 @@ LIMIT ?`, fromUnix, toUnix, from1mBucket, to1mBucket, fromUnix, fromUnix, bucket
 }
 
 func (c *Collector) querySQLiteHardware(path string, generation uint64) ([]string, []string) {
+	c.hwCacheMu.Lock()
+	if c.hwCachedPath == path && c.hwCachedGeneration == generation && time.Since(c.hwCachedTime) < 15*time.Second {
+		ifaces := append([]string(nil), c.hwCachedInterfaces...)
+		disks := append([]string(nil), c.hwCachedDisks...)
+		c.hwCacheMu.Unlock()
+		return ifaces, disks
+	}
+	c.hwCacheMu.Unlock()
+
 	db := c.currentDBForPath(path, generation)
 	if db == nil {
 		return nil, nil
@@ -876,6 +746,15 @@ func (c *Collector) querySQLiteHardware(path string, generation uint64) ([]strin
 	if err := rows.Err(); err != nil {
 		log.Printf(msg.DashboardSQLiteScanHardwareFailedWarningLogFmt, err)
 	}
+
+	c.hwCacheMu.Lock()
+	c.hwCachedInterfaces = append([]string(nil), interfaces...)
+	c.hwCachedDisks = append([]string(nil), disks...)
+	c.hwCachedPath = path
+	c.hwCachedGeneration = generation
+	c.hwCachedTime = time.Now()
+	c.hwCacheMu.Unlock()
+
 	return interfaces, disks
 }
 
@@ -958,9 +837,31 @@ ORDER BY bucket_ts ASC`, deviceKind, name, fromUnix, toUnix, deviceKind, name, f
 			continue
 		}
 		if kind == dashboardDeviceNIC {
-			samples[index].interfaceCounters = map[string]networkCounter{name: {rxBytes: read, txBytes: write}}
+			var updated bool
+			for i := range samples[index].interfaces {
+				if samples[index].interfaces[i].name == name {
+					samples[index].interfaces[i].read = read
+					samples[index].interfaces[i].write = write
+					updated = true
+					break
+				}
+			}
+			if !updated {
+				samples[index].interfaces = append(samples[index].interfaces, deviceRate{name: name, read: read, write: write})
+			}
 		} else {
-			samples[index].diskCounters = map[string]diskCounter{name: {readBytes: read, writeBytes: write}}
+			var updated bool
+			for i := range samples[index].disks {
+				if samples[index].disks[i].name == name {
+					samples[index].disks[i].read = read
+					samples[index].disks[i].write = write
+					updated = true
+					break
+				}
+			}
+			if !updated {
+				samples[index].disks = append(samples[index].disks, deviceRate{name: name, read: read, write: write})
+			}
 		}
 	}
 }
@@ -1190,6 +1091,10 @@ ON CONFLICT(device_id, bucket_ts) DO UPDATE SET
 }
 
 func (c *Collector) cleanupCurrentSQLite() {
+	if !c.sqliteCleaning.CompareAndSwap(false, true) {
+		return
+	}
+	defer c.sqliteCleaning.Store(false)
 	c.mu.Lock()
 	storageMode := c.storageMode
 	path := c.sqlitePath

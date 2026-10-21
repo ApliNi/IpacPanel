@@ -689,6 +689,13 @@ export const main = async () => {
 		onCreateInstance: (options = {}) => terminalPage.openCreateInstanceModal(options),
 		onOpenInstance: (ins) => void openInstanceTerminal(ins),
 		onPatchCurrentInstance: (patch) => terminalPage.patchCurrentTerminalInstance?.(patch),
+		onInstanceRemoved: (instanceName) => {
+			if (state.currentInstanceName === instanceName) {
+				terminalPage?.closeTerminalPage?.();
+				setHomeRoute();
+				switchPage(pageNames.instanceList);
+			}
+		},
 	    });
 	dashboardPage = dashboardModule.bootDashboardPage();
 

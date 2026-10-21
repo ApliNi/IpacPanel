@@ -79,7 +79,7 @@ const applyPatch = (payload) => {
 	const version = Number.isFinite(payload?.version) ? Number(payload.version) : 0;
 	const items = Array.isArray(payload?.items) ? payload.items : [];
 	if (version <= 0 || (storeState.version > 0 && version !== storeState.version + 1)) {
-		sseClient.reconnect(0);
+		sseClient.reconnect();
 		return;
 	}
 	const patchMap = new Map();
@@ -106,7 +106,7 @@ const applyPatch = (payload) => {
 	}
 	storeState.version = version;
 	if (requiresFull) {
-		sseClient.reconnect(0);
+		sseClient.reconnect();
 		return;
 	}
 	emit(changedNames);

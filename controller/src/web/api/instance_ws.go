@@ -46,21 +46,8 @@ func disconnectUserWS(username string) {
 		return
 	}
 	for _, sp := range process.List() {
-		if sp == nil {
-			continue
-		}
-		toClose := make([]*process.WSClient, 0)
-		sp.Mu.Lock()
-		for client := range sp.Clients {
-			if client == nil || client.User != user {
-				continue
-			}
-			delete(sp.Clients, client)
-			toClose = append(toClose, client)
-		}
-		sp.Mu.Unlock()
-		for _, client := range toClose {
-			_ = client.Close()
+		if sp != nil {
+			sp.DisconnectClientsByUser(user)
 		}
 	}
 }
@@ -117,9 +104,6 @@ func HandleApiInstanceWs(w http.ResponseWriter, r *http.Request) {
 	client.EnableTerminalHistory()
 
 	defer func() {
-		sp.Mu.Lock()
-		delete(sp.Clients, client)
-		sp.Mu.Unlock()
 		_ = client.Close()
 	}()
 

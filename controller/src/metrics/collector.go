@@ -39,6 +39,12 @@ type Config struct {
 	DeviceFilter          []string
 }
 
+type deviceRate struct {
+	name  string
+	read  uint64
+	write uint64
+}
+
 type Sample struct {
 	Seq                int64     `json:"seq"`
 	Time               time.Time `json:"time"`
@@ -53,8 +59,8 @@ type Sample struct {
 	UDPConnectionCount uint64    `json:"udp_connection_count"`
 	DiskReadBPS        uint64    `json:"disk_read_bps"`
 	DiskWriteBPS       uint64    `json:"disk_write_bps"`
-	interfaceCounters  map[string]networkCounter
-	diskCounters       map[string]diskCounter
+	interfaces         []deviceRate
+	disks              []deviceRate
 }
 
 type PublicSample struct {
@@ -191,6 +197,7 @@ type Collector struct {
 	sqliteMu              sync.Mutex
 	tcpCount              atomic.Uint64
 	udpCount              atomic.Uint64
+	sqliteCleaning        atomic.Bool
 	enabled               bool
 	retentionMinutes      int
 	storageMode           string
@@ -212,6 +219,12 @@ type Collector struct {
 	lastDiskTime          time.Time
 	db                    *sql.DB
 	dbPath                string
+	hwCacheMu             sync.Mutex
+	hwCachedInterfaces    []string
+	hwCachedDisks         []string
+	hwCachedTime          time.Time
+	hwCachedPath          string
+	hwCachedGeneration    uint64
 }
 
 func NewCollector(config Config) *Collector {
@@ -446,7 +459,7 @@ func (c *Collector) run(stopCh <-chan struct{}, doneCh chan<- struct{}) {
 			c.flushSQLitePending()
 		case <-cleanupTicker.C:
 			c.flushSQLitePending()
-			c.cleanupCurrentSQLite()
+			go c.cleanupCurrentSQLite()
 		}
 	}
 }
@@ -483,13 +496,21 @@ func (c *Collector) collect() {
 	}
 	interfaces, networkCounters = c.deviceFilter.filterInterfaces(interfaces, networkCounters)
 	disks, diskCounters = c.deviceFilter.filterDisks(disks, diskCounters)
-	networkRxBPS, networkTxBPS, interfaceCounters := c.calculateNetworkBandwidthLocked(now, networkCounters)
-	diskReadBPS, diskWriteBPS, selectedDiskCounters := c.calculateDiskBandwidthLocked(now, diskCounters)
-	c.interfaces = make(map[string]struct{}, len(interfaces))
+	networkRxBPS, networkTxBPS, interfaceRates := c.calculateNetworkBandwidthLocked(now, networkCounters)
+	diskReadBPS, diskWriteBPS, diskRates := c.calculateDiskBandwidthLocked(now, diskCounters)
+	if c.interfaces == nil {
+		c.interfaces = make(map[string]struct{}, len(interfaces))
+	} else {
+		clear(c.interfaces)
+	}
 	for name := range interfaces {
 		c.interfaces[name] = struct{}{}
 	}
-	c.disks = make(map[string]struct{}, len(disks))
+	if c.disks == nil {
+		c.disks = make(map[string]struct{}, len(disks))
+	} else {
+		clear(c.disks)
+	}
 	for name := range disks {
 		c.disks[name] = struct{}{}
 	}
@@ -501,7 +522,7 @@ func (c *Collector) collect() {
 		NetworkRxBPS: networkRxBPS, NetworkTxBPS: networkTxBPS,
 		TCPConnectionCount: tcpConnectionCount, UDPConnectionCount: udpConnectionCount,
 		DiskReadBPS: diskReadBPS, DiskWriteBPS: diskWriteBPS,
-		interfaceCounters: interfaceCounters, diskCounters: selectedDiskCounters,
+		interfaces: interfaceRates, disks: diskRates,
 	}
 	c.samples = append(c.samples, sample)
 	if c.storageMode == storageModeSQLite {
@@ -581,8 +602,8 @@ func mergeHistorySamples(history []Sample, memory []Sample) []Sample {
 	return result
 }
 
-func (c *Collector) calculateNetworkBandwidthLocked(now time.Time, counters map[string]networkCounter) (uint64, uint64, map[string]networkCounter) {
-	interfaceCounters := make(map[string]networkCounter, len(counters))
+func (c *Collector) calculateNetworkBandwidthLocked(now time.Time, counters map[string]networkCounter) (uint64, uint64, []deviceRate) {
+	interfaceRates := make([]deviceRate, 0, len(counters))
 	var totalRx, totalTx uint64
 	seconds := now.Sub(c.lastNetworkTime).Seconds()
 	for name, counter := range counters {
@@ -592,17 +613,17 @@ func (c *Collector) calculateNetworkBandwidthLocked(now time.Time, counters map[
 			rxBPS = bytesPerSecond(counter.rxBytes, previous.rxBytes, seconds)
 			txBPS = bytesPerSecond(counter.txBytes, previous.txBytes, seconds)
 		}
-		interfaceCounters[name] = networkCounter{rxBytes: rxBPS, txBytes: txBPS}
+		interfaceRates = append(interfaceRates, deviceRate{name: name, read: rxBPS, write: txBPS})
 		totalRx += rxBPS
 		totalTx += txBPS
 	}
 	c.lastNetwork = counters
 	c.lastNetworkTime = now
-	return totalRx, totalTx, interfaceCounters
+	return totalRx, totalTx, interfaceRates
 }
 
-func (c *Collector) calculateDiskBandwidthLocked(now time.Time, counters map[string]diskCounter) (uint64, uint64, map[string]diskCounter) {
-	selectedDiskCounters := make(map[string]diskCounter, len(counters))
+func (c *Collector) calculateDiskBandwidthLocked(now time.Time, counters map[string]diskCounter) (uint64, uint64, []deviceRate) {
+	diskRates := make([]deviceRate, 0, len(counters))
 	var totalRead, totalWrite uint64
 	seconds := now.Sub(c.lastDiskTime).Seconds()
 	for name, counter := range counters {
@@ -612,23 +633,30 @@ func (c *Collector) calculateDiskBandwidthLocked(now time.Time, counters map[str
 			readBPS = bytesPerSecond(counter.readBytes, previous.readBytes, seconds)
 			writeBPS = bytesPerSecond(counter.writeBytes, previous.writeBytes, seconds)
 		}
-		selectedDiskCounters[name] = diskCounter{readBytes: readBPS, writeBytes: writeBPS}
+		diskRates = append(diskRates, deviceRate{name: name, read: readBPS, write: writeBPS})
 		totalRead += readBPS
 		totalWrite += writeBPS
 	}
 	c.lastDisk = counters
 	c.lastDiskTime = now
-	return totalRead, totalWrite, selectedDiskCounters
+	return totalRead, totalWrite, diskRates
 }
 
 func (c *Collector) trimLocked(now time.Time) {
-	cutoff := now.Add(-dashboardMemoryRetention)
+	retention := dashboardMemoryRetention
+	if c.storageMode == storageModeMemory {
+		retention = time.Duration(c.retentionMinutes) * time.Minute
+	}
+	cutoff := now.Add(-retention)
 	keepFrom := 0
 	for keepFrom < len(c.samples) && c.samples[keepFrom].Time.Before(cutoff) {
 		keepFrom++
 	}
 	if keepFrom > 0 {
 		copy(c.samples, c.samples[keepFrom:])
+		for i := len(c.samples) - keepFrom; i < len(c.samples); i++ {
+			c.samples[i] = Sample{}
+		}
 		c.samples = c.samples[:len(c.samples)-keepFrom]
 	}
 }
@@ -636,23 +664,33 @@ func (c *Collector) trimLocked(now time.Time) {
 func (s Sample) public(nic string, diskName string) PublicSample {
 	public := PublicSample{Time: s.Time, CPUPercent: s.CPUPercent, MemoryUsedBytes: s.MemoryUsedBytes, MemoryTotalBytes: s.MemoryTotalBytes, SwapUsedBytes: s.SwapUsedBytes, SwapTotalBytes: s.SwapTotalBytes, NetworkRxBPS: s.NetworkRxBPS, NetworkTxBPS: s.NetworkTxBPS, TCPConnectionCount: s.TCPConnectionCount, UDPConnectionCount: s.UDPConnectionCount, DiskReadBPS: s.DiskReadBPS, DiskWriteBPS: s.DiskWriteBPS}
 	if nic != "" {
-		counter, ok := s.interfaceCounters[nic]
-		if !ok {
+		var found bool
+		for i := range s.interfaces {
+			if s.interfaces[i].name == nic {
+				public.NetworkRxBPS = s.interfaces[i].read
+				public.NetworkTxBPS = s.interfaces[i].write
+				found = true
+				break
+			}
+		}
+		if !found {
 			public.NetworkRxBPS = 0
 			public.NetworkTxBPS = 0
-		} else {
-			public.NetworkRxBPS = counter.rxBytes
-			public.NetworkTxBPS = counter.txBytes
 		}
 	}
 	if diskName != "" {
-		counter, ok := s.diskCounters[diskName]
-		if !ok {
+		var found bool
+		for i := range s.disks {
+			if s.disks[i].name == diskName {
+				public.DiskReadBPS = s.disks[i].read
+				public.DiskWriteBPS = s.disks[i].write
+				found = true
+				break
+			}
+		}
+		if !found {
 			public.DiskReadBPS = 0
 			public.DiskWriteBPS = 0
-		} else {
-			public.DiskReadBPS = counter.readBytes
-			public.DiskWriteBPS = counter.writeBytes
 		}
 	}
 	return public

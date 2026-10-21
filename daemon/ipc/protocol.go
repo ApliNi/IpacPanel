@@ -53,6 +53,14 @@ func (h Header) Encode() [HeaderSize]byte {
 	binary.BigEndian.PutUint32(buf[8:12], h.PayloadLen)
 	return buf
 }
+func (c *Conn) writeHeaderBuf(h Header) {
+	c.headerBuf[0] = h.Magic
+	c.headerBuf[1] = h.Type
+	binary.BigEndian.PutUint16(c.headerBuf[2:4], h.Flags)
+	binary.BigEndian.PutUint32(c.headerBuf[4:8], h.ID)
+	binary.BigEndian.PutUint32(c.headerBuf[8:12], h.PayloadLen)
+}
+
 
 func DecodeHeader(buf []byte) (Header, error) {
 	if len(buf) < HeaderSize {
@@ -119,15 +127,24 @@ type Response struct {
 	Runtime        []InstanceRuntimeState `json:"runtime,omitempty"`
 	State          *InstanceRuntimeState  `json:"state,omitempty"`
 	ReleaseFunc    func()                 `json:"-"`
+	ReleaseBuf     any                    `json:"-"`
+	ReleasePool    *sync.Pool             `json:"-"`
 }
 
 func (r *Response) Release() {
-	if r == nil || r.ReleaseFunc == nil {
+	if r == nil {
 		return
 	}
-	release := r.ReleaseFunc
-	r.ReleaseFunc = nil
-	release()
+	if r.ReleaseFunc != nil {
+		release := r.ReleaseFunc
+		r.ReleaseFunc = nil
+		release()
+	}
+	if r.ReleasePool != nil && r.ReleaseBuf != nil {
+		r.ReleasePool.Put(r.ReleaseBuf)
+		r.ReleaseBuf = nil
+		r.ReleasePool = nil
+	}
 }
 
 func NewResponse(typ string, instance string, data []byte, errMsg string) Response {
@@ -140,18 +157,24 @@ func NewResponse(typ string, instance string, data []byte, errMsg string) Respon
 }
 
 type Conn struct {
-	closer  io.Closer
-	reader  *bufio.Reader
-	writer  *bufio.Writer
-	writeMu sync.Mutex
-	debug   atomic.Bool
+	closer       io.Closer
+	reader       *bufio.Reader
+	writer       *bufio.Writer
+	writeMu      sync.Mutex
+	headerBuf    [HeaderSize]byte
+	nameBuf      [256]byte
+	stdinBuf     []byte
+	req          Request
+	instanceName string
+	debug        atomic.Bool
 }
 
 func NewConn(reader io.Reader, writer io.Writer, closer io.Closer) *Conn {
 	return &Conn{
-		closer: closer,
-		reader: bufio.NewReaderSize(reader, 65536),
-		writer: bufio.NewWriterSize(writer, 65536),
+		closer:   closer,
+		reader:   bufio.NewReaderSize(reader, 8*1024),
+		writer:   bufio.NewWriterSize(writer, 8*1024),
+		stdinBuf: make([]byte, 8*1024),
 	}
 }
 
@@ -221,7 +244,8 @@ func (c *Conn) ReadInstancePayload(payloadLen uint32, getBuf func(int) []byte, p
 	if uint32(1+nameLen) > payloadLen {
 		return "", nil, errors.New("invalid instance name length in payload")
 	}
-	nameBuf := make([]byte, nameLen)
+	var nameArr [256]byte
+	nameBuf := nameArr[:nameLen]
 	if _, err := io.ReadFull(c.reader, nameBuf); err != nil {
 		return "", nil, fmt.Errorf("read instance name: %w", err)
 	}
@@ -254,17 +278,40 @@ func (c *Conn) ReadRequest() (*Request, error) {
 	}
 	switch header.Type {
 	case FrameTypeInstanceIn:
-		instance, data, err := c.ReadInstancePayload(header.PayloadLen, nil, nil)
+		if header.PayloadLen == 0 {
+			return nil, errors.New("empty instance payload")
+		}
+		nameLenByte, err := c.reader.ReadByte()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("read instance name len: %w", err)
 		}
-		req := &Request{
+		nameLen := int(nameLenByte)
+		if uint32(1+nameLen) > header.PayloadLen {
+			return nil, errors.New("invalid instance name length in payload")
+		}
+		if _, err := io.ReadFull(c.reader, c.nameBuf[:nameLen]); err != nil {
+			return nil, fmt.Errorf("read instance name: %w", err)
+		}
+		c.instanceName = string(c.nameBuf[:nameLen])
+
+		dataLen := int(header.PayloadLen - 1 - uint32(nameLen))
+		if dataLen > cap(c.stdinBuf) {
+			c.stdinBuf = make([]byte, dataLen)
+		}
+		data := c.stdinBuf[:dataLen]
+		if dataLen > 0 {
+			if _, err := io.ReadFull(c.reader, data); err != nil {
+				return nil, fmt.Errorf("read instance data: %w", err)
+			}
+		}
+		c.req = Request{
 			Type:     RequestInputStdin,
-			Instance: instance,
-			BodyLen:  len(data),
+			Instance: c.instanceName,
+			BodyLen:  dataLen,
+			Data:     data,
+			Body:     data,
 		}
-		req.SetPayload(data)
-		return req, nil
+		return &c.req, nil
 	case FrameTypeControlReq:
 		payload, err := c.ReadPayload(header.PayloadLen)
 		if err != nil {
@@ -296,12 +343,11 @@ func (c *Conn) WriteControlRequest(req *Request) error {
 		ID:         uint32(req.ID),
 		PayloadLen: uint32(len(payload)),
 	}
-	hdrBuf := header.Encode()
-
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 
-	if _, err := c.writer.Write(hdrBuf[:]); err != nil {
+	c.writeHeaderBuf(header)
+	if _, err := c.writer.Write(c.headerBuf[:]); err != nil {
 		return err
 	}
 	if _, err := c.writer.Write(payload); err != nil {
@@ -323,12 +369,11 @@ func (c *Conn) WriteControlResponse(resp Response, flush bool) error {
 		ID:         uint32(resp.ID),
 		PayloadLen: uint32(len(payload)),
 	}
-	hdrBuf := header.Encode()
-
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 
-	if _, err := c.writer.Write(hdrBuf[:]); err != nil {
+	c.writeHeaderBuf(header)
+	if _, err := c.writer.Write(c.headerBuf[:]); err != nil {
 		return err
 	}
 	if _, err := c.writer.Write(payload); err != nil {
@@ -353,12 +398,11 @@ func (c *Conn) WriteEvent(resp Response, flush bool) error {
 		ID:         uint32(resp.ID),
 		PayloadLen: uint32(len(payload)),
 	}
-	hdrBuf := header.Encode()
-
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 
-	if _, err := c.writer.Write(hdrBuf[:]); err != nil {
+	c.writeHeaderBuf(header)
+	if _, err := c.writer.Write(c.headerBuf[:]); err != nil {
 		return err
 	}
 	if _, err := c.writer.Write(payload); err != nil {
@@ -398,11 +442,10 @@ func (c *Conn) WriteInstanceInput(instance string, data []byte) error {
 }
 
 func (c *Conn) writeInstanceStream(frameType byte, instance string, data []byte, flush bool) error {
-	nameBytes := []byte(instance)
-	nameLen := len(nameBytes)
+	nameLen := len(instance)
 	if nameLen > 255 {
 		nameLen = 255
-		nameBytes = nameBytes[:255]
+		instance = instance[:255]
 	}
 	payloadLen := 1 + nameLen + len(data)
 	header := Header{
@@ -410,19 +453,18 @@ func (c *Conn) writeInstanceStream(frameType byte, instance string, data []byte,
 		Type:       frameType,
 		PayloadLen: uint32(payloadLen),
 	}
-	hdrBuf := header.Encode()
-
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 
-	if _, err := c.writer.Write(hdrBuf[:]); err != nil {
+	c.writeHeaderBuf(header)
+	if _, err := c.writer.Write(c.headerBuf[:]); err != nil {
 		return err
 	}
 	if err := c.writer.WriteByte(byte(nameLen)); err != nil {
 		return err
 	}
 	if nameLen > 0 {
-		if _, err := c.writer.Write(nameBytes); err != nil {
+		if _, err := c.writer.WriteString(instance); err != nil {
 			return err
 		}
 	}

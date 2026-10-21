@@ -20,6 +20,7 @@ func loginFailureDelay() {
 	ms := 20 + rand.IntN(81) // [20, 100]
 	time.Sleep(time.Duration(ms) * time.Millisecond)
 }
+const dummyBcryptHash = "$2a$10$7EqJtq98hPqEX7fNZaFWoOhi5wJkR.u44G25m/xL60/1G/o.K.XWy"
 
 type loginRequest struct {
 	User         string    `json:"user"`
@@ -98,17 +99,13 @@ func HandleApiAuthLogin(w http.ResponseWriter, r *http.Request) {
 	cfg.ManagerMu.RLock()
 	u, ok := authz.FindAuthUserLocked(username)
 	cfg.ManagerMu.RUnlock()
-	if !ok {
-		loginFailureDelay()
-		web.WriteAPIError(w, http.StatusUnauthorized, msg.InvalidUsernameOrPassword, nil)
-		return
+	userPass := dummyBcryptHash
+	if ok {
+		userPass = u.Pass
 	}
-	if !cfg.CheckPassword(u.Pass, password) {
-		loginFailureDelay()
-		web.WriteAPIError(w, http.StatusUnauthorized, msg.InvalidUsernameOrPassword, nil)
-		return
-	}
-	if u.Perm == 0 {
+	passValid := cfg.CheckPassword(userPass, password)
+
+	if !ok || !passValid || u.Perm == 0 {
 		loginFailureDelay()
 		web.WriteAPIError(w, http.StatusUnauthorized, msg.InvalidUsernameOrPassword, nil)
 		return

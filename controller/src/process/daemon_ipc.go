@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 const daemonOutputBufferPoolMaxBytes = 512 * 1024
@@ -53,33 +54,80 @@ type ipcCloser interface {
 	Close() error
 }
 
-var daemonOutputBufferPool = sync.Pool{
-	New: func() any {
-		buf := make([]byte, daemonOutputBufferPoolMaxBytes)
-		return &buf
-	},
-}
+type (
+	ipcBuffer4K   [4 * 1024]byte
+	ipcBuffer16K  [16 * 1024]byte
+	ipcBuffer64K  [64 * 1024]byte
+	ipcBuffer256K [256 * 1024]byte
+	ipcBuffer512K [512 * 1024]byte
+)
+
+var (
+	ipcPool4K = sync.Pool{
+		New: func() any { return new(ipcBuffer4K) },
+	}
+	ipcPool16K = sync.Pool{
+		New: func() any { return new(ipcBuffer16K) },
+	}
+	ipcPool64K = sync.Pool{
+		New: func() any { return new(ipcBuffer64K) },
+	}
+	ipcPool256K = sync.Pool{
+		New: func() any { return new(ipcBuffer256K) },
+	}
+	ipcPool512K = sync.Pool{
+		New: func() any { return new(ipcBuffer512K) },
+	}
+	daemonOutputBufferPool = &ipcPool512K
+)
 
 func getDaemonOutputBuffer(size int) []byte {
 	if size <= 0 {
 		return nil
 	}
-	if size > daemonOutputBufferPoolMaxBytes {
+	switch {
+	case size <= 4*1024:
+		b := ipcPool4K.Get().(*ipcBuffer4K)
+		return b[:size]
+	case size <= 16*1024:
+		b := ipcPool16K.Get().(*ipcBuffer16K)
+		return b[:size]
+	case size <= 64*1024:
+		b := ipcPool64K.Get().(*ipcBuffer64K)
+		return b[:size]
+	case size <= 256*1024:
+		b := ipcPool256K.Get().(*ipcBuffer256K)
+		return b[:size]
+	case size <= daemonOutputBufferPoolMaxBytes:
+		b := ipcPool512K.Get().(*ipcBuffer512K)
+		return b[:size]
+	default:
 		return make([]byte, size)
 	}
-	buf := *(daemonOutputBufferPool.Get().(*[]byte))
-	if cap(buf) < size {
-		return make([]byte, size)
-	}
-	return buf[:size]
 }
 
 func putDaemonOutputBuffer(buf []byte) {
-	if cap(buf) != daemonOutputBufferPoolMaxBytes {
+	if len(buf) == 0 && cap(buf) == 0 {
 		return
 	}
-	buf = buf[:cap(buf)]
-	daemonOutputBufferPool.Put(&buf)
+	dataPtr := unsafe.SliceData(buf)
+	if dataPtr == nil {
+		return
+	}
+	switch cap(buf) {
+	case 4 * 1024:
+		ipcPool4K.Put((*ipcBuffer4K)(unsafe.Pointer(dataPtr)))
+	case 16 * 1024:
+		ipcPool16K.Put((*ipcBuffer16K)(unsafe.Pointer(dataPtr)))
+	case 64 * 1024:
+		ipcPool64K.Put((*ipcBuffer64K)(unsafe.Pointer(dataPtr)))
+	case 256 * 1024:
+		ipcPool256K.Put((*ipcBuffer256K)(unsafe.Pointer(dataPtr)))
+	case daemonOutputBufferPoolMaxBytes:
+		ipcPool512K.Put((*ipcBuffer512K)(unsafe.Pointer(dataPtr)))
+	default:
+		// Not a pooled buffer (or wrong capacity), let GC collect it.
+	}
 }
 
 var daemonClient *daemonIPCClient

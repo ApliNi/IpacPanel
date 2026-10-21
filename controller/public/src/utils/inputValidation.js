@@ -200,7 +200,39 @@ const parseProtocolAccessLinkLine = (line) => {
 	}
 	return { name: matched[1].toLowerCase(), value: matched[0] };
 };
+const WINDOWS_RESERVED_NAMES = new Set([
+	'CON', 'PRN', 'AUX', 'NUL',
+	'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'COM0',
+	'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9', 'LPT0',
+]);
 
+const validateFileName = (name) => {
+	const trimmed = String(name || '').trim();
+	if (!trimmed) {
+		return '名称不能为空';
+	}
+	if (getTextLength(trimmed) > 255) {
+		return '名称最多包含 255 个字符';
+	}
+	if (trimmed === '.' || trimmed === '..' || trimmed.endsWith('.')) {
+		return '名称无效';
+	}
+	const dotIndex = trimmed.indexOf('.');
+	const base = (dotIndex >= 0 ? trimmed.slice(0, dotIndex) : trimmed).trim().toUpperCase();
+	if (WINDOWS_RESERVED_NAMES.has(base)) {
+		return '名称无效';
+	}
+	if (/[\\/:*?"<>|]/.test(trimmed)) {
+		return '名称包含非法字符';
+	}
+	for (let i = 0; i < trimmed.length; i += 1) {
+		const code = trimmed.charCodeAt(i);
+		if (code < 0x20 || code === 0x7f) {
+			return '名称包含非法字符';
+		}
+	}
+	return null;
+};
 const validateAccessLinkEntry = (entry) => {
 	const name = String(entry?.name || '').trim();
 	const value = String(entry?.value || '').trim();
@@ -262,6 +294,9 @@ export const InputValidation = Object.freeze({
 		validateTasks: validateInstanceTasks,
 		parseAccessLinksText,
 		formatAccessLinksText,
+	}),
+	file: Object.freeze({
+		validateFileName,
 	}),
 	normalizeTrustedProxyIps,
 	normalizeDeviceFilter,

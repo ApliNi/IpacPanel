@@ -10,11 +10,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 type controllerProcess struct {
@@ -44,9 +43,9 @@ func (c controllerPipeCloser) Close() error {
 }
 
 type controllerVersionInfo struct {
-	Role           string `yaml:"role"`
-	Version        string `yaml:"version"`
-	DaemonProtocol int    `yaml:"daemon_protocol"`
+	Role           string
+	Version        string
+	DaemonProtocol int
 }
 
 func controllerBinaryName() string {
@@ -74,22 +73,102 @@ func findControllerBinary() (string, error) {
 	return candidate, nil
 }
 
+func parseControllerVersionOutput(output []byte) (*controllerVersionInfo, error) {
+	lines := strings.Split(string(output), "\n")
+	var hasVersionHeader bool
+	for _, rawLine := range lines {
+		trimmed := strings.TrimSpace(rawLine)
+		if trimmed == "version:" || (strings.HasPrefix(trimmed, "version:") && strings.HasPrefix(strings.TrimSpace(trimmed[len("version:"):]), "#")) {
+			hasVersionHeader = true
+			break
+		}
+	}
+
+	var info controllerVersionInfo
+	var inVersionSection bool
+	var hasRole, hasProtocol bool
+
+	for _, rawLine := range lines {
+		rawLine = strings.TrimRight(rawLine, "\r")
+		trimmed := strings.TrimSpace(rawLine)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		isTopLevel := !strings.HasPrefix(rawLine, " ") && !strings.HasPrefix(rawLine, "\t")
+		if isTopLevel {
+			if trimmed == "version:" || (strings.HasPrefix(trimmed, "version:") && strings.HasPrefix(strings.TrimSpace(trimmed[len("version:"):]), "#")) {
+				inVersionSection = true
+				continue
+			} else if strings.HasSuffix(trimmed, ":") {
+				inVersionSection = false
+				continue
+			}
+		}
+
+		if hasVersionHeader && !inVersionSection {
+			continue
+		}
+
+		colonIdx := strings.IndexByte(trimmed, ':')
+		if colonIdx == -1 {
+			continue
+		}
+
+		key := strings.TrimSpace(trimmed[:colonIdx])
+		val := stripVersionValue(trimmed[colonIdx+1:])
+
+		switch key {
+		case "role":
+			info.Role = val
+			hasRole = true
+		case "version":
+			if val != "" {
+				info.Version = val
+			}
+		case "daemon_protocol":
+			proto, err := strconv.Atoi(val)
+			if err != nil {
+				return nil, fmt.Errorf("invalid daemon_protocol in --version output: %w", err)
+			}
+			info.DaemonProtocol = proto
+			hasProtocol = true
+		}
+	}
+
+	if !hasRole || !hasProtocol {
+		return nil, fmt.Errorf("missing required version fields")
+	}
+	return &info, nil
+}
+
+func stripVersionValue(val string) string {
+	val = strings.TrimSpace(val)
+	if idx := strings.IndexByte(val, '#'); idx != -1 {
+		val = strings.TrimSpace(val[:idx])
+	}
+	if len(val) >= 2 {
+		if (val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'') {
+			return val[1 : len(val)-1]
+		}
+	}
+	return val
+}
+
 func checkControllerVersion(binaryPath string) (*controllerVersionInfo, error) {
 	cmd := exec.Command(binaryPath, "--version")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("run --version: %w", err)
 	}
-	var wrapper struct {
-		Version controllerVersionInfo `yaml:"version"`
-	}
-	if err := yaml.Unmarshal(output, &wrapper); err != nil {
+	versionInfo, err := parseControllerVersionOutput(output)
+	if err != nil {
 		return nil, fmt.Errorf("parse --version output: %w", err)
 	}
-	if wrapper.Version.Role != "controller" {
-		return nil, fmt.Errorf("expected role=controller, got %s", wrapper.Version.Role)
+	if versionInfo.Role != "controller" {
+		return nil, fmt.Errorf("expected role=controller, got %s", versionInfo.Role)
 	}
-	return &wrapper.Version, nil
+	return versionInfo, nil
 }
 
 func validateControllerProtocol(binaryPath string) error {

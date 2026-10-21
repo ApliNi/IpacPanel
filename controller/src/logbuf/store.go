@@ -78,9 +78,13 @@ func (b *buffer) pushLocked(entry Entry) {
 		b.entries = b.entries[:0]
 		b.start = 0
 		totalByte = 0
-	} else if b.start > 0 && b.start == cap(b.entries)/2 {
+	} else if b.start > 0 && b.start >= cap(b.entries)/2 {
 		copy(b.entries, b.entries[b.start:])
-		b.entries = b.entries[:b.lenLocked()]
+		newLen := b.lenLocked()
+		for i := newLen; i < len(b.entries); i++ {
+			b.entries[i] = Entry{}
+		}
+		b.entries = b.entries[:newLen]
 		b.start = 0
 	}
 }

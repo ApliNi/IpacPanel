@@ -8,4 +8,4 @@
 - ./daemon/version/version.go
 	- 修改前端文件后需更新 Version 小版本号
 	- 对于进程间通信的破坏性更新需更新 DaemonProtocol 值
-- 新增配置项/输入框需考虑 ./doc/输入约束.md
+- 新增配置项/输入字段需考虑 ./doc/输入约束.md

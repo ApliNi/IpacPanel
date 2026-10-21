@@ -67,7 +67,7 @@ func compileScriptCommandArgv(argv []string, path string) ([]string, error) {
 			if systemRoot == "" {
 				cmdPath = "cmd.exe"
 			}
-			return []string{cmdPath, "/d", "/s", "/c", windowsCommandLine(args)}, nil
+			return append([]string{cmdPath, "/d", "/s", "/c"}, args...), nil
 		case ".ps1":
 			args[0] = script.runPath
 			systemRoot := os.Getenv("SystemRoot")
@@ -90,8 +90,8 @@ func compileScriptCommandArgv(argv []string, path string) ([]string, error) {
 }
 
 func validateWindowsBatchCommandArgs(args []string) error {
-	for _, arg := range args {
-		if strings.ContainsAny(arg, "&|<>()^%!\r\n") {
+	for _, arg := range args[1:] {
+		if strings.ContainsAny(arg, "\r\n\x00\"") {
 			return fmt.Errorf(msg.WindowsBatchCommandArgUnsafeFmt, arg)
 		}
 	}
@@ -133,47 +133,4 @@ func unixExecutableScriptArg(script string) string {
 		return script
 	}
 	return "." + string(filepath.Separator) + script
-}
-
-func windowsCommandLine(args []string) string {
-	parts := make([]string, 0, len(args))
-	for _, arg := range args {
-		parts = append(parts, windowsEscapeArg(arg))
-	}
-	return strings.Join(parts, " ")
-}
-
-func windowsEscapeArg(arg string) string {
-	if arg == "" {
-		return `""`
-	}
-	needsQuote := strings.ContainsAny(arg, " \t\n\v\"")
-	if !needsQuote {
-		return arg
-	}
-	var b strings.Builder
-	b.WriteByte('"')
-	backslashes := 0
-	for _, r := range arg {
-		if r == '\\' {
-			backslashes++
-			continue
-		}
-		if r == '"' {
-			b.WriteString(strings.Repeat(`\`, backslashes*2+1))
-			b.WriteRune(r)
-			backslashes = 0
-			continue
-		}
-		if backslashes > 0 {
-			b.WriteString(strings.Repeat(`\`, backslashes))
-			backslashes = 0
-		}
-		b.WriteRune(r)
-	}
-	if backslashes > 0 {
-		b.WriteString(strings.Repeat(`\`, backslashes*2))
-	}
-	b.WriteByte('"')
-	return b.String()
 }

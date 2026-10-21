@@ -280,22 +280,24 @@ func getInstanceListResponse(authedUser *cfg.AuthUser) []instanceListItem {
 	processes := process.List()
 
 	for _, ip := range processes {
-		ins := ip.InstanceSnapshot()
-		if !authz.DefaultRuntime.CanAccessInstance(authedUser, ins.Name) {
+		if ip == nil {
 			continue
 		}
-		status := ip.StatusSnapshot()
+		proj := ip.StatusProjection()
+		if !authz.DefaultRuntime.CanAccessInstance(authedUser, proj.Name) {
+			continue
+		}
 		resp = append(resp, instanceListItem{
-			Name:           status.Name,
-			Group:          status.Group,
-			AccessLinks:    ins.AccessLinks,
-			Terminal:       cfg.NormalizeTerminalMode(ins.Terminal),
-			ActiveTerminal: status.ActiveTerminal,
-			Running:        status.Running,
-			Updating:       status.Updating,
-			Restarting:     status.Restarting,
-			StartTime:      status.StartTime,
-			RestartCount:   status.RestartCount,
+			Name:           proj.Name,
+			Group:          proj.Group,
+			AccessLinks:    proj.AccessLinks,
+			Terminal:       proj.Terminal,
+			ActiveTerminal: proj.ActiveTerminal,
+			Running:        proj.Running,
+			Updating:       proj.Updating,
+			Restarting:     proj.Restarting,
+			StartTime:      proj.StartTime,
+			RestartCount:   proj.RestartCount,
 		})
 	}
 
@@ -338,21 +340,24 @@ func getInstanceStatusPatchResponse(authedUser *cfg.AuthUser, seq int64) []insta
 	}
 
 	for _, ip := range processes {
-		status := ip.StatusSnapshot()
-		if !authz.DefaultRuntime.CanAccessInstance(authedUser, status.Name) {
+		if ip == nil {
+			continue
+		}
+		proj := ip.StatusProjection()
+		if !authz.DefaultRuntime.CanAccessInstance(authedUser, proj.Name) {
 			continue
 		}
 		resp = append(resp, instanceListItem{
-			Name:           status.Name,
-			Group:          status.Group,
-			AccessLinks:    ip.InstanceSnapshot().AccessLinks,
-			Terminal:       cfg.NormalizeTerminalMode(ip.InstanceSnapshot().Terminal),
-			ActiveTerminal: status.ActiveTerminal,
-			Running:        status.Running,
-			Updating:       status.Updating,
-			Restarting:     status.Restarting,
-			StartTime:      status.StartTime,
-			RestartCount:   status.RestartCount,
+			Name:           proj.Name,
+			Group:          proj.Group,
+			AccessLinks:    proj.AccessLinks,
+			Terminal:       proj.Terminal,
+			ActiveTerminal: proj.ActiveTerminal,
+			Running:        proj.Running,
+			Updating:       proj.Updating,
+			Restarting:     proj.Restarting,
+			StartTime:      proj.StartTime,
+			RestartCount:   proj.RestartCount,
 		})
 	}
 
