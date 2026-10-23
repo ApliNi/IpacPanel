@@ -318,7 +318,7 @@ func Run(embeddedPublicFS fs.FS, opts RunOptions) error {
 	protocols.SetHTTP1(true)
 	protocols.SetUnencryptedHTTP2(true)
 
-	handler := web.WithRequestLogging(web.WithRecover(web.WithResponseCompression(web.WithMaxRequestBody(mux))))
+	handler := web.WithSecurityHeaders(web.WithRequestLogging(web.WithRecover(web.WithResponseCompression(web.WithMaxRequestBody(mux)))))
 	if webConfig.ForceHTTPS {
 		handler = withForceHTTPS(handler)
 	}

@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const sseWriteTimeout = 10 * time.Second
+
 type SSEWriter struct {
 	mu      sync.Mutex
 	w       http.ResponseWriter
@@ -16,7 +18,7 @@ type SSEWriter struct {
 }
 
 func BeginSSE(w http.ResponseWriter) (*SSEWriter, bool) {
-	if err := http.NewResponseController(w).SetWriteDeadline(time.Time{}); err != nil {
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(sseWriteTimeout)); err != nil {
 		WriteAPIError(w, http.StatusInternalServerError, msg.StreamingFlushUnsupported, err)
 		return nil, false
 	}
@@ -46,6 +48,7 @@ func NewSSEWriter(w http.ResponseWriter) (*SSEWriter, bool) {
 func (s *SSEWriter) SendEvent(eventName string, payload interface{}) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	_ = http.NewResponseController(s.w).SetWriteDeadline(time.Now().Add(sseWriteTimeout))
 	if eventName == "" {
 		eventName = "message"
 	}
@@ -66,6 +69,7 @@ func (s *SSEWriter) SendEvent(eventName string, payload interface{}) error {
 func (s *SSEWriter) SendComment() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	_ = http.NewResponseController(s.w).SetWriteDeadline(time.Now().Add(sseWriteTimeout))
 	if _, err := fmt.Fprint(s.w, ":\n\n"); err != nil {
 		return err
 	}

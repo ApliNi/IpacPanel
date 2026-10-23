@@ -7,6 +7,9 @@ import (
 
 	web "IpacPanel/controller/src/web"
 
+	"archive/tar"
+	"archive/zip"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -18,8 +21,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/mholt/archives"
 )
 
 func stripArchiveSuffix(name string) string {
@@ -81,7 +82,7 @@ func sendFileExtractFailure(sse *web.SSEWriter, message string) {
 }
 
 func identifyArchiveErrorMessage(err error) string {
-	if errors.Is(err, archives.NoMatch) {
+	if errors.Is(err, errArchiveFormatUnsupported) {
 		return msg.ExtractFormatTemporarilyUnsupported
 	}
 	return msg.AnalyzeArchiveFailed
@@ -155,9 +156,11 @@ func calcExtractProgressPercentByBytes(processedBytes int64) float64 {
 	return math.Min(95, 95*(1-1/(1+mb/8)))
 }
 
+const extractCopyBufferSize = 32 * 1024
+
 var extractCopyBufferPool = sync.Pool{
 	New: func() interface{} {
-		buf := make([]byte, 1024*1024)
+		buf := make([]byte, extractCopyBufferSize)
 		return &buf
 	},
 }
@@ -210,7 +213,11 @@ func (p *extractProgressReporter) send(force bool) error {
 	p.lastAt = now
 	percent := calcExtractProgressPercent(p.current, p.total)
 	if p.total <= 0 {
-		percent = calcExtractProgressPercentByBytes(p.processedBytes)
+		if force {
+			percent = 100
+		} else {
+			percent = calcExtractProgressPercentByBytes(p.processedBytes)
+		}
 	}
 	payload := map[string]interface{}{
 		"stage":   "extracting",
@@ -273,67 +280,283 @@ func formatExtractByteSize(size int64) string {
 	return fmt.Sprintf("%.2f %s", value, units[unit])
 }
 
-func openArchiveReader(format archives.Format, archivePath string) (io.ReadCloser, error) {
-	file, err := os.Open(archivePath)
-	if err != nil {
-		return nil, err
-	}
-	if format == nil {
-		return file, nil
-	}
-	if compressedArchive, ok := format.(archives.CompressedArchive); ok {
-		reader, err := compressedArchive.OpenReader(file)
-		if err != nil {
-			file.Close()
-			return nil, err
-		}
-		return &extractReadCloser{Reader: reader, closers: []io.Closer{reader, file}}, nil
-	}
-	if decompressor, ok := format.(archives.Decompressor); ok {
-		reader, err := decompressor.OpenReader(file)
-		if err != nil {
-			file.Close()
-			return nil, err
-		}
-		return &extractReadCloser{Reader: reader, closers: []io.Closer{reader, file}}, nil
-	}
-	return file, nil
-}
-
-type extractReadCloser struct {
-	io.Reader
-	closers []io.Closer
-}
-
 type extractResult struct {
 	skipped int
 }
 
-func (r *extractReadCloser) Close() error {
-	var firstErr error
-	for i := len(r.closers) - 1; i >= 0; i-- {
-		if r.closers[i] == nil {
-			continue
-		}
-		if err := r.closers[i].Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
+type archiveKind int
+
+const (
+	archiveKindUnknown archiveKind = iota
+	archiveKindZip
+	archiveKindTarGz
+	archiveKindTar
+)
+
+func isGzipTar(filePath string) bool {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return false
 	}
-	return firstErr
+	defer f.Close()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return false
+	}
+	defer gz.Close()
+
+	buf := make([]byte, 512)
+	n, err := io.ReadFull(gz, buf)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return false
+	}
+	buf = buf[:n]
+	return len(buf) >= 262 && string(buf[257:262]) == "ustar"
 }
 
-func extractArchiveWithFormat(ctx context.Context, fs *instancefs.InstanceFS, format archives.Format, archivePath string, targetAbs string, extractHere bool, overwrite bool, sse *web.SSEWriter, userValid func() bool) (*extractResult, error) {
-	archiveReader, err := openArchiveReader(format, archivePath)
+func detectArchiveKind(filePath string, fileName string) (archiveKind, error) {
+	lowerName := strings.ToLower(strings.TrimSpace(fileName))
+
+	f, err := os.Open(filePath)
 	if err != nil {
-		return nil, err
+		return archiveKindUnknown, err
 	}
-	defer archiveReader.Close()
+	defer f.Close()
 
-	extraction, ok := format.(archives.Extraction)
-	if !ok {
-		return nil, errArchiveFormatUnsupported
+	header := make([]byte, 512)
+	n, readErr := io.ReadFull(f, header)
+	if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		return archiveKindUnknown, readErr
+	}
+	header = header[:n]
+
+	if len(header) >= 4 && header[0] == 'P' && header[1] == 'K' {
+		if (header[2] == 0x03 && header[3] == 0x04) ||
+			(header[2] == 0x05 && header[3] == 0x06) ||
+			(header[2] == 0x07 && header[3] == 0x08) {
+			return archiveKindZip, nil
+		}
 	}
 
+	if len(header) >= 2 && header[0] == 0x1f && header[1] == 0x8b {
+		if strings.HasSuffix(lowerName, ".tar.gz") || strings.HasSuffix(lowerName, ".tgz") || strings.HasSuffix(lowerName, ".tar.gzip") {
+			return archiveKindTarGz, nil
+		}
+		if isGzipTar(filePath) {
+			return archiveKindTarGz, nil
+		}
+		return archiveKindUnknown, errArchiveFormatUnsupported
+	}
+
+	if len(header) >= 262 && string(header[257:262]) == "ustar" {
+		return archiveKindTar, nil
+	}
+
+	if strings.HasSuffix(lowerName, ".zip") {
+		return archiveKindZip, nil
+	}
+	if strings.HasSuffix(lowerName, ".tar.gz") || strings.HasSuffix(lowerName, ".tgz") || strings.HasSuffix(lowerName, ".tar.gzip") {
+		return archiveKindTarGz, nil
+	}
+	if strings.HasSuffix(lowerName, ".tar") {
+		return archiveKindTar, nil
+	}
+
+	return archiveKindUnknown, errArchiveFormatUnsupported
+}
+
+func extractZipArchive(ctx context.Context, fs *instancefs.InstanceFS, archivePath string, baseDir string, dirCache *instancefs.ExtractDirCache, overwrite bool, sse *web.SSEWriter, userValid func() bool, result *extractResult) error {
+	reader, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	progress := newExtractProgressReporter(sse, len(reader.File), userValid)
+
+	for _, file := range reader.File {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		name := strings.TrimSpace(file.Name)
+		if name == "" {
+			if err := progress.advance(0); err != nil {
+				return err
+			}
+			continue
+		}
+
+		cleanDest, err := fs.ResolveExtractOutputPath(baseDir, name)
+		if err != nil {
+			return err
+		}
+		if cleanDest == "" {
+			if err := progress.advance(0); err != nil {
+				return err
+			}
+			continue
+		}
+
+		fileInfo := file.FileInfo()
+		if fileInfo.IsDir() || strings.HasSuffix(file.Name, "/") {
+			if err := fs.EnsureExtractDirectory(baseDir, cleanDest, dirCache); err != nil {
+				return err
+			}
+			if err := progress.advance(0); err != nil {
+				return err
+			}
+			continue
+		}
+
+		rc, err := file.Open()
+		if err != nil {
+			return err
+		}
+
+		mode := file.Mode().Perm()
+		if mode == 0 {
+			mode = 0644
+		}
+
+		writtenBytes, writeErr := func() (int64, error) {
+			bufPtr := extractCopyBufferPool.Get().(*[]byte)
+			defer extractCopyBufferPool.Put(bufPtr)
+			return fs.WriteExtractedFile(ctx, baseDir, cleanDest, mode, rc, dirCache, overwrite, *bufPtr)
+		}()
+		closeErr := rc.Close()
+		if writeErr != nil {
+			if errors.Is(writeErr, os.ErrExist) {
+				result.skipped++
+				if err := progress.advance(0); err != nil {
+					return err
+				}
+				continue
+			}
+			return writeErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if writtenBytes <= 0 {
+			writtenBytes = fileInfo.Size()
+		}
+		if err := progress.advance(writtenBytes); err != nil {
+			return err
+		}
+	}
+
+	return progress.finish()
+}
+
+func extractTarArchive(ctx context.Context, fs *instancefs.InstanceFS, archivePath string, isGz bool, baseDir string, dirCache *instancefs.ExtractDirCache, overwrite bool, sse *web.SSEWriter, userValid func() bool, result *extractResult) error {
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	var tarReader *tar.Reader
+	if isGz {
+		gzReader, err := gzip.NewReader(file)
+		if err != nil {
+			return err
+		}
+		defer gzReader.Close()
+		tarReader = tar.NewReader(gzReader)
+	} else {
+		tarReader = tar.NewReader(file)
+	}
+
+	progress := newExtractProgressReporter(sse, 0, userValid)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		header, err := tarReader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		name := strings.TrimSpace(header.Name)
+		if name == "" {
+			if err := progress.advance(0); err != nil {
+				return err
+			}
+			continue
+		}
+
+		cleanDest, err := fs.ResolveExtractOutputPath(baseDir, name)
+		if err != nil {
+			return err
+		}
+		if cleanDest == "" {
+			if err := progress.advance(0); err != nil {
+				return err
+			}
+			continue
+		}
+
+		hdrInfo := header.FileInfo()
+		if hdrInfo.IsDir() || header.Typeflag == tar.TypeDir || strings.HasSuffix(header.Name, "/") {
+			if err := fs.EnsureExtractDirectory(baseDir, cleanDest, dirCache); err != nil {
+				return err
+			}
+			if err := progress.advance(0); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+			if err := progress.advance(0); err != nil {
+				return err
+			}
+			continue
+		}
+
+		mode := hdrInfo.Mode().Perm()
+		if mode == 0 {
+			mode = 0644
+		}
+
+		writtenBytes, writeErr := func() (int64, error) {
+			bufPtr := extractCopyBufferPool.Get().(*[]byte)
+			defer extractCopyBufferPool.Put(bufPtr)
+			return fs.WriteExtractedFile(ctx, baseDir, cleanDest, mode, tarReader, dirCache, overwrite, *bufPtr)
+		}()
+		if writeErr != nil {
+			if errors.Is(writeErr, os.ErrExist) {
+				result.skipped++
+				if err := progress.advance(0); err != nil {
+					return err
+				}
+				continue
+			}
+			return writeErr
+		}
+		if writtenBytes <= 0 {
+			writtenBytes = hdrInfo.Size()
+		}
+		if err := progress.advance(writtenBytes); err != nil {
+			return err
+		}
+	}
+
+	return progress.finish()
+}
+
+func extractArchive(ctx context.Context, fs *instancefs.InstanceFS, kind archiveKind, archivePath string, targetAbs string, extractHere bool, overwrite bool, sse *web.SSEWriter, userValid func() bool) (*extractResult, error) {
 	baseDir := targetAbs
 	dirCache := fs.NewExtractDirCache()
 	result := &extractResult{}
@@ -345,69 +568,22 @@ func extractArchiveWithFormat(ctx context.Context, fs *instancefs.InstanceFS, fo
 			return nil, errExtractInvalidPath
 		}
 	}
-	progress := newExtractProgressReporter(sse, 0, userValid)
 
-	err = extraction.Extract(ctx, archiveReader, func(ctx context.Context, info archives.FileInfo) error {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+	switch kind {
+	case archiveKindZip:
+		if err := extractZipArchive(ctx, fs, archivePath, baseDir, dirCache, overwrite, sse, userValid, result); err != nil {
+			return nil, err
 		}
-		name := strings.TrimSpace(info.NameInArchive)
-		if name == "" {
-			return progress.advance(0)
+	case archiveKindTarGz:
+		if err := extractTarArchive(ctx, fs, archivePath, true, baseDir, dirCache, overwrite, sse, userValid, result); err != nil {
+			return nil, err
 		}
-		isDir := info.FileInfo != nil && info.IsDir()
-		cleanDest, err := fs.ResolveExtractOutputPath(baseDir, name)
-		if err != nil {
-			return err
+	case archiveKindTar:
+		if err := extractTarArchive(ctx, fs, archivePath, false, baseDir, dirCache, overwrite, sse, userValid, result); err != nil {
+			return nil, err
 		}
-		if cleanDest == "" {
-			return progress.advance(0)
-		}
-		if isDir {
-			if err := fs.EnsureExtractDirectory(baseDir, cleanDest, dirCache); err != nil {
-				return err
-			}
-			return progress.advance(0)
-		}
-		if info.Open == nil {
-			return progress.advance(0)
-		}
-		f, err := info.Open()
-		if err != nil {
-			return err
-		}
-		mode := os.FileMode(0644)
-		if info.FileInfo != nil {
-			mode = info.Mode()
-		}
-		writtenBytes, writeErr := func() (int64, error) {
-			bufPtr := extractCopyBufferPool.Get().(*[]byte)
-			defer extractCopyBufferPool.Put(bufPtr)
-			return fs.WriteExtractedFile(ctx, baseDir, cleanDest, mode, f, dirCache, overwrite, *bufPtr)
-		}()
-		closeErr := f.Close()
-		if writeErr != nil {
-			if errors.Is(writeErr, os.ErrExist) {
-				result.skipped++
-				return progress.advance(0)
-			}
-			return writeErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-		if writtenBytes <= 0 && info.FileInfo != nil {
-			writtenBytes = info.Size()
-		}
-		return progress.advance(writtenBytes)
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err := progress.finish(); err != nil {
-		return nil, err
+	default:
+		return nil, errArchiveFormatUnsupported
 	}
 	return result, nil
 }
@@ -524,7 +700,7 @@ func HandleApiFileExtract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	format, _, err := archives.Identify(r.Context(), archiveName, nil)
+	kind, err := detectArchiveKind(archivePath, archiveName)
 	if err != nil {
 		message := identifyArchiveErrorMessage(err)
 		web.MarkAPIError(w, http.StatusBadRequest, message, err)
@@ -532,7 +708,7 @@ func HandleApiFileExtract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	username := authedUser.User
-	result, err := extractArchiveWithFormat(r.Context(), fs, format, archivePath, targetAbs, req.ExtractHere, req.Overwrite, sse, func() bool { return userStreamActive(username) })
+	result, err := extractArchive(r.Context(), fs, kind, archivePath, targetAbs, req.ExtractHere, req.Overwrite, sse, func() bool { return userStreamActive(username) })
 	if err != nil {
 		if errors.Is(err, errFileExtractProgressSend) {
 			web.MarkAPIError(w, http.StatusInternalServerError, msg.WriteExtractProgressFailed, err)

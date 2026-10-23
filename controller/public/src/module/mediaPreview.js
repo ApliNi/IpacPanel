@@ -56,6 +56,7 @@ const closePreview = () => {
 		if (img) {
 			img.src = '';
 		}
+		clearPreviewUrl();
 		previewBox.classList.remove('open');
 		previewBox.classList.remove('closing');
 		previewBox.dataset.previewType = '';

@@ -79,6 +79,37 @@ const resolveRuntimeAssetUrl = (path) => {
 	return new URL(path, baseUrl).href;
 };
 
+const activeMonacoWorkers = new Set();
+
+const terminateMonacoWorkers = () => {
+	activeMonacoWorkers.forEach((worker) => {
+		try {
+			worker.terminate();
+		} catch (_) {}
+	});
+	activeMonacoWorkers.clear();
+};
+
+const stopMonacoLanguageWorkers = (monaco) => {
+	if (!monaco?.languages) {
+		return;
+	}
+	const languages = [
+		monaco.languages.json?.jsonDefaults,
+		monaco.languages.typescript?.typescriptDefaults,
+		monaco.languages.typescript?.javascriptDefaults,
+		monaco.languages.css?.cssDefaults,
+		monaco.languages.html?.htmlDefaults,
+	];
+	for (const lang of languages) {
+		try {
+			if (typeof lang?.setDiagnosticsOptions === 'function' && typeof lang?.getDiagnosticsOptions === 'function') {
+				lang.setDiagnosticsOptions(lang.getDiagnosticsOptions());
+			}
+		} catch (_) {}
+	}
+};
+
 const configureMonacoEnvironment = () => {
 	const win = getGlobalWindow();
 	const existing = win.MonacoEnvironment && typeof win.MonacoEnvironment === 'object' ? win.MonacoEnvironment : {};
@@ -87,10 +118,12 @@ const configureMonacoEnvironment = () => {
 		getWorker(_moduleId, label) {
 			const workerLabel = String(label || 'editor').trim() || 'editor';
 			const workerPath = monacoWorkerAssets.get(workerLabel) || monacoWorkerAssets.get('editor');
-			return new Worker(resolveRuntimeAssetUrl(workerPath), {
+			const worker = new Worker(resolveRuntimeAssetUrl(workerPath), {
 				type: 'module',
 				name: workerLabel,
 			});
+			activeMonacoWorkers.add(worker);
+			return worker;
 		},
 	};
 };
@@ -615,7 +648,7 @@ const setFileEditorMode = () => {
     dom.fileEditorMonaco.classList.remove('hidden');
 };
 
-const disposeMonacoEditor = () => {
+const disposeMonacoEditor = (options = {}) => {
     try {
         editorState.monacoModelChangeDisposable?.dispose?.();
     } catch (_) {}
@@ -636,6 +669,21 @@ const disposeMonacoEditor = () => {
         editorState.monacoOriginalModel?.dispose?.();
     } catch (_) {}
     editorState.monacoOriginalModel = null;
+
+    if (options?.terminateWorkers) {
+        const monaco = getMonacoRuntime();
+        if (monaco?.editor?.getModels) {
+            try {
+                monaco.editor.getModels().forEach((model) => {
+                    try {
+                        model.dispose();
+                    } catch (_) {}
+                });
+            } catch (_) {}
+        }
+        stopMonacoLanguageWorkers(monaco);
+        terminateMonacoWorkers();
+    }
 };
 
 const applyInitialContentToModel = (content) => {
@@ -936,7 +984,7 @@ const closeFileEditorModal = () => {
     editorState.fileEditorOpSeq += 1;
     editorState.fileEditorMetricsTimer = clearTimer(editorState.fileEditorMetricsTimer);
     editorState.fileEditorSuccessTimer = clearTimer(editorState.fileEditorSuccessTimer);
-    disposeMonacoEditor();
+    disposeMonacoEditor({ terminateWorkers: true });
     editorState.fileEditorBaselineLines = 0;
     editorState.fileEditorBaselineBytes = 0;
     editorState.fileEditorContentLoaded = false;

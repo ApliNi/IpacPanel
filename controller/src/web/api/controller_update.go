@@ -3,14 +3,13 @@ package api
 import (
 	"IpacPanel/controller/src/web/authz"
 	"archive/zip"
-	"context"
+	"debug/buildinfo"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -25,8 +24,6 @@ import (
 	"IpacPanel/controller/src/process"
 	web "IpacPanel/controller/src/web"
 	"IpacPanel/daemon/version"
-
-	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -139,29 +136,37 @@ func (e *controllerUpdateBinaryError) Unwrap() error {
 	return e.err
 }
 
-// parseUpdateBinaryVersion 运行新二进制的 --version 命令 (60 秒超时) 并解析 YAML 输出,
-// 校验角色与 expectedRole 一致. 不校验守护进程协议, 允许跨协议版本更新.
+// parseUpdateBinaryVersion 静态读取新二进制的 Go 构建信息,
+// 校验平台与预期角色一致. 不运行未知二进制, 避免任意代码执行.
 func parseUpdateBinaryVersion(binaryPath string, expectedRole string) (*controllerUpdateVersionInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, binaryPath, "--version")
-	output, err := cmd.Output()
-	if ctx.Err() != nil {
-		return nil, &controllerUpdateBinaryError{userMessage: msg.ControllerBinaryVersionCheckTimeout, err: ctx.Err()}
-	}
+	bi, err := buildinfo.ReadFile(binaryPath)
 	if err != nil {
 		return nil, &controllerUpdateBinaryError{userMessage: msg.ControllerBinaryVersionCheckFailed, err: err}
 	}
-	var wrapper struct {
-		Version controllerUpdateVersionInfo `yaml:"version"`
-	}
-	if err := yaml.Unmarshal(output, &wrapper); err != nil {
-		return nil, &controllerUpdateBinaryError{userMessage: msg.ControllerBinaryVersionOutputInvalid, err: err}
-	}
-	if wrapper.Version.Role != expectedRole {
+	expectedPkg := "IpacPanel/" + expectedRole
+	if bi.Path != expectedPkg {
 		return nil, &controllerUpdateBinaryError{userMessage: msg.ControllerBinaryRoleInvalid}
 	}
-	return &wrapper.Version, nil
+	var targetOS, targetArch string
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "GOOS":
+			targetOS = s.Value
+		case "GOARCH":
+			targetArch = s.Value
+		}
+	}
+	if targetOS != "" && targetOS != runtime.GOOS {
+		return nil, &controllerUpdateBinaryError{userMessage: msg.ControllerBinaryRoleInvalid, err: fmt.Errorf("target GOOS %s mismatch runtime %s", targetOS, runtime.GOOS)}
+	}
+	if targetArch != "" && targetArch != runtime.GOARCH {
+		return nil, &controllerUpdateBinaryError{userMessage: msg.ControllerBinaryRoleInvalid, err: fmt.Errorf("target GOARCH %s mismatch runtime %s", targetArch, runtime.GOARCH)}
+	}
+	return &controllerUpdateVersionInfo{
+		Role:           expectedRole,
+		Version:        bi.Main.Version,
+		DaemonProtocol: version.DaemonProtocol,
+	}, nil
 }
 
 func extractControllerFromZip(zipPath string, targetPath string) error {

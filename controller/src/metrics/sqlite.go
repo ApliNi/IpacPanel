@@ -202,7 +202,7 @@ func (c *Collector) currentDBForPath(path string, generation uint64) *sql.DB {
 }
 
 func openSQLite(path string) (*sql.DB, error) {
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=cache_size(-512)", filepath.ToSlash(path), sqliteBusyTimeoutMS)
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=cache_size(-512)&_pragma=mmap_size(0)", filepath.ToSlash(path), sqliteBusyTimeoutMS)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf(msg.DashboardSQLiteOpenFailedFmt, err)
@@ -227,6 +227,7 @@ func initSQLiteSchema(ctx context.Context, db *sql.DB) error {
 	statements := []string{
 		`PRAGMA auto_vacuum = INCREMENTAL`,
 		`PRAGMA cache_size = -512`,
+		`PRAGMA mmap_size = 0`,
 		`CREATE TABLE IF NOT EXISTS dashboard_devices (
 	id INTEGER PRIMARY KEY,
 	kind INTEGER NOT NULL,

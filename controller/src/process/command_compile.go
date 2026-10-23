@@ -90,8 +90,8 @@ func compileScriptCommandArgv(argv []string, path string) ([]string, error) {
 }
 
 func validateWindowsBatchCommandArgs(args []string) error {
-	for _, arg := range args[1:] {
-		if strings.ContainsAny(arg, "\r\n\x00\"") {
+	for _, arg := range args {
+		if strings.ContainsAny(arg, "\r\n\x00\"&|<>^%!") {
 			return fmt.Errorf(msg.WindowsBatchCommandArgUnsafeFmt, arg)
 		}
 	}

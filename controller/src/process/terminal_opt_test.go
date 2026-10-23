@@ -131,21 +131,15 @@ func TestPTYAlternateScreenPendingSplit(t *testing.T) {
 	}
 }
 
-func TestTieredIPCBufferPool(t *testing.T) {
+func TestIPCBufferPool(t *testing.T) {
 	testSizes := []struct {
 		requested int
 		expected  int
 	}{
-		{64, 4 * 1024},
-		{4 * 1024, 4 * 1024},
-		{4*1024 + 1, 16 * 1024},
-		{16 * 1024, 16 * 1024},
-		{16*1024 + 1, 64 * 1024},
+		{64, 64 * 1024},
+		{4 * 1024, 64 * 1024},
+		{16 * 1024, 64 * 1024},
 		{64 * 1024, 64 * 1024},
-		{64*1024 + 1, 256 * 1024},
-		{256 * 1024, 256 * 1024},
-		{256*1024 + 1, 512 * 1024},
-		{512 * 1024, 512 * 1024},
 	}
 
 	for _, tc := range testSizes {
@@ -159,16 +153,16 @@ func TestTieredIPCBufferPool(t *testing.T) {
 		putDaemonOutputBuffer(buf)
 	}
 
-	// Test unpooled size (> 512KB).
-	hugeSize := 600 * 1024
+	// Test unpooled size (> 64KB).
+	hugeSize := 128 * 1024
 	hugeBuf := getDaemonOutputBuffer(hugeSize)
 	if len(hugeBuf) != hugeSize || cap(hugeBuf) < hugeSize {
 		t.Errorf("expected huge buffer of at least %d, got len=%d, cap=%d", hugeSize, len(hugeBuf), cap(hugeBuf))
 	}
 	putDaemonOutputBuffer(hugeBuf)
 
-	// Test 0 allocations for repeated get/put.
-	for _, size := range []int{100, 8000, 32000, 100000, 400000} {
+	// Test 0 allocations for repeated get/put within 64KB.
+	for _, size := range []int{100, 4000, 16000, 64000} {
 		allocs := testing.AllocsPerRun(100, func() {
 			b := getDaemonOutputBuffer(size)
 			putDaemonOutputBuffer(b)
@@ -249,7 +243,7 @@ func BenchmarkPTYFilterFastPath(b *testing.B) {
 	}
 }
 
-func BenchmarkTieredIPCPool(b *testing.B) {
+func BenchmarkIPCBufferPool(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		buf := getDaemonOutputBuffer(1024)

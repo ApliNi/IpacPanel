@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"strconv"
@@ -40,6 +41,8 @@ var gzipEncoderPool = sync.Pool{
 const (
 	contentEncodingZstd = "zstd"
 	contentEncodingGzip = "gzip"
+
+	minCompressibleBytes = 1024
 )
 
 type compressionResponseWriter struct {
@@ -199,7 +202,46 @@ func (w *compressionResponseWriter) shouldVaryAcceptEncoding() bool {
 	if strings.HasPrefix(contentType, "text/event-stream") {
 		return false
 	}
+	if !isCompressibleContentType(contentType) {
+		return false
+	}
+	if clHeader := w.Header().Get("Content-Length"); clHeader != "" {
+		if cl, err := strconv.ParseInt(strings.TrimSpace(clHeader), 10, 64); err == nil && cl < minCompressibleBytes {
+			return false
+		}
+	}
 	return true
+}
+
+func isCompressibleContentType(contentType string) bool {
+	if contentType == "" {
+		return false
+	}
+	if mediaType, _, err := mime.ParseMediaType(contentType); err == nil {
+		contentType = mediaType
+	}
+	if strings.HasPrefix(contentType, "text/") {
+		return true
+	}
+	switch contentType {
+	case "application/json",
+		"application/javascript",
+		"application/x-javascript",
+		"application/xml",
+		"application/xhtml+xml",
+		"application/rss+xml",
+		"application/atom+xml",
+		"application/x-font-ttf",
+		"application/x-font-opentype",
+		"application/vnd.ms-fontobject",
+		"image/svg+xml",
+		"image/x-icon":
+		return true
+	}
+	if strings.HasSuffix(contentType, "+json") || strings.HasSuffix(contentType, "+xml") {
+		return true
+	}
+	return false
 }
 
 func (w *compressionResponseWriter) startCompression() error {

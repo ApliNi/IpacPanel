@@ -5,6 +5,7 @@ import (
 	"IpacPanel/controller/src/msg"
 	"database/sql"
 	"log"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -139,40 +140,6 @@ func (f deviceFilter) allows(name string) bool {
 	return true
 }
 
-func (f deviceFilter) filterInterfaces(values map[string]struct{}, counters map[string]networkCounter) (map[string]struct{}, map[string]networkCounter) {
-	if len(f.includes) == 0 && len(f.excludes) == 0 {
-		return values, counters
-	}
-	filteredValues := make(map[string]struct{}, len(values))
-	filteredCounters := make(map[string]networkCounter, len(counters))
-	for name := range values {
-		if f.allows(name) {
-			filteredValues[name] = struct{}{}
-			if counter, ok := counters[name]; ok {
-				filteredCounters[name] = counter
-			}
-		}
-	}
-	return filteredValues, filteredCounters
-}
-
-func (f deviceFilter) filterDisks(values map[string]struct{}, counters map[string]diskCounter) (map[string]struct{}, map[string]diskCounter) {
-	if len(f.includes) == 0 && len(f.excludes) == 0 {
-		return values, counters
-	}
-	filteredValues := make(map[string]struct{}, len(values))
-	filteredCounters := make(map[string]diskCounter, len(counters))
-	for name := range values {
-		if f.allows(name) {
-			filteredValues[name] = struct{}{}
-			if counter, ok := counters[name]; ok {
-				filteredCounters[name] = counter
-			}
-		}
-	}
-	return filteredValues, filteredCounters
-}
-
 func (f deviceFilter) filterSortedStrings(values []string) []string {
 	if len(values) == 0 || (len(f.includes) == 0 && len(f.excludes) == 0) {
 		return values
@@ -213,8 +180,12 @@ type Collector struct {
 	disks                 map[string]struct{}
 	stopCh                chan struct{}
 	doneCh                chan struct{}
+	rawNetwork            map[string]networkCounter
+	filteredNetwork       map[string]networkCounter
 	lastNetwork           map[string]networkCounter
 	lastNetworkTime       time.Time
+	rawDisk               map[string]diskCounter
+	filteredDisk          map[string]diskCounter
 	lastDisk              map[string]diskCounter
 	lastDiskTime          time.Time
 	db                    *sql.DB
@@ -484,36 +455,57 @@ func (c *Collector) collect() {
 		log.Printf(msg.DashboardCollectSwapMetricsFailedLogFmt, err)
 		swapMemory = &mem.SwapMemoryStat{}
 	}
-	interfaces, networkCounters := readNetworkCounters()
-	tcpConnectionCount := c.tcpCount.Load()
-	udpConnectionCount := c.udpCount.Load()
-	disks, diskCounters := readDiskCounters()
-
 	c.mu.Lock()
 	if !c.enabled {
 		c.mu.Unlock()
 		return
 	}
-	interfaces, networkCounters = c.deviceFilter.filterInterfaces(interfaces, networkCounters)
-	disks, diskCounters = c.deviceFilter.filterDisks(disks, diskCounters)
-	networkRxBPS, networkTxBPS, interfaceRates := c.calculateNetworkBandwidthLocked(now, networkCounters)
-	diskReadBPS, diskWriteBPS, diskRates := c.calculateDiskBandwidthLocked(now, diskCounters)
+	if c.rawNetwork == nil {
+		c.rawNetwork = make(map[string]networkCounter)
+	}
+	readNetworkCountersInto(c.rawNetwork)
+	if c.filteredNetwork == nil {
+		c.filteredNetwork = make(map[string]networkCounter)
+	} else {
+		clear(c.filteredNetwork)
+	}
 	if c.interfaces == nil {
-		c.interfaces = make(map[string]struct{}, len(interfaces))
+		c.interfaces = make(map[string]struct{})
 	} else {
 		clear(c.interfaces)
 	}
-	for name := range interfaces {
-		c.interfaces[name] = struct{}{}
+	for name, counter := range c.rawNetwork {
+		if c.deviceFilter.allows(name) {
+			c.filteredNetwork[name] = counter
+			c.interfaces[name] = struct{}{}
+		}
+	}
+	networkRxBPS, networkTxBPS, interfaceRates := c.calculateNetworkBandwidthLocked(now, c.filteredNetwork)
+
+	tcpConnectionCount := c.tcpCount.Load()
+	udpConnectionCount := c.udpCount.Load()
+
+	if c.rawDisk == nil {
+		c.rawDisk = make(map[string]diskCounter)
+	}
+	readDiskCountersInto(c.rawDisk)
+	if c.filteredDisk == nil {
+		c.filteredDisk = make(map[string]diskCounter)
+	} else {
+		clear(c.filteredDisk)
 	}
 	if c.disks == nil {
-		c.disks = make(map[string]struct{}, len(disks))
+		c.disks = make(map[string]struct{})
 	} else {
 		clear(c.disks)
 	}
-	for name := range disks {
-		c.disks[name] = struct{}{}
+	for name, counter := range c.rawDisk {
+		if c.deviceFilter.allows(name) {
+			c.filteredDisk[name] = counter
+			c.disks[name] = struct{}{}
+		}
 	}
+	diskReadBPS, diskWriteBPS, diskRates := c.calculateDiskBandwidthLocked(now, c.filteredDisk)
 	c.nextSeq += 1
 	sample := Sample{
 		Seq: c.nextSeq, Time: now, CPUPercent: cpuPercent,
@@ -617,7 +609,12 @@ func (c *Collector) calculateNetworkBandwidthLocked(now time.Time, counters map[
 		totalRx += rxBPS
 		totalTx += txBPS
 	}
-	c.lastNetwork = counters
+	if c.lastNetwork == nil {
+		c.lastNetwork = make(map[string]networkCounter, len(counters))
+	} else {
+		clear(c.lastNetwork)
+	}
+	maps.Copy(c.lastNetwork, counters)
 	c.lastNetworkTime = now
 	return totalRx, totalTx, interfaceRates
 }
@@ -637,7 +634,12 @@ func (c *Collector) calculateDiskBandwidthLocked(now time.Time, counters map[str
 		totalRead += readBPS
 		totalWrite += writeBPS
 	}
-	c.lastDisk = counters
+	if c.lastDisk == nil {
+		c.lastDisk = make(map[string]diskCounter, len(counters))
+	} else {
+		clear(c.lastDisk)
+	}
+	maps.Copy(c.lastDisk, counters)
 	c.lastDiskTime = now
 	return totalRead, totalWrite, diskRates
 }
@@ -696,31 +698,28 @@ func (s Sample) public(nic string, diskName string) PublicSample {
 	return public
 }
 
-func readNetworkCounters() (map[string]struct{}, map[string]networkCounter) {
-	interfaces := make(map[string]struct{})
-	counters := make(map[string]networkCounter)
+func readNetworkCountersInto(counters map[string]networkCounter) {
+	clear(counters)
 	stats, err := net.IOCounters(true)
 	if err != nil {
 		log.Printf(msg.DashboardCollectNetworkMetricsFailedLogFmt, err)
-		return interfaces, counters
+		return
 	}
 	for i := range stats {
 		name := strings.TrimSpace(stats[i].Name)
 		if name == "" {
 			continue
 		}
-		interfaces[name] = struct{}{}
 		counters[name] = networkCounter{rxBytes: stats[i].BytesRecv, txBytes: stats[i].BytesSent}
 	}
-	return interfaces, counters
 }
-func readDiskCounters() (map[string]struct{}, map[string]diskCounter) {
-	disks := make(map[string]struct{})
-	counters := make(map[string]diskCounter)
+
+func readDiskCountersInto(counters map[string]diskCounter) {
+	clear(counters)
 	stats, err := disk.IOCounters()
 	if err != nil {
 		log.Printf(msg.DashboardCollectDiskMetricsFailedLogFmt, err)
-		return disks, counters
+		return
 	}
 	for name, stat := range stats {
 		deviceName := strings.TrimSpace(name)
@@ -730,10 +729,8 @@ func readDiskCounters() (map[string]struct{}, map[string]diskCounter) {
 		if deviceName == "" {
 			continue
 		}
-		disks[deviceName] = struct{}{}
 		counters[deviceName] = diskCounter{readBytes: stat.ReadBytes, writeBytes: stat.WriteBytes}
 	}
-	return disks, counters
 }
 func (c *Collector) updateSocketCounts() {
 	counts, err := sysnet.ReadSocketCounts()

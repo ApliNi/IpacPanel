@@ -95,7 +95,7 @@ func BuildCommand(path string, argv []string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-func resolveWindowsExecutable(path string, entry string) (string, error) {
+func resolveWindowsExecutable(_ string, entry string) (string, error) {
 	entry = strings.TrimSpace(entry)
 	if entry == "" {
 		return "", errors.New("command is empty")
@@ -103,13 +103,6 @@ func resolveWindowsExecutable(path string, entry string) (string, error) {
 
 	if filepath.Base(entry) != entry {
 		return resolveWindowsPathEntry(entry)
-	}
-
-	resolvedPath := normalizeWindowsPath(path)
-	if resolvedPath != "" {
-		if resolved, ok := findWindowsExecutableInDir(resolvedPath, entry); ok {
-			return resolved, nil
-		}
 	}
 
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {

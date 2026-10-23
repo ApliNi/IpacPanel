@@ -19,7 +19,7 @@ const (
 	maxTerminalInputBytes   = 16 * 1024
 	wsWriteTimeout          = 5 * time.Second
 	wsPingInterval          = 25 * time.Second
-	wsTerminalFrameMaxBytes = 256 * 1024
+	wsTerminalFrameMaxBytes = 32 * 1024
 	terminalSystemBlue      = "\x1b[34m"
 	terminalSystemYellow    = "\x1b[33m"
 )

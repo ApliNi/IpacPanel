@@ -14,12 +14,16 @@ type InstanceFS struct {
 	rootPath string
 }
 
+func New(rootPath string) *InstanceFS {
+	return &InstanceFS{rootPath: rootPath}
+}
+
 func NewFromProcess(sp *process.InstanceProcess) (*InstanceFS, error) {
 	rootPath, err := GetInstanceRootPath(sp)
 	if err != nil {
 		return nil, err
 	}
-	return &InstanceFS{rootPath: rootPath}, nil
+	return New(rootPath), nil
 }
 
 func (fs *InstanceFS) RootPath() string {

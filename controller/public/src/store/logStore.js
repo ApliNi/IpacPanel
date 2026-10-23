@@ -3,12 +3,59 @@ import { sseClient } from './sseClient.js';
 
 // 与后端 logbuf 缓冲容量保持一致的本地保留上限.
 const MAX_LOCAL_LOG_ENTRIES = 2000;
+const BATCH_EMIT_INTERVAL_MS = 50;
 
+class RingBuffer {
+	constructor(capacity) {
+		this.capacity = capacity;
+		this.buffer = new Array(capacity);
+		this.head = 0;
+		this.size = 0;
+	}
+
+	push(item) {
+		if (this.size < this.capacity) {
+			this.buffer[(this.head + this.size) % this.capacity] = item;
+			this.size += 1;
+		} else {
+			this.buffer[this.head] = item;
+			this.head = (this.head + 1) % this.capacity;
+		}
+	}
+
+	last() {
+		if (this.size === 0) return null;
+		return this.buffer[(this.head + this.size - 1) % this.capacity];
+	}
+
+	clear() {
+		this.buffer = new Array(this.capacity);
+		this.head = 0;
+		this.size = 0;
+	}
+
+	toArray() {
+		const result = new Array(this.size);
+		for (let i = 0; i < this.size; i++) {
+			result[i] = this.buffer[(this.head + i) % this.capacity];
+		}
+		return result;
+	}
+
+	setFromArray(items) {
+		this.clear();
+		const start = Math.max(0, items.length - this.capacity);
+		for (let i = start; i < items.length; i++) {
+			this.push(items[i]);
+		}
+	}
+}
+
+const ringBuffer = new RingBuffer(MAX_LOCAL_LOG_ENTRIES);
 const listeners = new Set();
 const readyWaiters = new Set();
 
 const storeState = {
-	entries: [],
 	count: 0,
 	version: 0,
 	started: false,
@@ -23,9 +70,14 @@ let cachedSnapshot = Object.freeze({
 	ready: false,
 });
 
-const invalidateSnapshot = (entriesChanged = false) => {
-	if (entriesChanged) {
-		cachedEntries = Object.freeze(storeState.entries.slice());
+let entriesDirty = false;
+let snapshotDirty = false;
+let emitTimer = null;
+
+const updateSnapshot = () => {
+	if (entriesDirty) {
+		cachedEntries = Object.freeze(ringBuffer.toArray());
+		entriesDirty = false;
 	}
 	cachedSnapshot = Object.freeze({
 		entries: cachedEntries,
@@ -33,11 +85,12 @@ const invalidateSnapshot = (entriesChanged = false) => {
 		version: storeState.version,
 		ready: storeState.ready,
 	});
+	snapshotDirty = false;
 };
 
 const emit = () => {
 	const snapshot = getSnapshot();
-	if (snapshot.ready) {
+	if (snapshot.ready && readyWaiters.size > 0) {
 		readyWaiters.forEach((waiter) => waiter.resolve(snapshot));
 		readyWaiters.clear();
 	}
@@ -50,12 +103,36 @@ const emit = () => {
 	});
 };
 
+const scheduleEmit = () => {
+	if (emitTimer !== null) {
+		return;
+	}
+	emitTimer = setTimeout(() => {
+		emitTimer = null;
+		flushEmit();
+	}, BATCH_EMIT_INTERVAL_MS);
+};
+
+const flushEmit = () => {
+	if (emitTimer !== null) {
+		clearTimeout(emitTimer);
+		emitTimer = null;
+	}
+	if (snapshotDirty) {
+		updateSnapshot();
+	}
+	emit();
+};
+
 const rejectReadyWaiters = (error) => {
 	readyWaiters.forEach((waiter) => waiter.reject(error));
 	readyWaiters.clear();
 };
 
 export const getSnapshot = () => {
+	if (snapshotDirty) {
+		updateSnapshot();
+	}
 	return cachedSnapshot;
 };
 
@@ -86,8 +163,8 @@ const applyLogCount = (payload) => {
 		return;
 	}
 	storeState.count = count;
-	invalidateSnapshot(false);
-	emit();
+	snapshotDirty = true;
+	scheduleEmit();
 };
 
 // applyLogEntry 处理服务端推送的单条日志.
@@ -104,24 +181,22 @@ const applyLogEntry = (payload) => {
 		message: String(raw?.message || ''),
 	});
 	let entriesChanged = false;
-	if (storeState.entries.length > 0) {
-		const last = storeState.entries[storeState.entries.length - 1];
+	if (ringBuffer.size > 0) {
+		const last = ringBuffer.last();
 		if (entry.seq > last.seq) {
-			storeState.entries.push(entry);
-			if (storeState.entries.length > MAX_LOCAL_LOG_ENTRIES) {
-				storeState.entries.shift();
-			}
+			ringBuffer.push(entry);
 			entriesChanged = true;
-		} else if (!storeState.entries.some((item) => item.seq === entry.seq)) {
-			storeState.entries.push(entry);
-			storeState.entries.sort((a, b) => a.seq - b.seq);
-			if (storeState.entries.length > MAX_LOCAL_LOG_ENTRIES) {
-				storeState.entries.splice(0, storeState.entries.length - MAX_LOCAL_LOG_ENTRIES);
+		} else {
+			const items = ringBuffer.toArray();
+			if (!items.some((item) => item.seq === entry.seq)) {
+				items.push(entry);
+				items.sort((a, b) => a.seq - b.seq);
+				ringBuffer.setFromArray(items);
+				entriesChanged = true;
 			}
-			entriesChanged = true;
 		}
 	} else if (storeState.ready) {
-		storeState.entries.push(entry);
+		ringBuffer.push(entry);
 		entriesChanged = true;
 	}
 	if (storeState.count < seq) {
@@ -131,8 +206,11 @@ const applyLogEntry = (payload) => {
 		storeState.count = Math.max(storeState.count, Number(payload.count));
 	}
 	storeState.version = Number(payload?.version) || storeState.count;
-	invalidateSnapshot(entriesChanged);
-	emit();
+	if (entriesChanged) {
+		entriesDirty = true;
+	}
+	snapshotDirty = true;
+	scheduleEmit();
 };
 
 // loadAll 全量拉取服务端缓冲条目, 在打开 LOG 卡片时调用.
@@ -143,16 +221,18 @@ export const loadAll = async () => {
 	}
 	const entries = Array.isArray(result.data?.entries) ? result.data.entries : [];
 	// 服务端按 seq 倒序返回; 本地以 seq 升序存储.
-	storeState.entries = entries.slice().reverse().map((item) => Object.freeze({
+	const parsed = entries.slice().reverse().map((item) => Object.freeze({
 		seq: Number(item?.seq) || 0,
 		time: Number(item?.time) || 0,
 		level: String(item?.level || ''),
 		instance: String(item?.instance || ''),
 		message: String(item?.message || ''),
 	})).filter((item) => item.seq > 0);
+	ringBuffer.setFromArray(parsed);
 	storeState.ready = true;
-	invalidateSnapshot(true);
-	emit();
+	entriesDirty = true;
+	snapshotDirty = true;
+	flushEmit();
 };
 
 sseClient.on('log_count', (payload) => {
@@ -189,20 +269,32 @@ export const stop = () => {
 	if (!storeState.started) return;
 	storeState.started = false;
 	sseClient.stop();
+	if (emitTimer !== null) {
+		clearTimeout(emitTimer);
+		emitTimer = null;
+	}
 	storeState.ready = false;
 	storeState.version = 0;
 	storeState.count = 0;
-	storeState.entries = [];
+	ringBuffer.clear();
+	entriesDirty = true;
+	snapshotDirty = true;
 	rejectReadyWaiters(new Error('运行日志流已停止'));
-	invalidateSnapshot(true);
+	updateSnapshot();
 	emit();
 };
 
 // resetLocal 清空本地条目视图并将计数归零 (服务端已清空).
 export const resetLocal = () => {
-	storeState.entries = [];
+	if (emitTimer !== null) {
+		clearTimeout(emitTimer);
+		emitTimer = null;
+	}
+	ringBuffer.clear();
 	storeState.count = 0;
-	invalidateSnapshot(true);
+	entriesDirty = true;
+	snapshotDirty = true;
+	updateSnapshot();
 	emit();
 };
 

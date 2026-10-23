@@ -162,6 +162,17 @@ func (s *IPCServer) queueControlResponse(controlCh chan<- IPCResponse, forwardDo
 func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, connDone <-chan struct{}) {
 	ticker := time.NewTicker(ipcOutputFlushInterval)
 	defer ticker.Stop()
+	defer func() {
+		for {
+			select {
+			case resp := <-controlCh:
+				resp.Release()
+			default:
+				s.drainOutput()
+				return
+			}
+		}
+	}()
 	needFlush := false
 	writeControl := func(conn *IPCConn, resp IPCResponse) bool {
 		if err := conn.WriteResponse(resp); err != nil {

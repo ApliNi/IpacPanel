@@ -654,14 +654,29 @@ const buildCenterOutAxisSplits = (lineCount = 5, ...extra) => {
 	return (u, axisIdx, scaleMin, scaleMax) => computeCenterOutSplits(scaleMin, scaleMax, count);
 };
 
-const getMaxOf = (values, fallback = 1) => {
+const getMaxOf = (values, fallback = 1, absolute = false) => {
 	let max = fallback;
-	values.forEach((value) => {
-		const numeric = Number(value);
+	const check = (val) => {
+		let numeric = Number(val);
+		if (absolute) {
+			numeric = Math.abs(numeric);
+		}
 		if (Number.isFinite(numeric) && numeric > max) {
 			max = numeric;
 		}
-	});
+	};
+	if (Array.isArray(values)) {
+		for (let i = 0; i < values.length; i++) {
+			const item = values[i];
+			if (Array.isArray(item)) {
+				for (let j = 0; j < item.length; j++) {
+					check(item[j]);
+				}
+			} else {
+				check(item);
+			}
+		}
+	}
 	return max;
 };
 
@@ -678,15 +693,37 @@ const normalizeDashboardScaleHints = (value) => {
 
 const getFullScaleHints = () => pageState.fullLoading && pageState.fullScaleHints ? pageState.fullScaleHints : null;
 
-const getFiniteValues = (values) => values.map((value) => Number(value)).filter((value) => Number.isFinite(value));
-
 const getPaddedRange = (values, fallbackMin, fallbackMax, options = {}) => {
-	const finiteValues = getFiniteValues(values);
-	if (finiteValues.length === 0) {
+	let min = Infinity;
+	let max = -Infinity;
+	let hasFinite = false;
+	const check = (val) => {
+		const numeric = Number(val);
+		if (Number.isFinite(numeric)) {
+			if (numeric < min) {
+				min = numeric;
+			}
+			if (numeric > max) {
+				max = numeric;
+			}
+			hasFinite = true;
+		}
+	};
+	if (Array.isArray(values)) {
+		for (let i = 0; i < values.length; i++) {
+			const item = values[i];
+			if (Array.isArray(item)) {
+				for (let j = 0; j < item.length; j++) {
+					check(item[j]);
+				}
+			} else {
+				check(item);
+			}
+		}
+	}
+	if (!hasFinite) {
 		return { min: fallbackMin, max: fallbackMax };
 	}
-	let min = Math.min(...finiteValues);
-	let max = Math.max(...finiteValues);
 	if (min === max) {
 		const pad = Math.max(Math.abs(max) * DETAIL_SCALE_PADDING_RATIO, 1);
 		min -= pad;
@@ -739,7 +776,7 @@ const getDiskScaleRange = (diskData, normalMaxDisk) => {
 		return { min: -max, max };
 	}
 	return pageState.detailMode.disk
-		? getPaddedRange([...diskData[1], ...diskData[2]], -normalMaxDisk, normalMaxDisk)
+		? getPaddedRange([diskData[1], diskData[2]], -normalMaxDisk, normalMaxDisk)
 		: { min: -normalMaxDisk, max: normalMaxDisk };
 };
 
@@ -750,12 +787,12 @@ const getNetworkScaleRange = (networkData, normalMaxNetwork) => {
 		return { min: -max, max };
 	}
 	return pageState.detailMode.network
-		? getPaddedRange([...networkData[1], ...networkData[2]], -normalMaxNetwork, normalMaxNetwork)
+		? getPaddedRange([networkData[1], networkData[2]], -normalMaxNetwork, normalMaxNetwork)
 		: { min: -normalMaxNetwork, max: normalMaxNetwork };
 };
 
 const getConnectionScaleRange = (connectionData) => {
-	const maxConnection = getMaxOf([...connectionData[1], ...connectionData[2]], 1) * 1.1;
+	const maxConnection = getMaxOf([connectionData[1], connectionData[2]], 1) * 1.1;
 	const hints = getFullScaleHints();
 	if (!pageState.detailMode.connection && hints && hints.connectionMax > 0) {
 		return { min: 0, max: Math.max(1, maxConnection, hints.connectionMax * 1.1) };
@@ -786,13 +823,13 @@ const reapplyChartScales = (key) => {
 	}
 	if (key === 'disk') {
 		const diskData = buildDiskSeries(samples);
-		const maxDisk = getMaxOf([...diskData[1], ...diskData[2].map((value) => Math.abs(value))], 1) * 1.1;
+		const maxDisk = getMaxOf([diskData[1], diskData[2]], 1, true) * 1.1;
 		chart.setScale('y', getDiskScaleRange(diskData, maxDisk));
 		return;
 	}
 	if (key === 'network') {
 		const networkData = buildNetworkSeries(samples);
-		const maxNetwork = getMaxOf([...networkData[1], ...networkData[2].map((value) => Math.abs(value))], 1) * 1.1;
+		const maxNetwork = getMaxOf([networkData[1], networkData[2]], 1, true) * 1.1;
 		chart.setScale('y', getNetworkScaleRange(networkData, maxNetwork));
 		return;
 	}
@@ -862,8 +899,8 @@ const renderCharts = (samples) => {
 	const hints = getFullScaleHints();
 	const maxPhysicalMemorySize = hints && hints.memoryTotalMax > 0 ? ceilBytesToDisplayUnit(hints.memoryTotalMax) : ceilBytesToDisplayUnit(getMaxOf(samples.map((sample) => sample.memoryTotal), 1));
 	const maxSwapSize = hints && hints.swapTotalMax > 0 ? hints.swapTotalMax : getMaxOf(samples.map((sample) => sample.swapTotal), 1);
-	const maxDisk = getMaxOf([...diskData[1], ...diskData[2].map((value) => Math.abs(value))], 1) * 1.1;
-	const maxNetwork = getMaxOf([...networkData[1], ...networkData[2].map((value) => Math.abs(value))], 1) * 1.1;
+	const maxDisk = getMaxOf([diskData[1], diskData[2]], 1, true) * 1.1;
+	const maxNetwork = getMaxOf([networkData[1], networkData[2]], 1, true) * 1.1;
 	const cpuScaleRange = getCpuScaleRange(samples);
 	const memoryScaleRanges = getMemoryScaleRanges(samples, maxPhysicalMemorySize, maxSwapSize);
 	const diskScaleRange = getDiskScaleRange(diskData, maxDisk);
@@ -1958,12 +1995,31 @@ const showPage = () => {
 	}
 };
 
+const destroyCharts = () => {
+	Object.keys(pageState.charts).forEach((key) => {
+		const chart = pageState.charts[key];
+		if (chart && typeof chart.destroy === 'function') {
+			try {
+				chart.destroy();
+			} catch {
+				// ignore
+			}
+		}
+		pageState.charts[key] = null;
+		const el = getChartElementByKey(key);
+		if (el) {
+			el.replaceChildren();
+		}
+	});
+};
+
 const hidePage = () => {
 	pageState.active = false;
 	dom.section.classList.remove('active');
 	stopDashboardStream();
 	resumeRefreshAndHideCrosshairs(false);
 	unbindGlobalListeners();
+	destroyCharts();
 };
 
 const cleanup = hidePage;

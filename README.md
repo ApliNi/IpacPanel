@@ -145,7 +145,6 @@ go run ./build.go
 - 定时任务调度: [`github.com/go-co-op/gocron/v2`](https://github.com/go-co-op/gocron)
 - 系统指标采集: [`github.com/shirou/gopsutil/v4/`]( https://github.com/shirou/gopsutil)
 - SQLite 数据库: [`modernc.org/sqlite`]( https://pkg.go.dev/modernc.org/sqlite)
-- 文件解压: [`github.com/mholt/archives`](https://github.com/mholt/archives)
 - 压缩算法: [`github.com/klauspost/compress`](https://github.com/klauspost/compress)
 - Shell 命令解析: [`github.com/kballard/go-shellquote`](https://github.com/kballard/go-shellquote)
 

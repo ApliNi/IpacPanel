@@ -6,10 +6,15 @@ import (
 	"sync"
 )
 
+const (
+	maxUserSSEStreams   = 128
+	maxGlobalSSEStreams = 64
+)
+
 var (
-	sseGlobalLimiter  = make(chan struct{}, 64)
-	sseUserLimitersMu sync.Mutex
-	sseUserLimiters   = make(map[string]chan struct{})
+	sseGlobalLimiter = make(chan struct{}, maxGlobalSSEStreams)
+	sseUserStreamsMu sync.Mutex
+	sseUserStreams   = make(map[string]int)
 )
 
 // AcquireSSESlot 为 SSE 连接申请并发流额度: 已登录用户使用按用户的额度,
@@ -17,32 +22,33 @@ var (
 func AcquireSSESlot(r *http.Request) (release func(), ok bool) {
 	username, authenticated := authz.UsernameFromRequest(r)
 	if authenticated && username != "" {
-		sseUserLimitersMu.Lock()
-		ch, exists := sseUserLimiters[username]
-		if !exists {
-			ch = make(chan struct{}, 128)
-			sseUserLimiters[username] = ch
-		}
-		sseUserLimitersMu.Unlock()
-		select {
-		case ch <- struct{}{}:
-			return func() {
-				<-ch
-				sseUserLimitersMu.Lock()
-				// 仅当 map 仍指向当前归还的通道且该通道已清空时才移除条目,
-				// 避免并发 acquire 复用同一用户名新建的通道被误删.
-				if current, exists := sseUserLimiters[username]; exists && current == ch && len(ch) == 0 {
-					delete(sseUserLimiters, username)
-				}
-				sseUserLimitersMu.Unlock()
-			}, true
-		default:
+		sseUserStreamsMu.Lock()
+		if sseUserStreams[username] >= maxUserSSEStreams {
+			sseUserStreamsMu.Unlock()
 			return nil, false
 		}
+		sseUserStreams[username]++
+		sseUserStreamsMu.Unlock()
+
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				sseUserStreamsMu.Lock()
+				if sseUserStreams[username] <= 1 {
+					delete(sseUserStreams, username)
+				} else {
+					sseUserStreams[username]--
+				}
+				sseUserStreamsMu.Unlock()
+			})
+		}, true
 	}
 	select {
 	case sseGlobalLimiter <- struct{}{}:
-		return func() { <-sseGlobalLimiter }, true
+		var once sync.Once
+		return func() {
+			once.Do(func() { <-sseGlobalLimiter })
+		}, true
 	default:
 		return nil, false
 	}
