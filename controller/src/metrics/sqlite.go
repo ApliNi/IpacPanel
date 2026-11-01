@@ -26,6 +26,15 @@ const (
 	sqliteCompactBatchDuration   = 2 * time.Hour
 	dashboardSQLiteDBName        = "dashboard.sqlite3"
 )
+type sqliteBatchDeviceKey struct {
+	kind int64
+	name string
+}
+
+type sqliteBatchDeviceRange struct {
+	firstTS int64
+	lastTS  int64
+}
 
 func (c *Collector) takeSQLitePendingLocked() []Sample {
 	if len(c.sqlitePending) == 0 {
@@ -202,7 +211,7 @@ func (c *Collector) currentDBForPath(path string, generation uint64) *sql.DB {
 }
 
 func openSQLite(path string) (*sql.DB, error) {
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=cache_size(-512)&_pragma=mmap_size(0)", filepath.ToSlash(path), sqliteBusyTimeoutMS)
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=cache_size(-512)&_pragma=mmap_size(0)&_pragma=temp_store(FILE)", filepath.ToSlash(path), sqliteBusyTimeoutMS)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf(msg.DashboardSQLiteOpenFailedFmt, err)
@@ -228,6 +237,7 @@ func initSQLiteSchema(ctx context.Context, db *sql.DB) error {
 		`PRAGMA auto_vacuum = INCREMENTAL`,
 		`PRAGMA cache_size = -512`,
 		`PRAGMA mmap_size = 0`,
+		`PRAGMA temp_store = FILE`,
 		`CREATE TABLE IF NOT EXISTS dashboard_devices (
 	id INTEGER PRIMARY KEY,
 	kind INTEGER NOT NULL,
@@ -515,6 +525,49 @@ ON CONFLICT(device_id, ts, seq) DO UPDATE SET
 		return fmt.Errorf(msg.DashboardSQLitePrepareDeviceSampleWriteFailedFmt, err)
 	}
 	defer deviceMetricStmt.Close()
+
+	deviceRanges := make(map[sqliteBatchDeviceKey]sqliteBatchDeviceRange)
+	for i := range samples {
+		ts := samples[i].Time.Unix()
+		for _, dev := range samples[i].interfaces {
+			k := sqliteBatchDeviceKey{kind: dashboardDeviceKindNIC, name: dev.name}
+			if r, ok := deviceRanges[k]; !ok {
+				deviceRanges[k] = sqliteBatchDeviceRange{firstTS: ts, lastTS: ts}
+			} else {
+				if ts < r.firstTS {
+					r.firstTS = ts
+				}
+				if ts > r.lastTS {
+					r.lastTS = ts
+				}
+				deviceRanges[k] = r
+			}
+		}
+		for _, dev := range samples[i].disks {
+			k := sqliteBatchDeviceKey{kind: dashboardDeviceKindDisk, name: dev.name}
+			if r, ok := deviceRanges[k]; !ok {
+				deviceRanges[k] = sqliteBatchDeviceRange{firstTS: ts, lastTS: ts}
+			} else {
+				if ts < r.firstTS {
+					r.firstTS = ts
+				}
+				if ts > r.lastTS {
+					r.lastTS = ts
+				}
+				deviceRanges[k] = r
+			}
+		}
+	}
+
+	deviceIDs := make(map[sqliteBatchDeviceKey]int64, len(deviceRanges))
+	for k, r := range deviceRanges {
+		var deviceID int64
+		if err := deviceStmt.QueryRowContext(ctx, k.kind, k.name, r.firstTS, r.lastTS).Scan(&deviceID); err != nil {
+			return fmt.Errorf(msg.DashboardSQLiteWriteDeviceFailedFmt, err)
+		}
+		deviceIDs[k] = deviceID
+	}
+
 	for i := range samples {
 		sample := samples[i]
 		ts := sample.Time.Unix()
@@ -522,19 +575,13 @@ ON CONFLICT(device_id, ts, seq) DO UPDATE SET
 			return fmt.Errorf(msg.DashboardSQLiteWriteSampleFailedFmt, err)
 		}
 		for _, dev := range sample.interfaces {
-			var deviceID int64
-			if err := deviceStmt.QueryRowContext(ctx, dashboardDeviceKindNIC, dev.name, ts, ts).Scan(&deviceID); err != nil {
-				return fmt.Errorf(msg.DashboardSQLiteWriteDeviceFailedFmt, err)
-			}
+			deviceID := deviceIDs[sqliteBatchDeviceKey{kind: dashboardDeviceKindNIC, name: dev.name}]
 			if _, err := deviceMetricStmt.ExecContext(ctx, ts, sample.Seq, deviceID, dev.read, dev.write); err != nil {
 				return fmt.Errorf(msg.DashboardSQLiteWriteDeviceSampleFailedFmt, err)
 			}
 		}
 		for _, dev := range sample.disks {
-			var deviceID int64
-			if err := deviceStmt.QueryRowContext(ctx, dashboardDeviceKindDisk, dev.name, ts, ts).Scan(&deviceID); err != nil {
-				return fmt.Errorf(msg.DashboardSQLiteWriteDeviceFailedFmt, err)
-			}
+			deviceID := deviceIDs[sqliteBatchDeviceKey{kind: dashboardDeviceKindDisk, name: dev.name}]
 			if _, err := deviceMetricStmt.ExecContext(ctx, ts, sample.Seq, deviceID, dev.read, dev.write); err != nil {
 				return fmt.Errorf(msg.DashboardSQLiteWriteDeviceSampleFailedFmt, err)
 			}

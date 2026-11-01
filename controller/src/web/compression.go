@@ -3,7 +3,6 @@ package web
 import (
 	"IpacPanel/controller/src/msg"
 	"bufio"
-	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -34,7 +34,15 @@ var zstdEncoderPool = sync.Pool{
 
 var gzipEncoderPool = sync.Pool{
 	New: func() any {
-		return gzip.NewWriter(io.Discard)
+		gw, _ := gzip.NewWriterLevel(io.Discard, gzip.BestSpeed)
+		return gw
+	},
+}
+
+var copyBufferPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 32*1024)
+		return &buf
 	},
 }
 
@@ -162,8 +170,10 @@ func (w *compressionResponseWriter) Close() {
 	}
 	_ = w.compressor.Close()
 	if encoder, ok := w.compressor.(*zstd.Encoder); ok {
+		encoder.Reset(io.Discard)
 		zstdEncoderPool.Put(encoder)
 	} else if gw, ok := w.compressor.(*gzip.Writer); ok {
+		gw.Reset(io.Discard)
 		gzipEncoderPool.Put(gw)
 	}
 	w.compressor = nil
@@ -291,7 +301,9 @@ func selectResponseCompression(acceptEncoding string) string {
 }
 
 func copyWithoutReaderFrom(dst io.Writer, src io.Reader) (int64, error) {
-	buf := make([]byte, 32*1024)
+	bufPtr := copyBufferPool.Get().(*[]byte)
+	defer copyBufferPool.Put(bufPtr)
+	buf := *bufPtr
 	var written int64
 	for {
 		nr, er := src.Read(buf)

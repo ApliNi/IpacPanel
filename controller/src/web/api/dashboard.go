@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,6 +23,88 @@ type dashboardMetricCollector interface {
 var dashboardCollector dashboardMetricCollector
 
 const dashboardMaxPoints = 1000
+type dashboardBroadcastItem struct {
+	metadata   metrics.Metadata
+	sample     metrics.PublicSample
+	hasSample  bool
+	sampleTime int64
+}
+
+type dashboardHub struct {
+	mu          sync.Mutex
+	subscribers map[chan dashboardBroadcastItem]struct{}
+	running     bool
+	stopCh      chan struct{}
+}
+
+var globalDashboardHub = &dashboardHub{
+	subscribers: make(map[chan dashboardBroadcastItem]struct{}),
+}
+
+func (h *dashboardHub) subscribe() chan dashboardBroadcastItem {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ch := make(chan dashboardBroadcastItem, 4)
+	h.subscribers[ch] = struct{}{}
+	if !h.running {
+		h.running = true
+		h.stopCh = make(chan struct{})
+		go h.run(h.stopCh)
+	}
+	return ch
+}
+
+func (h *dashboardHub) unsubscribe(ch chan dashboardBroadcastItem) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.subscribers, ch)
+	close(ch)
+	if len(h.subscribers) == 0 && h.running {
+		h.running = false
+		if h.stopCh != nil {
+			close(h.stopCh)
+			h.stopCh = nil
+		}
+	}
+}
+
+func (h *dashboardHub) run(stopCh chan struct{}) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	var lastSampleTime int64
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ticker.C:
+			if dashboardCollector == nil {
+				continue
+			}
+			metadata := dashboardCollector.Metadata()
+			var item dashboardBroadcastItem
+			item.metadata = metadata
+			if metadata.Enabled {
+				if latest, exists := dashboardCollector.Latest("", ""); exists {
+					ts := latest.Time.Unix()
+					if ts > lastSampleTime {
+						lastSampleTime = ts
+						item.sampleTime = ts
+						item.sample = latest
+						item.hasSample = true
+					}
+				}
+			}
+			h.mu.Lock()
+			for ch := range h.subscribers {
+				select {
+				case ch <- item:
+				default:
+				}
+			}
+			h.mu.Unlock()
+		}
+	}
+}
 
 type dashboardSnapshotResponse struct {
 	Enabled         bool                   `json:"enabled"`
@@ -83,7 +166,7 @@ type dashboardFullMetaEvent struct {
 type dashboardFullSamplesEvent struct {
 	Seq     int64     `json:"seq"`
 	BaseTS  int64     `json:"base_ts"`
-	Samples [][]int64 `json:"samples"`
+	Columns [][]int64 `json:"columns"`
 }
 
 type dashboardAppendEvent struct {
@@ -105,7 +188,7 @@ type dashboardDisabledEvent struct {
 	Interfaces      []string  `json:"interfaces"`
 	Disks           []string  `json:"disks"`
 	BaseTS          int64     `json:"base_ts"`
-	Samples         [][]int64 `json:"samples"`
+	Columns         [][]int64 `json:"columns"`
 }
 
 type dashboardErrorEvent struct {
@@ -236,7 +319,7 @@ func HandleApiDashboardEvents(w http.ResponseWriter, r *http.Request) {
 	var lastInterfaces string
 	var lastDisks string
 	sendFull := func(snapshot metrics.Snapshot) bool {
-		seq, baseTS, fullSamples := buildDashboardStreamSamples(snapshot.Samples, 0)
+		seq, baseTS, columns := buildDashboardStreamColumns(snapshot.Samples, 0)
 		if snapshot.Enabled && baseTS <= 0 {
 			baseTS = time.Now().Unix()
 		}
@@ -252,18 +335,18 @@ func HandleApiDashboardEvents(w http.ResponseWriter, r *http.Request) {
 		if !snapshot.Enabled {
 			return sse.SendEvent("dashboard_disabled", dashboardDisabledEvent{
 				Enabled: false, MemoryMaxMin: snapshot.MemoryMaxMin, SelectedMinutes: minutes,
-				Interfaces: visibleInterfaces, Disks: visibleDisks, BaseTS: 0, Samples: [][]int64{},
+				Interfaces: visibleInterfaces, Disks: visibleDisks, BaseTS: 0, Columns: [][]int64{},
 			}) == nil
 		}
 		fullMeta := dashboardFullMetaEvent{
 			Seq: seq, Enabled: snapshot.Enabled, MemoryMaxMin: snapshot.MemoryMaxMin, SelectedMinutes: minutes,
 			Filter: dashboardStreamFilter{NIC: nic, Disk: disk}, Interfaces: visibleInterfaces, Disks: visibleDisks,
-			BaseTS: baseTS, SampleSchema: dashboardSampleSchema, ScaleHints: buildDashboardScaleHints(snapshot.Samples), SampleTotal: len(fullSamples),
+			BaseTS: baseTS, SampleSchema: dashboardSampleSchema, ScaleHints: buildDashboardScaleHints(snapshot.Samples), SampleTotal: len(snapshot.Samples),
 		}
 		if err := sse.SendEvent("dashboard_full_meta", fullMeta); err != nil {
 			return false
 		}
-		if err := sse.SendEvent("dashboard_full_samples", dashboardFullSamplesEvent{Seq: seq, BaseTS: baseTS, Samples: fullSamples}); err != nil {
+		if err := sse.SendEvent("dashboard_full_samples", dashboardFullSamplesEvent{Seq: seq, BaseTS: baseTS, Columns: columns}); err != nil {
 			return false
 		}
 		return true
@@ -274,8 +357,8 @@ func HandleApiDashboardEvents(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	keepaliveTicker := time.NewTicker(sseKeepaliveInterval)
 	defer keepaliveTicker.Stop()
-	sampleTicker := time.NewTicker(time.Second)
-	defer sampleTicker.Stop()
+	subCh := globalDashboardHub.subscribe()
+	defer globalDashboardHub.unsubscribe(subCh)
 	for {
 		select {
 		case <-ctx.Done():
@@ -284,7 +367,10 @@ func HandleApiDashboardEvents(w http.ResponseWriter, r *http.Request) {
 			if err := sse.SendComment(); err != nil {
 				return
 			}
-		case <-sampleTicker.C:
+		case item, ok := <-subCh:
+			if !ok {
+				return
+			}
 			if username != "" {
 				// 公共仪表板 (username 为空) 跳过重验; 登录用户被禁用或删除时断开连接.
 				freshUser, stillValid := authz.AuthUserByUsername(username)
@@ -304,7 +390,7 @@ func HandleApiDashboardEvents(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			metadata := dashboardCollector.Metadata()
+			metadata := item.metadata
 			if metadata.Enabled != lastEnabled || metadata.MemoryMaxMin != lastMemoryMaxMin {
 				if !sendFull(dashboardCollector.Snapshot(minutes, nic, disk, dashboardMaxPoints)) {
 					return
@@ -322,25 +408,26 @@ func HandleApiDashboardEvents(w http.ResponseWriter, r *http.Request) {
 				lastInterfaces = interfacesKey
 				lastDisks = disksKey
 			}
-			if !metadata.Enabled {
+			if !metadata.Enabled || !item.hasSample || item.sampleTime <= lastSampleTime {
 				continue
 			}
-			latest, exists := dashboardCollector.Latest(nic, disk)
-			if !exists || !latest.Time.After(time.Unix(lastSampleTime, 0)) {
-				continue
+			sample := item.sample
+			if nic != "" || disk != "" {
+				if customLatest, exists := dashboardCollector.Latest(nic, disk); exists {
+					sample = customLatest
+				}
 			}
 			if lastBaseTS <= 0 {
-				lastBaseTS = latest.Time.Unix()
+				lastBaseTS = sample.Time.Unix()
 			}
 			lastSeq += 1
-			if err := sse.SendEvent("dashboard_append", dashboardAppendEvent{Seq: lastSeq, BaseTS: lastBaseTS, Sample: encodeDashboardSample(latest, lastBaseTS)}); err != nil {
+			if err := sse.SendEvent("dashboard_append", dashboardAppendEvent{Seq: lastSeq, BaseTS: lastBaseTS, Sample: encodeDashboardSample(sample, lastBaseTS)}); err != nil {
 				return
 			}
-			lastSampleTime = latest.Time.Unix()
+			lastSampleTime = sample.Time.Unix()
 		}
 	}
 }
-
 func parseDashboardMinutes(w http.ResponseWriter, minutes int) (int, bool) {
 	if minutes == 0 {
 		return 30, true
@@ -363,18 +450,34 @@ func parseDashboardStreamMinutes(sse *web.SSEWriter, minutes int) (int, bool) {
 	return minutes, true
 }
 
-func buildDashboardStreamSamples(samples []metrics.PublicSample, baseTS int64) (int64, int64, [][]int64) {
-	if len(samples) == 0 {
-		return 0, 0, [][]int64{}
+func buildDashboardStreamColumns(samples []metrics.PublicSample, baseTS int64) (int64, int64, [][]int64) {
+	n := len(samples)
+	if n == 0 {
+		return 0, baseTS, make([][]int64, len(dashboardSampleSchema))
 	}
 	if baseTS <= 0 {
 		baseTS = samples[0].Time.Unix()
 	}
-	rows := make([][]int64, 0, len(samples))
-	for i := range samples {
-		rows = append(rows, encodeDashboardSample(samples[i], baseTS))
+	columns := make([][]int64, len(dashboardSampleSchema))
+	for i := range columns {
+		columns[i] = make([]int64, n)
 	}
-	return int64(len(rows)), baseTS, rows
+	for i := range samples {
+		sample := samples[i]
+		columns[0][i] = sample.Time.Unix() - baseTS
+		columns[1][i] = encodeDashboardCPU(sample.CPUPercent)
+		columns[2][i] = safeDashboardUint64(sample.MemoryUsedBytes)
+		columns[3][i] = safeDashboardUint64(sample.MemoryTotalBytes)
+		columns[4][i] = safeDashboardUint64(sample.SwapUsedBytes)
+		columns[5][i] = safeDashboardUint64(sample.SwapTotalBytes)
+		columns[6][i] = safeDashboardUint64(sample.NetworkRxBPS)
+		columns[7][i] = safeDashboardUint64(sample.NetworkTxBPS)
+		columns[8][i] = safeDashboardUint64(sample.DiskReadBPS)
+		columns[9][i] = safeDashboardUint64(sample.DiskWriteBPS)
+		columns[10][i] = safeDashboardUint64(sample.TCPConnectionCount)
+		columns[11][i] = safeDashboardUint64(sample.UDPConnectionCount)
+	}
+	return int64(n), baseTS, columns
 }
 
 func buildDashboardScaleHints(samples []metrics.PublicSample) dashboardScaleHints {

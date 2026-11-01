@@ -17,9 +17,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"IpacPanel/controller/src/compat"
 )
+
+var fileReadBufferPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 32*1024)
+		return &buf
+	},
+}
 
 const fileSaveJSONBodyLimit int64 = maxOpenFileSize + (256 * 1024)
 
@@ -68,8 +76,9 @@ func writeFileReadResponse(w http.ResponseWriter, relativePath string, targetPat
 	w.Header().Set("X-File-Size", fmt.Sprintf("%d", size))
 	w.WriteHeader(http.StatusOK)
 
-	buf := make([]byte, 32*1024)
-	_, err := io.CopyBuffer(w, file, buf)
+	bufPtr := fileReadBufferPool.Get().(*[]byte)
+	defer fileReadBufferPool.Put(bufPtr)
+	_, err := io.CopyBuffer(w, file, *bufPtr)
 	return err
 }
 

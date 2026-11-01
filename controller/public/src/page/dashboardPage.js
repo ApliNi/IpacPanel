@@ -395,29 +395,93 @@ const decodeDashboardStreamSamples = (baseTs, rows) => {
 	return rows.map((row) => decodeDashboardStreamSample(baseTs, row)).filter((sample) => sample.time > 0).sort((a, b) => a.time - b.time);
 };
 
+const decodeDashboardStreamColumns = (baseTs, columns) => {
+	if (!Array.isArray(columns) || columns.length === 0) {
+		return [];
+	}
+	const safeBaseTs = Number(baseTs);
+	if (!Number.isFinite(safeBaseTs) || safeBaseTs <= 0) {
+		throw new Error('仪表板基准时间无效.');
+	}
+	const len = Array.isArray(columns[0]) ? columns[0].length : 0;
+	if (len === 0) {
+		return [];
+	}
+	const dtCol = columns[0];
+	const cpuCol = columns[1];
+	const memUsedCol = columns[2];
+	const memTotalCol = columns[3];
+	const swapUsedCol = columns[4];
+	const swapTotalCol = columns[5];
+	const netRxCol = columns[6];
+	const netTxCol = columns[7];
+	const diskReadCol = columns[8];
+	const diskWriteCol = columns[9];
+	const tcpCol = columns[10];
+	const udpCol = columns[11];
+	const samples = new Array(len);
+	for (let i = 0; i < len; i++) {
+		samples[i] = {
+			time: Math.floor(safeBaseTs + Number(dtCol[i])),
+			cpu: Math.max(0, Math.min(100, Number(cpuCol[i]) / 10)),
+			memoryUsed: Math.max(0, Number(memUsedCol[i])),
+			memoryTotal: Math.max(0, Number(memTotalCol[i])),
+			swapUsed: Math.max(0, Number(swapUsedCol[i])),
+			swapTotal: Math.max(0, Number(swapTotalCol[i])),
+			networkRx: Math.max(0, Number(netRxCol[i])),
+			networkTx: Math.max(0, Number(netTxCol[i])),
+			diskRead: Math.max(0, Number(diskReadCol[i])),
+			diskWrite: Math.max(0, Number(diskWriteCol[i])),
+			tcpConnections: Math.max(0, Number(tcpCol[i])),
+			udpConnections: Math.max(0, Number(udpCol[i])),
+		};
+	}
+	return samples;
+};
+
+const decodeDashboardStreamPayloadSamples = (baseTs, payload) => {
+	if (Array.isArray(payload.columns)) {
+		return decodeDashboardStreamColumns(baseTs, payload.columns);
+	}
+	if (Array.isArray(payload.samples)) {
+		return decodeDashboardStreamSamples(baseTs, payload.samples);
+	}
+	return [];
+};
+
 const getGapBreakThresholdSeconds = () => {
 	const windowSeconds = Math.max(1, pageState.displayMinutes) * 60;
 	return Math.max(3, Math.ceil(windowSeconds / 1000) * 3);
 };
 
 const buildTimeSeriesWithGapBreaks = (samples, fieldResolvers) => {
+	const len = samples.length;
 	const times = [];
-	const values = fieldResolvers.map(() => []);
+	const resolverCount = fieldResolvers.length;
+	const values = new Array(resolverCount);
+	for (let j = 0; j < resolverCount; j++) {
+		values[j] = [];
+	}
 	const gapThresholdSeconds = getGapBreakThresholdSeconds();
-	samples.forEach((sample, index) => {
-		const previousSample = index > 0 ? samples[index - 1] : null;
-		if (previousSample && sample.time - previousSample.time > gapThresholdSeconds) {
-			const breakTime = Math.floor((previousSample.time + sample.time) / 2);
-			if (breakTime > previousSample.time && breakTime < sample.time) {
-				times.push(breakTime);
-				values.forEach((seriesValues) => seriesValues.push(null));
+	for (let i = 0; i < len; i++) {
+		const sample = samples[i];
+		if (i > 0) {
+			const previousTime = samples[i - 1].time;
+			if (sample.time - previousTime > gapThresholdSeconds) {
+				const breakTime = Math.floor((previousTime + sample.time) / 2);
+				if (breakTime > previousTime && breakTime < sample.time) {
+					times.push(breakTime);
+					for (let j = 0; j < resolverCount; j++) {
+						values[j].push(null);
+					}
+				}
 			}
 		}
 		times.push(sample.time);
-		fieldResolvers.forEach((resolveField, fieldIndex) => {
-			values[fieldIndex].push(resolveField(sample));
-		});
-	});
+		for (let j = 0; j < resolverCount; j++) {
+			values[j].push(fieldResolvers[j](sample));
+		}
+	}
 	return [times, ...values];
 };
 
@@ -1130,7 +1194,14 @@ const renderDashboardSamples = (force = false) => {
 const trimDashboardSamples = () => {
 	const windowSeconds = Math.max(1, pageState.displayMinutes) * 60;
 	const cutoff = Math.floor(Date.now() / 1000) - windowSeconds;
-	pageState.lastSamples = pageState.lastSamples.filter((sample) => sample.time >= cutoff);
+	const samples = pageState.lastSamples;
+	let removeCount = 0;
+	while (removeCount < samples.length && samples[removeCount].time < cutoff) {
+		removeCount++;
+	}
+	if (removeCount > 0) {
+		samples.splice(0, removeCount);
+	}
 };
 
 const parseSSEPayload = (event) => parseSSEJsonData(event, '仪表板推送数据解析失败');
@@ -1146,7 +1217,7 @@ const handleDashboardFull = (payload) => {
 	if (!Number.isFinite(seq) || seq < 0 || !Number.isFinite(baseTs) || baseTs <= 0) {
 		throw new Error('仪表板全量数据序号无效.');
 	}
-	const samples = decodeDashboardStreamSamples(baseTs, payload.samples);
+	const samples = decodeDashboardStreamPayloadSamples(baseTs, payload);
 	pageState.fullLoading = false;
 	pageState.fullScaleHints = null;
 	pageState.preserveSamplesOnNextFull = false;
@@ -1213,7 +1284,7 @@ const handleDashboardFullSamples = (payload) => {
 	if (!pageState.fullLoading || seq !== pageState.lastSeq || baseTs !== pageState.baseTs) {
 		throw new Error('仪表板全量采样数据与元数据不匹配.');
 	}
-	pageState.lastSamples = decodeDashboardStreamSamples(baseTs, payload.samples);
+	pageState.lastSamples = decodeDashboardStreamPayloadSamples(baseTs, payload);
 	pageState.lastSeq = seq;
 	pageState.baseTs = baseTs;
 	pageState.fullLoading = false;
