@@ -95,22 +95,29 @@ func BuildCommand(path string, argv []string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-func resolveWindowsExecutable(_ string, entry string) (string, error) {
+func resolveWindowsExecutable(dir string, entry string) (string, error) {
 	entry = strings.TrimSpace(entry)
 	if entry == "" {
 		return "", errors.New("command is empty")
 	}
 
+	dir = normalizeWindowsPath(dir)
 	if filepath.Base(entry) != entry {
-		return resolveWindowsPathEntry(entry)
+		return resolveWindowsPathEntry(dir, entry)
 	}
 
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		dir = normalizeWindowsPath(dir)
-		if dir == "" {
+	if dir != "" {
+		if resolved, ok := findWindowsExecutableInDir(dir, entry); ok {
+			return resolved, nil
+		}
+	}
+
+	for _, p := range filepath.SplitList(os.Getenv("PATH")) {
+		p = normalizeWindowsPath(p)
+		if p == "" {
 			continue
 		}
-		if resolved, ok := findWindowsExecutableInDir(dir, entry); ok {
+		if resolved, ok := findWindowsExecutableInDir(p, entry); ok {
 			return resolved, nil
 		}
 	}
@@ -121,13 +128,34 @@ func resolveWindowsExecutable(_ string, entry string) (string, error) {
 	return "", fmt.Errorf("executable file not found in %%PATH%%: %s", entry)
 }
 
-func resolveWindowsPathEntry(entry string) (string, error) {
+func resolveWindowsPathEntry(dir string, entry string) (string, error) {
+	if filepath.IsAbs(entry) {
+		if filepath.Ext(entry) != "" {
+			return entry, nil
+		}
+		if resolved, ok := findWindowsExecutableInDir(filepath.Dir(entry), filepath.Base(entry)); ok {
+			return resolved, nil
+		}
+		return entry, nil
+	}
+
+	if dir != "" {
+		target := filepath.Join(dir, entry)
+		if filepath.Ext(target) != "" {
+			if info, statErr := os.Stat(target); statErr == nil && !info.IsDir() {
+				return target, nil
+			}
+		} else if resolved, ok := findWindowsExecutableInDir(filepath.Dir(target), filepath.Base(target)); ok {
+			return resolved, nil
+		}
+	}
+
 	if filepath.Ext(entry) != "" {
 		return entry, nil
 	}
-	dir := filepath.Dir(entry)
+	entryDir := filepath.Dir(entry)
 	base := filepath.Base(entry)
-	if resolved, ok := findWindowsExecutableInDir(dir, base); ok {
+	if resolved, ok := findWindowsExecutableInDir(entryDir, base); ok {
 		return resolved, nil
 	}
 	return entry, nil
@@ -154,7 +182,7 @@ func windowsExecutableCandidates(entry string) []string {
 
 	candidates := make([]string, 0, 2)
 	seen := map[string]struct{}{}
-	for _, ext := range []string{".COM", ".EXE"} {
+	for _, ext := range []string{".com", ".exe"} {
 		candidate := entry + ext
 		key := strings.ToLower(candidate)
 		if _, ok := seen[key]; ok {
