@@ -7,29 +7,12 @@ const runtimeConfig = {
 };
 
 const monacoWorkerAssets = new Map([
-	['editor', '/lib/monaco-editor/assets/editor.worker-Be8ye1pW.js'],
-	['editorWorkerService', '/lib/monaco-editor/assets/editor.worker-Be8ye1pW.js'],
-	['typescript', '/lib/monaco-editor/assets/ts.worker-CMbG-7ft.js'],
-	['javascript', '/lib/monaco-editor/assets/ts.worker-CMbG-7ft.js'],
-	['json', '/lib/monaco-editor/assets/json.worker-DKiEKt88.js'],
-	['css', '/lib/monaco-editor/assets/css.worker-HnVq6Ewq.js'],
-	['scss', '/lib/monaco-editor/assets/css.worker-HnVq6Ewq.js'],
-	['less', '/lib/monaco-editor/assets/css.worker-HnVq6Ewq.js'],
-	['html', '/lib/monaco-editor/assets/html.worker-B51mlPHg.js'],
+	['editor', '/lib/monaco-editor/assets/editor.worker-_vAIFJDs.js'],
+	['editorWorkerService', '/lib/monaco-editor/assets/editor.worker-_vAIFJDs.js'],
+	['json', '/lib/monaco-editor/assets/json.worker-Csf_TLih.js'],
 ]);
 
 const monacoNlsLanguages = new Set([
-	'cs',
-	'de',
-	'es',
-	'fr',
-	'it',
-	'ja',
-	'ko',
-	'pl',
-	'pt-br',
-	'ru',
-	'tr',
 	'zh-cn',
 	'zh-tw',
 ]);
@@ -64,7 +47,7 @@ const resolveMonacoNlsLanguage = () => {
 	return '';
 };
 
-const getMonacoNlsModuleLanguage = (language) => language ? `${language}.js` : '';
+const getMonacoNlsModuleLanguage = (language) => String(language || '');
 
 const getGlobalWindow = () => {
 	if (typeof window === 'undefined') {
@@ -94,20 +77,12 @@ const stopMonacoLanguageWorkers = (monaco) => {
 	if (!monaco?.languages) {
 		return;
 	}
-	const languages = [
-		monaco.languages.json?.jsonDefaults,
-		monaco.languages.typescript?.typescriptDefaults,
-		monaco.languages.typescript?.javascriptDefaults,
-		monaco.languages.css?.cssDefaults,
-		monaco.languages.html?.htmlDefaults,
-	];
-	for (const lang of languages) {
-		try {
-			if (typeof lang?.setDiagnosticsOptions === 'function' && typeof lang?.getDiagnosticsOptions === 'function') {
-				lang.setDiagnosticsOptions(lang.getDiagnosticsOptions());
-			}
-		} catch (_) {}
-	}
+	const jsonDefaults = monaco.languages.json?.jsonDefaults;
+	try {
+		if (typeof jsonDefaults?.setDiagnosticsOptions === 'function' && typeof jsonDefaults?.getDiagnosticsOptions === 'function') {
+			jsonDefaults.setDiagnosticsOptions(jsonDefaults.getDiagnosticsOptions());
+		}
+	} catch (_) {}
 };
 
 const configureMonacoEnvironment = () => {
@@ -128,10 +103,6 @@ const configureMonacoEnvironment = () => {
 	};
 };
 
-const enableModeConfiguration = (defaults, configuration) => {
-	defaults?.setModeConfiguration?.(configuration);
-};
-
 const configureMonacoLanguageDefaults = (monaco) => {
 	if (monacoLanguageDefaultsConfigured || !monaco?.languages) {
 		return;
@@ -145,77 +116,6 @@ const configureMonacoLanguageDefaults = (monaco) => {
 		trailingCommas: 'ignore',
 		enableSchemaRequest: false,
 		schemas: [],
-	});
-
-	const ts = monaco.languages.typescript;
-	if (ts) {
-		const compilerOptions = {
-			target: ts.ScriptTarget?.ES2022 ?? ts.ScriptTarget?.ES2020,
-			module: ts.ModuleKind?.ESNext,
-			moduleResolution: ts.ModuleResolutionKind?.NodeJs,
-			allowNonTsExtensions: true,
-			allowJs: true,
-			checkJs: false,
-			noEmit: true,
-			strict: false,
-			jsx: ts.JsxEmit?.ReactJSX ?? ts.JsxEmit?.React,
-		};
-		const diagnosticsOptions = {
-			noSemanticValidation: false,
-			noSyntaxValidation: false,
-		};
-		ts.typescriptDefaults?.setCompilerOptions?.(compilerOptions);
-		ts.javascriptDefaults?.setCompilerOptions?.(compilerOptions);
-		ts.typescriptDefaults?.setDiagnosticsOptions?.(diagnosticsOptions);
-		ts.javascriptDefaults?.setDiagnosticsOptions?.(diagnosticsOptions);
-		ts.typescriptDefaults?.setEagerModelSync?.(true);
-		ts.javascriptDefaults?.setEagerModelSync?.(true);
-	}
-
-	const cssModeConfiguration = {
-		completionItems: true,
-		hovers: true,
-		documentSymbols: true,
-		definitions: true,
-		references: true,
-		documentHighlights: true,
-		documentLinks: true,
-		foldingRanges: true,
-		diagnostics: true,
-		selectionRanges: true,
-		colors: true,
-		documentFormattingEdits: true,
-		documentRangeFormattingEdits: true,
-	};
-	for (const defaults of [
-		monaco.languages.css?.cssDefaults,
-		monaco.languages.css?.scssDefaults,
-		monaco.languages.css?.lessDefaults,
-	]) {
-		defaults?.setDiagnosticsOptions?.({ validate: true });
-		enableModeConfiguration(defaults, cssModeConfiguration);
-	}
-
-	const htmlDefaults = monaco.languages.html?.htmlDefaults;
-	htmlDefaults?.setOptions?.({
-		format: {
-			tabSize: 4,
-			insertSpaces: false,
-			wrapLineLength: 120,
-			unformatted: 'default',
-		},
-	});
-	enableModeConfiguration(htmlDefaults, {
-		completionItems: true,
-		hovers: true,
-		documentHighlights: true,
-		documentLinks: true,
-		documentSymbols: true,
-		foldingRanges: true,
-		selectionRanges: true,
-		diagnostics: true,
-		documentFormattingEdits: true,
-		documentRangeFormattingEdits: true,
 	});
 };
 
@@ -561,16 +461,25 @@ const preloadMonaco = () => {
     return editorState.monacoPreloadPromise;
 };
 
-const createFileLikeUri = (monaco, pathOrName) => {
-    const raw = String(pathOrName || 'file').trim();
-    const normalized = raw.replace(/\\/g, '/').replace(/^\/+/, '');
-    const safePath = normalized
-        .split('/')
-        .filter(Boolean)
-        .map((seg) => encodeURIComponent(seg))
-        .join('/');
-    return monaco.Uri.parse(`file:///${safePath || 'file'}`);
+const resolveModelLanguage = (pathOrName) => {
+	const raw = String(pathOrName || '').trim().toLowerCase();
+	if (raw.endsWith('.toml')) {
+		return 'toml';
+	}
+	return undefined;
 };
+
+const createFileLikeUri = (monaco, pathOrName) => {
+	const raw = String(pathOrName || 'file').trim();
+	const normalized = raw.replace(/\\/g, '/').replace(/^\/+/, '');
+	const safePath = normalized
+		.split('/')
+		.filter(Boolean)
+		.map((seg) => encodeURIComponent(seg))
+		.join('/');
+	return monaco.Uri.parse(`file:///${safePath || 'file'}`);
+};
+
 
 const setFileEditorStatus = (text, options = {}) => {
     if (!dom.fileEditorStatus) return;
@@ -649,10 +558,10 @@ const setFileEditorMode = () => {
 };
 
 const disposeMonacoEditor = (options = {}) => {
-    try {
-        editorState.monacoModelChangeDisposable?.dispose?.();
-    } catch (_) {}
-    editorState.monacoModelChangeDisposable = null;
+	try {
+		editorState.monacoModelChangeDisposable?.dispose?.();
+	} catch (_) {}
+	editorState.monacoModelChangeDisposable = null;
     try {
         editorState.monacoEditor?.dispose?.();
     } catch (_) {}
@@ -890,7 +799,7 @@ const applyFileEditorViewMode = async (mode) => {
     if (nextMode === 'diff') {
         if (!editorState.monacoOriginalModel) {
             const uri = createFileLikeUri(monaco, `${editorState.editingFilePath || 'file'}.__original__`);
-            editorState.monacoOriginalModel = monaco.editor.createModel(editorState.originalFileContent || '', undefined, uri);
+            editorState.monacoOriginalModel = monaco.editor.createModel(editorState.originalFileContent || '', resolveModelLanguage(editorState.editingFilePath), uri);
         }
 
         try {
@@ -1055,7 +964,7 @@ const openFileEditorModal = (file) => {
             disposeMonacoEditor();
             const uri = createFileLikeUri(monaco, filePath || fileName);
             const initialText = editorState.pendingInitialContent != null ? editorState.pendingInitialContent : fileContent;
-            editorState.monacoModel = monaco.editor.createModel(initialText, undefined, uri);
+            editorState.monacoModel = monaco.editor.createModel(initialText, resolveModelLanguage(filePath || fileName), uri);
             syncFileEditorBaselineFromModel();
             editorState.monacoEditor = monaco.editor.create(dom.fileEditorMonaco, {
                 model: editorState.monacoModel,
