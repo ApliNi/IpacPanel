@@ -380,6 +380,17 @@ let terminalCard = null;
 let fileEditorModal = null;
 let fileManager = null;
 let fileSelection = null;
+let editorPreloadScheduled = false;
+
+const scheduleEditorPreload = () => {
+	if (editorPreloadScheduled) return;
+	editorPreloadScheduled = true;
+	if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+		window.requestIdleCallback(() => fileEditorModal?.preload?.(), { timeout: 3000 });
+	} else {
+		setTimeout(() => fileEditorModal?.preload?.(), 1500);
+	}
+};
 
 const getRuntimeInstanceUpdateStagingDirName = (settings = {}) => {
 	const updateDir = String(settings.instanceUpdateStagingDir || '').trim();
@@ -614,6 +625,7 @@ export const openTerminalPage = async (svc, historySize, options = {}) => {
 
 	dom.navCurrent.innerText = '终端';
 	terminalCard?.open({ svc: terminalSvc, historySize });
+	scheduleEditorPreload();
 	return true;
 };
 
@@ -1024,6 +1036,7 @@ const bindTerminalEvents = () => {
 		if (!state.currentInstanceName) {
 			return;
 		}
+		fileEditorModal?.preload?.();
 		scrollTerminalPageToFiles();
 	};
 	dom.instanceModalClose.onclick = () => closeInstanceModal();

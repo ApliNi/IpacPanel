@@ -454,7 +454,7 @@ const preloadMonaco = () => {
         } catch (_) {}
         return monaco;
     }).catch((err) => {
-        // Preload is best-effort; open() will still surface errors if Monaco can't load.
+        editorState.monacoPreloadPromise = null;
         console.warn('[模块] Monaco 预加载失败:', err);
         return null;
     });
@@ -1059,5 +1059,6 @@ export const bootFileEditorModal = (options = {}) => {
         close: closeFileEditorModal,
         tryClose: tryCloseFileEditorModal,
         hasUnsavedChanges: hasUnsavedFileEditorChanges,
+        preload: preloadMonaco,
     };
 };
