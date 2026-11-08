@@ -933,6 +933,7 @@ const saveConfigSettings = async (setStatus, fallbackError) => {
 		rejectSettingsValidation(payloadResult.validationResult);
 		return false;
 	}
+	setStatus('');
 	const result = await updateSettings(payloadResult.payload);
 	if (!result.ok) {
 		setStatus(result.error || fallbackError, true);
@@ -963,6 +964,7 @@ const savePowSettings = async () => {
 const saveDebugSettings = async () => {
 	if (panelSettingsState.settingsLoading) return false;
 	const debug = dom.debugEnabled.checked;
+	setDebugStatus('');
 	const result = await updateSettings({ debug });
 	if (!result.ok) {
 		setDebugStatus(result.error || 'SAVE DEBUG FAILED', true);
@@ -1047,6 +1049,7 @@ const renderEmptyControllerUpdate = () => {
 	if (dom.status) dom.status.textContent = 'WAITING';
 	if (dom.progress) dom.progress.style.width = '0%';
 	setUploadError('');
+	setActionStatus('');
 };
 
 const renderStatus = (options = {}) => {
@@ -1168,6 +1171,9 @@ const uploadFile = async (file, replaceMode = false) => {
 	const chunkCount = Math.max(1, Math.ceil(file.size / chunkSize));
 	setLocked(true);
 	if (dom.replaceMode) dom.replaceMode.disabled = true;
+	setUploadError('');
+	setActionStatus('');
+	updateProgress(file, 0, 'UPLOADING');
 	const abortController = new AbortController();
 	panelSettingsState.updateUploadAbortController = abortController;
 	let uploadId = '';
@@ -1225,6 +1231,8 @@ const uploadSelectedFileAndApply = async () => {
 	const uploaded = await uploadFile(file, replaceMode);
 	if (!uploaded) return false;
 	panelSettingsState.selectedFile = null;
+	renderStatus({ clearSelectedFile: true });
+	setLocked(false);
 	if (uploaded.replaced) {
 		setActionStatus('REPLACED');
 		void showAlert('程序文件已替换, 重启服务后生效.', { title: 'REPLACED', okText: 'OK' });
@@ -1232,8 +1240,6 @@ const uploadSelectedFileAndApply = async () => {
 	}
 	setActionStatus('RESTARTING');
 	void showAlert('管理进程已更新并重启, 请稍候后刷新页面或等待页面自动恢复.', { title: 'RESTARTING', okText: 'OK' });
-	renderStatus({ clearSelectedFile: true });
-	setLocked(false);
 	return true;
 };
 
@@ -1327,11 +1333,11 @@ export const bootPanelSettingsModal = () => {
 			dom.modal.style.display = 'flex';
 			dom.modal.classList.remove('closing');
 			requestAnimationFrame(() => dom.modal.classList.add('visible'));
+			renderStatus({ clearSelectedFile: true });
 
 			if (!isAdmin) {
 				await applyMainPage('user', 'me');
 				userTab?.focusMeNameAfterLoad?.();
-				setActionStatus('');
 				return;
 			}
 
@@ -1339,7 +1345,6 @@ export const bootPanelSettingsModal = () => {
 			beginSettingsLoad();
 			const loaded = await refreshSettings();
 			finishSettingsLoad(loaded);
-			setActionStatus('');
 			if (loaded) dom.webTitle.focus();
 		},
 	};
