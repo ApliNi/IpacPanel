@@ -8,7 +8,7 @@
 以下为默认配置内容和对应注释:
 ```yaml
 # 配置和数据版本号, 用于更新时迁移配置, 不要修改
-data_version: 1
+data_version: 2
 # 网页标题文本
 web_title: IpacPanel
 # 面板监听地址和端口
@@ -21,8 +21,10 @@ auto_start_interval: 200
 auto_restart_interval: 1000
 # 计划任务执行时区, 为空时使用服务器系统本地时区, 可填写 IANA 时区 ID, 如 Asia/Shanghai
 task_timezone: ""
-# 每个实例的自动更新目录, 为每个实例的相对路径
-instance_update_staging_dir: ./!InstanceUpdate/
+# 每个实例的自动更新目录名
+instance_update_staging_dir: !InstanceUpdate
+# 创建实例时自动创建更新目录
+instance_update_auto_create: false
 # 信任的代理 IP 列表, 用于获取真实 IP
 trusted_proxy_ips:
   - 127.0.0.1

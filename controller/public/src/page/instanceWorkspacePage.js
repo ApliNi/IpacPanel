@@ -650,6 +650,11 @@ export const patchCurrentTerminalInstance = (patch = {}) => {
 	if (!pageState.currentTerminalSvc) {
 		return;
 	}
+	const prevRunning = !!pageState.currentTerminalSvc.running;
+	const prevRestarting = !!pageState.currentTerminalSvc.restarting;
+	const prevUpdating = !!pageState.currentTerminalSvc.updating;
+	const prevStartTime = String(pageState.currentTerminalSvc.start_time || '');
+
 	pageState.currentTerminalSvc = {
 		...pageState.currentTerminalSvc,
 		...patch,
@@ -657,6 +662,16 @@ export const patchCurrentTerminalInstance = (patch = {}) => {
 	terminalCard?.setCurrentSvc?.(pageState.currentTerminalSvc);
 	if (Object.prototype.hasOwnProperty.call(patch, 'instance_update_staging_dir')) {
 		pageState.currentInstanceUpdateStagingDirName = getUpdateDirDisplayName(pageState.currentTerminalSvc.instance_update_staging_dir);
+	}
+
+	const nextRunning = !!pageState.currentTerminalSvc.running;
+	const nextRestarting = !!pageState.currentTerminalSvc.restarting;
+	const nextUpdating = !!pageState.currentTerminalSvc.updating;
+	const nextStartTime = String(pageState.currentTerminalSvc.start_time || '');
+
+	const isStarted = nextRunning && (!prevRunning || ((prevRestarting || prevUpdating) && !nextRestarting && !nextUpdating) || (prevStartTime && nextStartTime && prevStartTime !== nextStartTime));
+	if (isStarted) {
+		fileManager?.onInstanceStarted?.();
 	}
 };
 

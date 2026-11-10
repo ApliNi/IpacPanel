@@ -27,6 +27,7 @@ type settingsResponse struct {
 	AutoRestartInterval      int                     `json:"auto_restart_interval"`
 	TaskTimezone             string                  `json:"task_timezone"`
 	InstanceUpdateStagingDir string                  `json:"instance_update_staging_dir"`
+	InstanceUpdateAutoCreate bool                    `json:"instance_update_auto_create"`
 	TrustedProxyIPs          []string                `json:"trusted_proxy_ips"`
 	Metrics                  settingsMetricsResponse `json:"metrics"`
 	Pow                      settingsPowResponse     `json:"pow"`
@@ -52,6 +53,7 @@ type settingsUpdateRequest struct {
 	AutoRestartInterval      *int                          `json:"auto_restart_interval"`
 	TaskTimezone             *string                       `json:"task_timezone"`
 	InstanceUpdateStagingDir *string                       `json:"instance_update_staging_dir"`
+	InstanceUpdateAutoCreate *bool                         `json:"instance_update_auto_create"`
 	TrustedProxyIPs          *[]string                     `json:"trusted_proxy_ips"`
 	Metrics                  *settingsMetricsUpdateRequest `json:"metrics"`
 	Pow                      *settingsPowUpdateRequest     `json:"pow"`
@@ -173,6 +175,9 @@ func HandleApiSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.InstanceUpdateStagingDir != nil {
 		savedCfg.InstanceUpdateStagingDir = cfg.NormalizeSettingsInstanceUpdateStagingDir(*req.InstanceUpdateStagingDir)
+	}
+	if req.InstanceUpdateAutoCreate != nil {
+		savedCfg.InstanceUpdateAutoCreate = *req.InstanceUpdateAutoCreate
 	}
 	if req.TrustedProxyIPs != nil {
 		savedCfg.TrustedProxyIPs = cfg.NormalizeTrustedProxyIPs(*req.TrustedProxyIPs)
@@ -358,6 +363,7 @@ func buildSettingsResponseFromConfig(savedCfg cfg.Config) settingsResponse {
 		AutoRestartInterval:      cfg.NormalizeAutoRestartInterval(savedCfg.AutoRestartInterval),
 		TaskTimezone:             cfg.NormalizeTaskTimezone(savedCfg.TaskTimezone),
 		InstanceUpdateStagingDir: cfg.NormalizeSettingsInstanceUpdateStagingDir(savedCfg.InstanceUpdateStagingDir),
+		InstanceUpdateAutoCreate: savedCfg.InstanceUpdateAutoCreate,
 		TrustedProxyIPs:          cfg.NormalizeTrustedProxyIPs(savedCfg.TrustedProxyIPs),
 		Metrics:                  newSettingsMetricsResponse(metricsConfig),
 		Pow: settingsPowResponse{

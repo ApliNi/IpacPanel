@@ -257,9 +257,10 @@ const modalState = {
     onApplyFileList: null,
     onRequestReload: null,
 	getCurrentDir: null,
+	getInstanceUpdateDirName: null,
+	hasRootUpdateDir: null,
     isBound: false,
 };
-
 const getRecentNameStorageKey = (type) => type === 'dir' ? RECENT_DIR_NAMES_KEY : RECENT_FILE_NAMES_KEY;
 
 const readRecentCreatedNames = (type) => {
@@ -319,12 +320,30 @@ const buildRecentCreatedNameNode = (type, name) => {
 	return button;
 };
 
+const getRecentCreatedNames = (type) => {
+	const names = readRecentCreatedNames(type);
+	if (type !== 'dir') {
+		return names;
+	}
+	const currentRelDir = String(getCurrentDir() || '').replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/g, '');
+	if (currentRelDir) {
+		return names;
+	}
+	if (typeof modalState.hasRootUpdateDir === 'function' && modalState.hasRootUpdateDir()) {
+		return names;
+	}
+	const updateDirName = (typeof modalState.getInstanceUpdateDirName === 'function' ? modalState.getInstanceUpdateDirName() : '') || '!InstanceUpdate';
+	const filtered = names.filter((name) => name !== updateDirName);
+	filtered.unshift(updateDirName);
+	return filtered.slice(0, FILE_CREATE_RECENT_LIMIT);
+};
+
 const renderRecentCreatedNames = (type) => {
 	const container = type === 'dir' ? dom.fileCreateRecentDirs : dom.fileCreateRecentFiles;
 	if (!container) {
 		return;
 	}
-	const names = readRecentCreatedNames(type);
+	const names = getRecentCreatedNames(type);
 	container.replaceChildren(...names.map((name) => buildRecentCreatedNameNode(type, name)));
 	container.classList.toggle('hidden', names.length === 0);
 };
@@ -2203,6 +2222,9 @@ const setFileCreateType = (type) => {
     } else {
         modalState.currentFileCreateType = 'file';
     }
+    if (type === 'dir') {
+        renderRecentCreatedNames('dir');
+    }
     renderFileCreatePage();
     updateFileUploadSubmitState();
 	if (type === 'dir') {
@@ -2518,6 +2540,8 @@ export const bootFileCreateModal = (options = {}) => {
     modalState.onApplyFileList = options.onApplyFileList || null;
     modalState.onRequestReload = options.onRequestReload || null;
 	modalState.getCurrentDir = options.getCurrentDir || null;
+	modalState.getInstanceUpdateDirName = options.getInstanceUpdateDirName || null;
+	modalState.hasRootUpdateDir = options.hasRootUpdateDir || null;
     bindEvents();
 	return {
 		open,

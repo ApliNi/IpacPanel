@@ -60,7 +60,13 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 					</div>
 					<div class="field-group">
 						<span>INSTANCE UPDATE DIR</span>
-						<input id="panelSettingsInstanceUpdateStagingDir" type="text" autocomplete="off" maxlength="${InputValidation.settings.limits.instanceUpdateStagingDir}" placeholder=" ./!InstanceUpdate/">
+						<input id="panelSettingsInstanceUpdateStagingDir" type="text" autocomplete="off" maxlength="${InputValidation.settings.limits.instanceUpdateStagingDir}" placeholder=" !InstanceUpdate">
+					</div>
+					<div class="field-group field-group-dynamic-label">
+						<label class="checkbox-group instance-advanced-toggle">
+							<input id="panelSettingsInstanceUpdateAutoCreate" type="checkbox" autocomplete="off">
+							<span>AUTO CREATE UPDATE DIR</span>
+						</label>
 					</div>
 					<div class="field-group">
 						<span>TASK TIMEZONE</span>
@@ -381,6 +387,7 @@ const dom = {
 	autoStartInterval: document.getElementById('panelSettingsAutoStartInterval'),
 	autoRestartInterval: document.getElementById('panelSettingsAutoRestartInterval'),
 	instanceUpdateStagingDir: document.getElementById('panelSettingsInstanceUpdateStagingDir'),
+	instanceUpdateAutoCreate: document.getElementById('panelSettingsInstanceUpdateAutoCreate'),
 	taskTimezone: document.getElementById('panelSettingsTaskTimezone'),
 	trustedProxyIps: document.getElementById('panelSettingsTrustedProxyIps'),
 	metricsEnabled: document.getElementById('panelSettingsMetricsEnabled'),
@@ -451,7 +458,8 @@ const settingsState = {
 	historySize: 27,
 	autoStartInterval: 200,
 	autoRestartInterval: 1000,
-	instanceUpdateStagingDir: './!InstanceUpdate/',
+	instanceUpdateStagingDir: '!InstanceUpdate',
+	instanceUpdateAutoCreate: false,
 	taskTimezone: '',
 	trustedProxyIps: ['127.0.0.1'],
 	metricsEnabled: true,
@@ -472,7 +480,7 @@ const DEFAULT_WEB_TITLE = 'IpacPanel';
 const DEFAULT_LISTEN = '127.0.0.1:25555';
 const DEFAULT_WEB_PRIVATE_KEY_PATH = './data/cert/key';
 const DEFAULT_WEB_PUBLIC_KEY_PATH = './data/cert/pem';
-const DEFAULT_INSTANCE_UPDATE_STAGING_DIR = './!InstanceUpdate/';
+const DEFAULT_INSTANCE_UPDATE_STAGING_DIR = '!InstanceUpdate';
 const DEFAULT_TASK_TIMEZONE = '';
 const MIN_HISTORY_SIZE = 2;
 const MAX_HISTORY_SIZE = 65536;
@@ -670,6 +678,7 @@ const clearSettingsFormForLoad = () => {
 	if (dom.metricsPublicDashboard) dom.metricsPublicDashboard.checked = false;
 	if (dom.metricsStorageMode) dom.metricsStorageMode.value = 'memory';
 	if (dom.debugEnabled) dom.debugEnabled.checked = false;
+	if (dom.instanceUpdateAutoCreate) dom.instanceUpdateAutoCreate.checked = false;
 	setSettingsStatus('LOADING...');
 	setMetricsStatus('LOADING...');
 	setWebStatus('LOADING...');
@@ -792,6 +801,7 @@ const renderSettings = (data = {}, options = {}) => {
 	settingsState.autoStartInterval = clampInteger(data.auto_start_interval, 200, 0, MAX_INTERVAL_MS);
 	settingsState.autoRestartInterval = clampInteger(data.auto_restart_interval, 1000, 0, MAX_INTERVAL_MS);
 	settingsState.instanceUpdateStagingDir = String(data.instance_update_staging_dir || DEFAULT_INSTANCE_UPDATE_STAGING_DIR).trim();
+	settingsState.instanceUpdateAutoCreate = !!data.instance_update_auto_create;
 	settingsState.taskTimezone = String(data.task_timezone || DEFAULT_TASK_TIMEZONE).trim();
 	settingsState.trustedProxyIps = normalizeStringList(data.trusted_proxy_ips);
 	const metrics = data.metrics || {};
@@ -820,6 +830,7 @@ const renderSettings = (data = {}, options = {}) => {
 	if (dom.autoStartInterval) dom.autoStartInterval.value = String(settingsState.autoStartInterval);
 	if (dom.autoRestartInterval) dom.autoRestartInterval.value = String(settingsState.autoRestartInterval);
 	if (dom.instanceUpdateStagingDir) dom.instanceUpdateStagingDir.value = settingsState.instanceUpdateStagingDir;
+	if (dom.instanceUpdateAutoCreate) dom.instanceUpdateAutoCreate.checked = settingsState.instanceUpdateAutoCreate;
 	if (dom.taskTimezone) dom.taskTimezone.value = settingsState.taskTimezone;
 	if (dom.trustedProxyIps) dom.trustedProxyIps.value = settingsState.trustedProxyIps.join('\n');
 	if (dom.metricsEnabled) dom.metricsEnabled.checked = settingsState.metricsEnabled;
@@ -899,6 +910,7 @@ const buildConfigSettingsPayload = () => {
 			auto_start_interval: autoStartInterval,
 			auto_restart_interval: autoRestartInterval,
 			instance_update_staging_dir: instanceUpdateStagingDir,
+			instance_update_auto_create: dom.instanceUpdateAutoCreate ? dom.instanceUpdateAutoCreate.checked : false,
 			task_timezone: taskTimezone,
 			trusted_proxy_ips: trustedProxyIps,
 			web: {

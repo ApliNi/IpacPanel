@@ -153,14 +153,28 @@ func createInstanceDirAfterPlan(resolvedPath string) (bool, error) {
 		}
 		created = true
 	}
-	return created, os.MkdirAll(resolvedPath, 0755)
+	if err := os.MkdirAll(resolvedPath, 0755); err != nil {
+		return created, err
+	}
+	return created, nil
+}
+
+func createInstanceUpdateStagingDir(resolvedPath string) error {
+	if !cfg.GetInstanceUpdateAutoCreate() {
+		return nil
+	}
+	stagingDir := cfg.GetInstanceUpdateStagingDir()
+	if stagingDir == "" {
+		return nil
+	}
+	return os.MkdirAll(filepath.Join(resolvedPath, stagingDir), 0755)
 }
 
 func removeCreatedInstanceDirOnFailure(resolvedPath string, created bool) {
 	if !created || strings.TrimSpace(resolvedPath) == "" {
 		return
 	}
-	_ = os.Remove(resolvedPath)
+	_ = os.RemoveAll(resolvedPath)
 }
 
 func HandleApiInstanceCreate(w http.ResponseWriter, r *http.Request) {
@@ -211,6 +225,11 @@ func HandleApiInstanceCreate(w http.ResponseWriter, r *http.Request) {
 
 	createdDir, err := createInstanceDirAfterPlan(resolvedPath)
 	if err != nil {
+		web.WriteAPIError(w, http.StatusInternalServerError, msg.CreateInstanceDirFailed, err)
+		return
+	}
+	if err := createInstanceUpdateStagingDir(resolvedPath); err != nil {
+		removeCreatedInstanceDirOnFailure(resolvedPath, createdDir)
 		web.WriteAPIError(w, http.StatusInternalServerError, msg.CreateInstanceDirFailed, err)
 		return
 	}

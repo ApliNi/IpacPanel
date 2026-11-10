@@ -80,6 +80,7 @@ type Config struct {
 	AutoRestartInterval      int    `yaml:"auto_restart_interval"`
 	TaskTimezone             string `yaml:"task_timezone" json:"task_timezone"`
 	InstanceUpdateStagingDir string `yaml:"instance_update_staging_dir"`
+	InstanceUpdateAutoCreate bool   `yaml:"instance_update_auto_create" json:"instance_update_auto_create"`
 	// TrustedProxyIPs must contain the direct proxy IPs that overwrite Forwarded/X-Forwarded-* headers.
 	// Keep this empty unless the reverse proxy is under your control and rewrites those headers.
 	TrustedProxyIPs []string      `yaml:"trusted_proxy_ips"`
@@ -101,6 +102,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		AutoRestartInterval      *int           `yaml:"auto_restart_interval"`
 		TaskTimezone             *string        `yaml:"task_timezone"`
 		InstanceUpdateStagingDir *string        `yaml:"instance_update_staging_dir"`
+		InstanceUpdateAutoCreate *bool          `yaml:"instance_update_auto_create"`
 		TrustedProxyIPs          *[]string      `yaml:"trusted_proxy_ips"`
 		Metrics                  *MetricsConfig `yaml:"metrics"`
 		Web                      *WebConfig     `yaml:"web"`
@@ -137,7 +139,10 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		result.TaskTimezone = *decoded.TaskTimezone
 	}
 	if decoded.InstanceUpdateStagingDir != nil {
-		result.InstanceUpdateStagingDir = *decoded.InstanceUpdateStagingDir
+		result.InstanceUpdateStagingDir = NormalizeSettingsInstanceUpdateStagingDir(*decoded.InstanceUpdateStagingDir)
+	}
+	if decoded.InstanceUpdateAutoCreate != nil {
+		result.InstanceUpdateAutoCreate = *decoded.InstanceUpdateAutoCreate
 	}
 	if decoded.TrustedProxyIPs != nil {
 		result.TrustedProxyIPs = append([]string{}, (*decoded.TrustedProxyIPs)...)

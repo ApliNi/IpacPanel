@@ -26,7 +26,7 @@ const settingsLimits = Object.freeze({
 	listen: limits.instancePath,
 	webPrivateKeyPath: limits.instancePath,
 	webPublicKeyPath: limits.instancePath,
-	instanceUpdateStagingDir: limits.instancePath,
+	instanceUpdateStagingDir: limits.fileName,
 	taskTimezone: limits.taskTimezone,
 	trustedProxyIpsCount: limits.trustedProxyIpsCount,
 	trustedProxyIp: limits.trustedProxyIp,
@@ -122,6 +122,14 @@ const validateSettingsGeneralTextFields = ({ webTitle = '', listen = '', instanc
 	}
 	if (SETTINGS_SINGLE_LINE_CONTROL_CHAR_PATTERN.test(webTitle)) {
 		return reject('webTitle', 'WEB TITLE 包含非法控制字符');
+	}
+	const stagingDirTrimmed = String(instanceUpdateStagingDir || '').trim();
+	if (stagingDirTrimmed) {
+		const dirErr = validateFileName(stagingDirTrimmed);
+		if (dirErr) {
+			const msg = dirErr.replace('名称', 'INSTANCE UPDATE DIR');
+			return reject('instanceUpdateStagingDir', msg);
+		}
 	}
 	const timezoneLengthResult = validateMaxLength('taskTimezone', 'TASK TIMEZONE', taskTimezone, settingsLimits.taskTimezone);
 	if (!timezoneLengthResult.ok) {

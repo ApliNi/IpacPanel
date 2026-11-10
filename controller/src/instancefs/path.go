@@ -1,6 +1,7 @@
 package instancefs
 
 import (
+	cfg "IpacPanel/controller/src/config"
 	"IpacPanel/controller/src/msg"
 	process "IpacPanel/controller/src/process"
 	"errors"
@@ -566,19 +567,7 @@ func EnsureFileName(name string) (string, error) {
 }
 
 func IsWindowsReservedDeviceName(name string) bool {
-	base := strings.TrimSpace(name)
-	if dot := strings.IndexByte(base, '.'); dot >= 0 {
-		base = base[:dot]
-	}
-	base = strings.ToUpper(strings.TrimSpace(base))
-	switch base {
-	case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "CLOCK$",
-		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "COM0",
-		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "LPT0":
-		return true
-	default:
-		return false
-	}
+	return cfg.IsWindowsReservedDeviceName(name)
 }
 func HasWindowsReservedDeviceComponent(p string) bool {
 	for _, part := range strings.FieldsFunc(p, func(r rune) bool {

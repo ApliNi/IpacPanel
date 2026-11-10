@@ -86,10 +86,12 @@ const (
 	maxTaskExprLen        = 128
 	maxTaskCommandLen     = 4096
 	maxWebTitleLen        = maxInstanceNameLen
-	defaultWebTitle       = "IpacPanel"
-	defaultListenAddress  = "127.0.0.1:25555"
-	defaultPrivateKeyPath = "./data/cert/key"
-	defaultPublicKeyPath  = "./data/cert/pem"
+	defaultWebTitle                 = "IpacPanel"
+	defaultListenAddress            = "127.0.0.1:25555"
+	defaultPrivateKeyPath           = "./data/cert/key"
+	defaultPublicKeyPath            = "./data/cert/pem"
+	defaultInstanceUpdateStagingDir = "!InstanceUpdate"
+	maxInstanceUpdateStagingDirLen  = 255
 )
 
 var defaultConfig = Config{
@@ -100,7 +102,8 @@ var defaultConfig = Config{
 	AutoStartInterval:        200,
 	AutoRestartInterval:      1000,
 	TaskTimezone:             "",
-	InstanceUpdateStagingDir: "./!InstanceUpdate/",
+	InstanceUpdateStagingDir: defaultInstanceUpdateStagingDir,
+	InstanceUpdateAutoCreate: false,
 	TrustedProxyIPs:          []string{"127.0.0.1"},
 	Metrics: MetricsConfig{
 		Enabled:               true,
@@ -256,9 +259,43 @@ func validateListenHostPort(listen string) error {
 	return nil
 }
 
+func IsWindowsReservedDeviceName(name string) bool {
+	base := strings.TrimSpace(name)
+	if dot := strings.IndexByte(base, '.'); dot >= 0 {
+		base = base[:dot]
+	}
+	base = strings.ToUpper(strings.TrimSpace(base))
+	switch base {
+	case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "CLOCK$",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "COM0",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "LPT0":
+		return true
+	default:
+		return false
+	}
+}
+
 func ValidateSettingsInstanceUpdateStagingDir(path string) error {
-	if utf8.RuneCountInString(strings.TrimSpace(path)) > maxPathLen {
+	name := strings.TrimSpace(path)
+	if name == "" {
+		name = defaultInstanceUpdateStagingDir
+	}
+	if utf8.RuneCountInString(name) > maxInstanceUpdateStagingDirLen {
 		return errors.New(msg.SettingsInstanceUpdateDirTooLong)
+	}
+	if name == "." || name == ".." || strings.HasSuffix(name, ".") {
+		return errors.New(msg.SettingsInstanceUpdateDirInvalid)
+	}
+	if IsWindowsReservedDeviceName(name) {
+		return errors.New(msg.SettingsInstanceUpdateDirInvalid)
+	}
+	if strings.ContainsAny(name, `\\/:*?"<>|`) {
+		return errors.New(msg.SettingsInstanceUpdateDirInvalidChars)
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return errors.New(msg.SettingsInstanceUpdateDirInvalidChars)
+		}
 	}
 	return nil
 }
@@ -344,9 +381,9 @@ func ValidateTaskTimezone(timezone string) error {
 func NormalizeSettingsInstanceUpdateStagingDir(path string) string {
 	value := strings.TrimSpace(path)
 	if value == "" {
-		return defaultConfig.InstanceUpdateStagingDir
+		return defaultInstanceUpdateStagingDir
 	}
-	return truncateRunes(value, maxPathLen)
+	return truncateRunes(value, maxInstanceUpdateStagingDirLen)
 }
 
 func NormalizeWebConfig(webConfig WebConfig) WebConfig {
@@ -680,6 +717,7 @@ type persistedConfig struct {
 	AutoRestartInterval      *int           `yaml:"auto_restart_interval,omitempty"`
 	TaskTimezone             string         `yaml:"task_timezone"`
 	InstanceUpdateStagingDir string         `yaml:"instance_update_staging_dir"`
+	InstanceUpdateAutoCreate bool           `yaml:"instance_update_auto_create"`
 	TrustedProxyIPs          *[]string      `yaml:"trusted_proxy_ips"`
 	Metrics                  *MetricsConfig `yaml:"metrics"`
 	Web                      WebConfig      `yaml:"web"`
@@ -703,6 +741,7 @@ func makePersistedConfig(cfg Config) persistedConfig {
 		AutoRestartInterval:      &autoRestartInterval,
 		TaskTimezone:             NormalizeTaskTimezone(cfg.TaskTimezone),
 		InstanceUpdateStagingDir: NormalizeSettingsInstanceUpdateStagingDir(cfg.InstanceUpdateStagingDir),
+		InstanceUpdateAutoCreate: cfg.InstanceUpdateAutoCreate,
 		TrustedProxyIPs:          &trustedProxyIPs,
 		Metrics:                  &metrics,
 		Web:                      NormalizeWebConfig(cfg.Web),
@@ -740,6 +779,7 @@ func unmarshalPersistedConfig(data []byte) (Config, error) {
 		AutoStartInterval        *int       `yaml:"auto_start_interval"`
 		TaskTimezone             *string    `yaml:"task_timezone"`
 		InstanceUpdateStagingDir *string    `yaml:"instance_update_staging_dir"`
+		InstanceUpdateAutoCreate *bool      `yaml:"instance_update_auto_create"`
 		Web                      *WebConfig `yaml:"web"`
 		Debug                    *bool      `yaml:"debug"`
 	}
@@ -769,6 +809,9 @@ func unmarshalPersistedConfig(data []byte) (Config, error) {
 	}
 	if decoded.InstanceUpdateStagingDir != nil {
 		cfg.InstanceUpdateStagingDir = NormalizeSettingsInstanceUpdateStagingDir(*decoded.InstanceUpdateStagingDir)
+	}
+	if decoded.InstanceUpdateAutoCreate != nil {
+		cfg.InstanceUpdateAutoCreate = *decoded.InstanceUpdateAutoCreate
 	}
 	if persisted.TrustedProxyIPs != nil {
 		cfg.TrustedProxyIPs = append([]string(nil), (*persisted.TrustedProxyIPs)...)
@@ -858,6 +901,32 @@ func saveInstances(instances []Instance) error {
 	}
 	return writeConfigAtomic(ResolveDataPath("instances.yml"), data)
 }
+func migrateInstanceUpdateStagingDir(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultInstanceUpdateStagingDir
+	}
+	cleaned := strings.ReplaceAll(raw, "\\", "/")
+	cleaned = strings.TrimRight(cleaned, "/")
+	cleaned = strings.TrimPrefix(cleaned, "./")
+	base := cleaned
+	if idx := strings.LastIndex(cleaned, "/"); idx >= 0 {
+		base = cleaned[idx+1:]
+	}
+	base = strings.TrimSpace(base)
+	if base == "" || ValidateSettingsInstanceUpdateStagingDir(base) != nil {
+		return defaultInstanceUpdateStagingDir
+	}
+	return base
+}
+
+func migrateConfig(cfg Config) Config {
+	if cfg.DataVersion < version.ControllerDataVersion {
+		cfg.InstanceUpdateStagingDir = migrateInstanceUpdateStagingDir(cfg.InstanceUpdateStagingDir)
+		cfg.DataVersion = version.ControllerDataVersion
+	}
+	return cfg
+}
 
 func LoadConfig() error {
 	data, err := os.ReadFile(ResolveDataPath("config.yml"))
@@ -900,6 +969,11 @@ func LoadConfig() error {
 	if err != nil {
 		return err
 	}
+	needsSave := false
+	if loadedCfg.DataVersion < version.ControllerDataVersion {
+		loadedCfg = migrateConfig(loadedCfg)
+		needsSave = true
+	}
 	CurrentConfig = loadedCfg
 
 	authUsers, err := loadNormalizedAuth()
@@ -923,6 +997,14 @@ func LoadConfig() error {
 	}
 	if err := EnsureAdminUser(); err != nil {
 		return err
+	}
+	if needsSave {
+		ManagerMu.RLock()
+		cfg := CloneConfigLocked()
+		ManagerMu.RUnlock()
+		if err := SaveConfigSnapshot(cfg); err != nil {
+			return fmt.Errorf(msg.CreateConfigFileFailedFmt, err)
+		}
 	}
 	os.MkdirAll(ResolveDataPath(""), 0700)
 	if err := file.CleanupOrphanAtomicTemps(ResolveDataPath("")); err != nil {
@@ -1510,6 +1592,12 @@ func GetInstanceUpdateStagingDir() string {
 	ManagerMu.RLock()
 	defer ManagerMu.RUnlock()
 	return NormalizeSettingsInstanceUpdateStagingDir(CurrentConfig.InstanceUpdateStagingDir)
+}
+
+func GetInstanceUpdateAutoCreate() bool {
+	ManagerMu.RLock()
+	defer ManagerMu.RUnlock()
+	return CurrentConfig.InstanceUpdateAutoCreate
 }
 
 func IsTrustedProxyIP(ip string) bool {

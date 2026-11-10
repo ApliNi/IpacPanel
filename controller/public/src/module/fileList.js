@@ -247,6 +247,48 @@ const getUpdateDirDisplayName = (value) => {
 	return normalized;
 };
 
+const getEffectiveUpdateDirName = () => {
+	const raw = String(fmState.instanceUpdateStagingDirName || '').trim();
+	return getUpdateDirDisplayName(raw) || raw || '!InstanceUpdate';
+};
+
+const hasRootInstanceUpdateDir = () => {
+	const currentRelDir = normalizeRelativeDirPath(getCurrentDir());
+	if (currentRelDir) {
+		return false;
+	}
+	const updateDirName = getEffectiveUpdateDirName();
+	const entries = Array.isArray(fmState.currentFileList?.entries) ? fmState.currentFileList.entries : [];
+	return entries.some((entry) => !!entry?.is_dir && String(entry?.name || '').trim() === updateDirName);
+};
+
+const isInRootInstanceUpdateDir = () => {
+	const currentRelDir = normalizeRelativeDirPath(getCurrentDir());
+	const updateDirName = getEffectiveUpdateDirName();
+	return !!updateDirName && currentRelDir === updateDirName;
+};
+
+const isCurrentDirNotEmpty = () => {
+	const count = Math.max(0, Number(fmState.currentFileList?.total_count) || Number(fmState.totalCount) || 0);
+	if (count > 0) {
+		return true;
+	}
+	const entries = Array.isArray(fmState.currentFileList?.entries) ? fmState.currentFileList.entries : [];
+	return entries.length > 0;
+};
+
+const checkAutoRefreshOnInstanceStarted = () => {
+	if (!isInRootInstanceUpdateDir()) {
+		return false;
+	}
+	if (!isCurrentDirNotEmpty()) {
+		return false;
+	}
+	clearFileListError();
+	void loadFiles(getCurrentDir(), getFileListPage());
+	return true;
+};
+
 const getDirIconType = (name, isDir, currentDirPath) => {
 	if (!isDir) {
 		return '';
@@ -255,7 +297,7 @@ const getDirIconType = (name, isDir, currentDirPath) => {
 	if (currentRelDir) {
 		return '';
 	}
-	const updateDirName = String(fmState.instanceUpdateStagingDirName || '').trim();
+	const updateDirName = getEffectiveUpdateDirName();
 	if (updateDirName && String(name || '').trim() === updateDirName) {
 		return 'instanceUpdateDir';
 	}
@@ -1436,6 +1478,8 @@ export const bootFileManager = (options = {}) => {
         onApplyFileList: applyFileListResponse,
 		onRequestReload: reloadFilesFromFirstPage,
 		getCurrentDir,
+		getInstanceUpdateDirName: getEffectiveUpdateDirName,
+		hasRootUpdateDir: hasRootInstanceUpdateDir,
     });
     fmState.fileActionModal = bootFileActionModal({
         onApplyFileList: applyFileListResponse,
@@ -1462,6 +1506,7 @@ export const bootFileManager = (options = {}) => {
 		forgetLastDir: removeLastDir,
 		toggleSelectAllCurrentDir,
 		getCurrentDir,
+		onInstanceStarted: checkAutoRefreshOnInstanceStarted,
     };
 };
 
