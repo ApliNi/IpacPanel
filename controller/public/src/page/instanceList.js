@@ -836,11 +836,12 @@ export const bootInstanceListPage = (options = {}) => {
 	panelSettingsModal = bootPanelSettingsModal();
 	logModal = bootLogModal({
 		onOpenInstance: (ins) => onOpenInstance?.(ins),
-		onCountChange: (count) => {
+		onCountChange: (count, errorCount) => {
 			if (!dom.logBtn) return;
-			// 有日志时按钮金黄色并显示计数, 无日志时仅显示 LOG.
-			dom.logBtn.textContent = count > 0 ? `LOG [${count}]` : 'LOG';
-			dom.logBtn.classList.toggle('log-btn-active', count > 0);
+			// 存在错误/警告时按钮金黄色高亮并展示错误计数, 无错误时仅显示 LOG.
+			const displayCount = errorCount != null ? errorCount : count;
+			dom.logBtn.textContent = displayCount > 0 ? `LOG [${displayCount}]` : 'LOG';
+			dom.logBtn.classList.toggle('log-btn-active', displayCount > 0);
 		},
 	});
 	instanceGroupModal = bootInstanceGroupModal({

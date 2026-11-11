@@ -337,8 +337,7 @@ func executeTask(sp *InstanceProcess, taskName string, action string, command st
 		sp.Mu.Unlock()
 		return
 	}
-	terminalMsg := BuildNormalTerminalSystemMessage(fmt.Sprintf(msg.ScheduledTaskTriggeredFmt, taskName, action))
-	sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
+	sp.AppendAndBroadcastNormalSystemMessageLocked(fmt.Sprintf(msg.ScheduledTaskTriggeredFmt, taskName, action), limit)
 	sp.Mu.Unlock()
 
 	switch action {

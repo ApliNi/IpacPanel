@@ -43,16 +43,19 @@ func HandleApiInstanceEvents(w http.ResponseWriter, r *http.Request) {
 	lastVersion := int64(0)
 	logFilter := logbufVisibleFilter(authedUser)
 	lastLogCount := -1
+	lastLogErrorCount := -1
 	sendLogCount := func() bool {
 		count := logbuf.Count(logFilter)
-		if count == lastLogCount {
+		errorCount := logbuf.ErrorCount(logFilter)
+		if count == lastLogCount && errorCount == lastLogErrorCount {
 			return true
 		}
-		payload := logEventPayload{Version: logbuf.LatestSeq(), Count: count}
+		payload := logEventPayload{Version: logbuf.LatestSeq(), Count: count, ErrorCount: errorCount}
 		if err := sse.SendEvent("log_count", payload); err != nil {
 			return false
 		}
 		lastLogCount = count
+		lastLogErrorCount = errorCount
 		return true
 	}
 
@@ -98,6 +101,7 @@ func HandleApiInstanceEvents(w http.ResponseWriter, r *http.Request) {
 			authedUser = freshUser
 			logFilter = logbufVisibleFilter(authedUser)
 			lastLogCount = -1
+			lastLogErrorCount = -1
 		}
 		select {
 		case <-ctx.Done():

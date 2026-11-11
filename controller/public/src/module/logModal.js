@@ -23,7 +23,7 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 			<div class="modal-form log-form">
 				<div class="filter-group log-tabs">
 					<button id="logTabAll" class="filter-btn active" type="button" data-level="">ALL</button>
-					<button id="logTabWarn" class="filter-btn" type="button" data-level="warn">WARN</button>
+					<button id="logTabInfo" class="filter-btn" type="button" data-level="info">INFO</button>
 					<button id="logTabError" class="filter-btn" type="button" data-level="error">ERROR</button>
 				</div>
 				<div class="field-group">
@@ -70,14 +70,17 @@ const setLogStatus = (text, options = {}) => {
 };
 
 const getFilteredEntries = () => {
-	const entries = logStore.getSnapshot().entries;
+	const snapshot = logStore.getSnapshot();
 	if (!modalState.levelFilter) {
-		return entries;
+		return snapshot.entries;
 	}
-	if (modalState.levelFilter === 'warn') {
-		return entries.filter((entry) => entry.level === 'warn' || entry.level === 'error');
+	if (modalState.levelFilter === 'error' || modalState.levelFilter === 'warn') {
+		return snapshot.errorEntries;
 	}
-	return entries.filter((entry) => entry.level === 'error');
+	if (modalState.levelFilter === 'info') {
+		return snapshot.infoEntries;
+	}
+	return snapshot.entries;
 };
 
 const buildEmptyNode = (text) => {
@@ -89,7 +92,15 @@ const buildEmptyNode = (text) => {
 
 const buildLogEntryNode = (entry) => {
 	const row = document.createElement('div');
-	row.className = `log-entry${entry.level === 'warn' ? ' log-entry-warn' : ''}${entry.level === 'error' ? ' log-entry-error' : ''}`;
+	let levelClass = '';
+	if (entry.level === 'warn') {
+		levelClass = ' log-entry-warn';
+	} else if (entry.level === 'error') {
+		levelClass = ' log-entry-error';
+	} else if (entry.level === 'info') {
+		levelClass = ' log-entry-info';
+	}
+	row.className = `log-entry${levelClass}`;
 	row.dataset.seq = String(entry.seq);
 
 	const time = document.createElement('span');
@@ -297,12 +308,16 @@ const open = async () => {
 	bindEvents();
 	modalState.opened = true;
 	openAnimatedModal(dom.modal);
-	// 打开时全量拉取服务端缓冲, 之后由 SSE 计数事件驱动按钮状态.
+	// 打开时若有错误/警告自动切换到 ERROR, 无错误则默认展示 ALL.
+	const initialFilter = logStore.hasErrors() ? 'error' : '';
+	applyLevelFilter(initialFilter);
 	setLogStatus('LOADING...');
 	try {
 		await logStore.loadAll();
 		setLogStatus('');
-		refreshView(true);
+		// 全量拉取后再次确认 Tab 状态.
+		const targetFilter = logStore.hasErrors() ? 'error' : '';
+		applyLevelFilter(targetFilter);
 	} catch (error) {
 		setLogStatus(error?.message || '获取运行日志失败', { error: true });
 	}
@@ -323,7 +338,7 @@ export const bootLogModal = ({ onOpenInstance, onCountChange } = {}) => {
 				refreshView(false);
 			}
 			if (typeof onCountChange === 'function') {
-				onCountChange(snapshot.count);
+				onCountChange(snapshot.count, snapshot.errorCount);
 			}
 		});
 	}

@@ -1,5 +1,7 @@
-// Package logbuf 维护进程内运行日志环形缓冲, 供前端运行日志视图分页拉取与实时推送.
-// 条目不持久化: 管理进程重启后缓冲清空. 写入按条数与总字节双重上限丢弃最旧条目.
+// Package logbuf 维护进程内运行日志双环形缓冲, 供前端运行日志视图分页拉取与实时推送.
+// 条目不持久化: 管理进程重启后缓冲清空.
+// errorBuf 存储错误与警告条目, infoBuf 存储普通运维通知条目, 物理隔离防止普通消息冲刷覆盖错误日志.
+// 两个缓冲区各自按条数与总字节双重上限丢弃最旧条目, 共享全局单调自增序号.
 package logbuf
 
 import (
@@ -10,9 +12,9 @@ import (
 )
 
 const (
-	// MaxEntries 缓冲条数上限, 超出后丢弃最旧条目.
+	// MaxEntries 单个缓冲条数上限, 超出后丢弃最旧条目.
 	MaxEntries = 2000
-	// MaxTotalBytes 缓冲消息总字节上限, 超出后丢弃最旧条目.
+	// MaxTotalBytes 单个缓冲消息总字节上限, 超出后丢弃最旧条目.
 	MaxTotalBytes = 512 * 1024
 	// MaxMessageBytes 单条消息字节上限, 超出部分截断.
 	MaxMessageBytes = 4096
@@ -26,11 +28,10 @@ const (
 )
 
 var (
-	mu        sync.RWMutex
-	nextSeq   uint64
-	totalByte int
-
-	buf = &buffer{}
+	mu       sync.RWMutex
+	nextSeq  uint64
+	errorBuf = &buffer{}
+	infoBuf  = &buffer{}
 )
 
 // Entry 是一条运行日志. Instance 为空表示面板级条目.
@@ -97,7 +98,11 @@ func emit(level, instanceName, message string) error {
 	defer mu.Unlock()
 	nextSeq += 1
 	entry.Seq = nextSeq
-	buf.pushLocked(entry)
+	if level == LevelInfo {
+		infoBuf.pushLocked(entry)
+	} else {
+		errorBuf.pushLocked(entry)
+	}
 	return nil
 }
 
@@ -108,9 +113,9 @@ func LatestSeq() uint64 {
 	return nextSeq
 }
 
-// Len 返回缓冲中的当前条目数.
+// Len 返回双缓冲中的当前总条目数.
 func Len() int {
 	mu.RLock()
 	defer mu.RUnlock()
-	return buf.lenLocked()
+	return errorBuf.lenLocked() + infoBuf.lenLocked()
 }

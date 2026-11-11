@@ -454,7 +454,7 @@ func (sp *InstanceProcess) prepareStart(reserved *startReservation) (*preparedSt
 	}
 	sp.Mu.Lock()
 	if sp.Starting && sp.StartSeq == reserved.startSeq {
-		sp.appendAndBroadcastLocked(websocket.BinaryMessage, BuildNormalTerminalSystemMessage(msg.StartingInstance), reserved.historyLimit)
+		sp.AppendAndBroadcastNormalSystemMessageLocked(msg.StartingInstance, reserved.historyLimit)
 	}
 	sp.Mu.Unlock()
 	commandArgv, err := CompileInstanceCommandArgv(reserved.ins.Command, resolvedPath, reserved.ins.Terminal)
@@ -596,12 +596,12 @@ func (sp *InstanceProcess) handleDaemonProcessExit(state *DaemonRuntimeState) bo
 		}
 	}
 	shouldAutoRestart := prevState == processStateStoppingForRestart || runtimeCode == RuntimeCodeRestarting || (ins.AutoRestart && runtimeCode == RuntimeCodeUnexpectedExit)
-	terminalMsg := BuildNormalTerminalSystemMessage(msg.ProcessExited)
 	if shouldAutoRestart {
 		sp.enterRestartWaitingLocked()
-		terminalMsg = BuildNormalTerminalSystemMessage(msg.ProcessExitedWaitingRestart)
+		sp.AppendAndBroadcastNormalSystemMessageLocked(msg.ProcessExitedWaitingRestart, limit)
+	} else {
+		sp.AppendAndBroadcastNormalSystemMessageLocked(msg.ProcessExited, limit)
 	}
-	sp.appendAndBroadcastLocked(websocket.BinaryMessage, terminalMsg, limit)
 	if !shouldAutoRestart {
 		sp.shrinkTerminalHistoryLocked()
 	}
@@ -876,8 +876,7 @@ func (sp *InstanceProcess) Stop(force bool) {
 		sp.cancelRestartLocked()
 		sp.cancelStopLocked()
 		sp.enterStoppedStateLocked()
-		msg := BuildNormalTerminalSystemMessage(msg.AutoRestartStopped)
-		sp.appendAndBroadcastLocked(websocket.BinaryMessage, msg, limit)
+		sp.AppendAndBroadcastNormalSystemMessageLocked(msg.AutoRestartStopped, limit)
 		sp.shrinkTerminalHistoryLocked()
 		NotifyInstanceStatusChanged(instanceName)
 		sp.Mu.Unlock()

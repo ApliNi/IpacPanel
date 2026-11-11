@@ -60,10 +60,11 @@ type instanceListEventPayload struct {
 	Items   []instanceListItem `json:"items"`
 }
 
-// logEventPayload 是日志计数事件负载; Version 为最新序号, Count 为缓冲内当前条目数.
+// logEventPayload 是日志计数事件负载; Version 为最新序号, Count 为缓冲内当前总条目数, ErrorCount 为错误与警告条目数.
 type logEventPayload struct {
-	Version uint64 `json:"version"`
-	Count   int    `json:"count"`
+	Version    uint64 `json:"version"`
+	Count      int    `json:"count"`
+	ErrorCount int    `json:"error_count"`
 }
 
 type instanceStatusMeta struct {

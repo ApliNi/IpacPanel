@@ -2,6 +2,7 @@ package process
 
 import (
 	cfg "IpacPanel/controller/src/config"
+	"IpacPanel/controller/src/logbuf"
 	"IpacPanel/controller/src/msg"
 	"IpacPanel/daemon/ipc"
 	"errors"
@@ -431,6 +432,9 @@ func HandleDaemonCleanupMessage(instanceName string, placeholder string, args []
 	data := BuildNormalTerminalSystemMessage(message)
 	if warning {
 		data = BuildWarningTerminalSystemMessage(message)
+		_ = logbuf.EmitInstance(logbuf.LevelWarn, sp.InstanceSnapshot().Name, message)
+	} else {
+		_ = logbuf.EmitInstance(logbuf.LevelInfo, sp.InstanceSnapshot().Name, message)
 	}
 	limit := cfg.GetHistoryLimit() * 1024
 	sp.outputMu.Lock()

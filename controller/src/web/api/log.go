@@ -12,7 +12,7 @@ import (
 
 const (
 	logQueryLimitMin = 1
-	logQueryLimitMax = logbuf.MaxEntries
+	logQueryLimitMax = logbuf.MaxEntries * 2
 )
 
 type logGetRequest struct {
@@ -25,6 +25,7 @@ type logGetRequest struct {
 type logGetResponse struct {
 	Entries    []logbuf.Entry `json:"entries"`
 	TotalCount int            `json:"total_count"`
+	ErrorCount int            `json:"error_count"`
 }
 
 func HandleApiLogGet(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +65,11 @@ func HandleApiLogGet(w http.ResponseWriter, r *http.Request) {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.LogQueryFailed, err)
 		return
 	}
-	web.WriteOK(w, logGetResponse{Entries: entries, TotalCount: total})
+	web.WriteOK(w, logGetResponse{
+		Entries:    entries,
+		TotalCount: total,
+		ErrorCount: logbuf.ErrorCount(filter),
+	})
 }
 
 func HandleApiLogClear(w http.ResponseWriter, _ *http.Request) {

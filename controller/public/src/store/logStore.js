@@ -51,21 +51,56 @@ class RingBuffer {
 	}
 }
 
-const ringBuffer = new RingBuffer(MAX_LOCAL_LOG_ENTRIES);
+// 采用双缓冲区分别存储, 防止普通终端 INFO 消息覆盖 WARN/ERROR.
+const errorRingBuffer = new RingBuffer(MAX_LOCAL_LOG_ENTRIES);
+const infoRingBuffer = new RingBuffer(MAX_LOCAL_LOG_ENTRIES);
+
+// 按 seq 升序归并两个已排序的条目列表 (ALL 视图按时间顺序合并展示).
+const mergeSortedEntries = (a, b) => {
+	const result = new Array(a.length + b.length);
+	let i = 0;
+	let j = 0;
+	let k = 0;
+	while (i < a.length && j < b.length) {
+		const itemA = a[i];
+		const itemB = b[j];
+		if (itemA.seq < itemB.seq || (itemA.seq === itemB.seq && itemA.time <= itemB.time)) {
+			result[k++] = itemA;
+			i += 1;
+		} else {
+			result[k++] = itemB;
+			j += 1;
+		}
+	}
+	while (i < a.length) {
+		result[k++] = a[i++];
+	}
+	while (j < b.length) {
+		result[k++] = b[j++];
+	}
+	return result;
+};
+
 const listeners = new Set();
 const readyWaiters = new Set();
 
 const storeState = {
 	count: 0,
+	errorCount: 0,
 	version: 0,
 	started: false,
 	ready: false,
 };
 
 let cachedEntries = Object.freeze([]);
+let cachedErrorEntries = Object.freeze([]);
+let cachedInfoEntries = Object.freeze([]);
 let cachedSnapshot = Object.freeze({
 	entries: cachedEntries,
+	errorEntries: cachedErrorEntries,
+	infoEntries: cachedInfoEntries,
 	count: 0,
+	errorCount: 0,
 	version: 0,
 	ready: false,
 });
@@ -76,12 +111,19 @@ let emitTimer = null;
 
 const updateSnapshot = () => {
 	if (entriesDirty) {
-		cachedEntries = Object.freeze(ringBuffer.toArray());
+		const errors = errorRingBuffer.toArray();
+		const infos = infoRingBuffer.toArray();
+		cachedErrorEntries = Object.freeze(errors);
+		cachedInfoEntries = Object.freeze(infos);
+		cachedEntries = Object.freeze(mergeSortedEntries(errors, infos));
 		entriesDirty = false;
 	}
 	cachedSnapshot = Object.freeze({
 		entries: cachedEntries,
+		errorEntries: cachedErrorEntries,
+		infoEntries: cachedInfoEntries,
 		count: storeState.count,
+		errorCount: Math.max(storeState.errorCount, cachedErrorEntries.length),
 		version: storeState.version,
 		ready: storeState.ready,
 	});
@@ -136,6 +178,11 @@ export const getSnapshot = () => {
 	return cachedSnapshot;
 };
 
+export const hasErrors = () => {
+	const snapshot = getSnapshot();
+	return snapshot.errorEntries.length > 0 || snapshot.errorCount > 0;
+};
+
 export const subscribe = (listener) => {
 	if (typeof listener !== 'function') {
 		return () => {};
@@ -155,14 +202,24 @@ export const waitForReady = () => {
 	});
 };
 
-// applyLogCount 处理服务端推送的日志计数; 仅维护 count, 不拉取条目.
+// applyLogCount 处理服务端推送的日志计数; 维护 count 与 error_count, 不拉取条目.
 const applyLogCount = (payload) => {
 	const count = Math.max(0, Number(payload?.count) || 0);
+	const errorCount = Math.max(0, Number(payload?.error_count) || 0);
 	storeState.version = Number(payload?.version) || 0;
-	if (storeState.count === count) {
+	if (storeState.count === count && storeState.errorCount === errorCount) {
 		return;
 	}
 	storeState.count = count;
+	storeState.errorCount = errorCount;
+	if (count === 0) {
+		errorRingBuffer.clear();
+		infoRingBuffer.clear();
+		entriesDirty = true;
+	} else if (errorCount === 0 && errorRingBuffer.size > 0) {
+		errorRingBuffer.clear();
+		entriesDirty = true;
+	}
 	snapshotDirty = true;
 	scheduleEmit();
 };
@@ -180,23 +237,24 @@ const applyLogEntry = (payload) => {
 		instance: String(raw?.instance || ''),
 		message: String(raw?.message || ''),
 	});
+	const targetBuffer = (entry.level === 'info') ? infoRingBuffer : errorRingBuffer;
 	let entriesChanged = false;
-	if (ringBuffer.size > 0) {
-		const last = ringBuffer.last();
+	if (targetBuffer.size > 0) {
+		const last = targetBuffer.last();
 		if (entry.seq > last.seq) {
-			ringBuffer.push(entry);
+			targetBuffer.push(entry);
 			entriesChanged = true;
 		} else {
-			const items = ringBuffer.toArray();
+			const items = targetBuffer.toArray();
 			if (!items.some((item) => item.seq === entry.seq)) {
 				items.push(entry);
 				items.sort((a, b) => a.seq - b.seq);
-				ringBuffer.setFromArray(items);
+				targetBuffer.setFromArray(items);
 				entriesChanged = true;
 			}
 		}
 	} else if (storeState.ready) {
-		ringBuffer.push(entry);
+		targetBuffer.push(entry);
 		entriesChanged = true;
 	}
 	if (storeState.count < seq) {
@@ -204,6 +262,11 @@ const applyLogEntry = (payload) => {
 	}
 	if (Number.isFinite(payload?.count)) {
 		storeState.count = Math.max(storeState.count, Number(payload.count));
+	}
+	if (Number.isFinite(payload?.error_count)) {
+		storeState.errorCount = Math.max(0, Number(payload.error_count));
+	} else if (entry.level !== 'info') {
+		storeState.errorCount = Math.max(storeState.errorCount + 1, errorRingBuffer.size);
 	}
 	storeState.version = Number(payload?.version) || storeState.count;
 	if (entriesChanged) {
@@ -215,7 +278,7 @@ const applyLogEntry = (payload) => {
 
 // loadAll 全量拉取服务端缓冲条目, 在打开 LOG 卡片时调用.
 export const loadAll = async () => {
-	const result = await fetchLogs({ limit: MAX_LOCAL_LOG_ENTRIES });
+	const result = await fetchLogs({ limit: MAX_LOCAL_LOG_ENTRIES * 2 });
 	if (!result.ok) {
 		throw new Error(result.error || '获取运行日志失败');
 	}
@@ -228,7 +291,26 @@ export const loadAll = async () => {
 		instance: String(item?.instance || ''),
 		message: String(item?.message || ''),
 	})).filter((item) => item.seq > 0);
-	ringBuffer.setFromArray(parsed);
+
+	const errorEntries = [];
+	const infoEntries = [];
+	for (const item of parsed) {
+		if (item.level === 'info') {
+			infoEntries.push(item);
+		} else {
+			errorEntries.push(item);
+		}
+	}
+	errorRingBuffer.setFromArray(errorEntries);
+	infoRingBuffer.setFromArray(infoEntries);
+	if (Number.isFinite(result.data?.total_count)) {
+		storeState.count = Math.max(0, Number(result.data.total_count));
+	}
+	if (Number.isFinite(result.data?.error_count)) {
+		storeState.errorCount = Math.max(0, Number(result.data.error_count));
+	} else {
+		storeState.errorCount = errorEntries.length;
+	}
 	storeState.ready = true;
 	entriesDirty = true;
 	snapshotDirty = true;
@@ -276,7 +358,9 @@ export const stop = () => {
 	storeState.ready = false;
 	storeState.version = 0;
 	storeState.count = 0;
-	ringBuffer.clear();
+	storeState.errorCount = 0;
+	errorRingBuffer.clear();
+	infoRingBuffer.clear();
 	entriesDirty = true;
 	snapshotDirty = true;
 	rejectReadyWaiters(new Error('运行日志流已停止'));
@@ -290,8 +374,10 @@ export const resetLocal = () => {
 		clearTimeout(emitTimer);
 		emitTimer = null;
 	}
-	ringBuffer.clear();
+	errorRingBuffer.clear();
+	infoRingBuffer.clear();
 	storeState.count = 0;
+	storeState.errorCount = 0;
 	entriesDirty = true;
 	snapshotDirty = true;
 	updateSnapshot();
@@ -306,6 +392,7 @@ export const logStore = {
 	waitForReady,
 	loadAll,
 	resetLocal,
+	hasErrors,
 };
 
 export default logStore;

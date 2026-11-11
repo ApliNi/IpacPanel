@@ -2,6 +2,7 @@ package process
 
 import (
 	cfg "IpacPanel/controller/src/config"
+	"IpacPanel/controller/src/logbuf"
 	"IpacPanel/controller/src/msg"
 	"fmt"
 	"strings"
@@ -535,6 +536,7 @@ func (sp *InstanceProcess) appendAndBroadcastLocked(messageType int, data []byte
 }
 
 func (sp *InstanceProcess) AppendAndBroadcastNormalSystemMessageLocked(text string, limit int) {
+	_ = logbuf.EmitInstance(logbuf.LevelInfo, sp.InstanceSnapshotLocked().Name, text)
 	sp.appendAndBroadcastLocked(websocket.BinaryMessage, BuildNormalTerminalSystemMessage(text), limit)
 }
 
