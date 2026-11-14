@@ -16,7 +16,6 @@ type Route struct {
 
 var (
 	publicGet  = authz.RoutePolicy{Methods: []string{http.MethodGet}, Auth: authz.AuthModeNone, CSRF: authz.CSRFModeNone, Origin: authz.OriginModeNone, Kind: authz.RouteKindAPI}
-	publicPost = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeNone, CSRF: authz.CSRFModeNone, Origin: authz.OriginModeNone, Kind: authz.RouteKindAPI}
 	loginPost  = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeNone, CSRF: authz.CSRFModeNone, Origin: authz.OriginModeSameWhenPresent, Kind: authz.RouteKindAPI}
 	userGet    = authz.RoutePolicy{Methods: []string{http.MethodGet}, Auth: authz.AuthModeUser, CSRF: authz.CSRFModeNone, Origin: authz.OriginModeNone, Kind: authz.RouteKindAPI}
 	userPost   = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeUser, CSRF: authz.CSRFModeHeader, Origin: authz.OriginModeNone, Kind: authz.RouteKindAPI}
@@ -25,12 +24,11 @@ var (
 	userSSE    = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeUser, CSRF: authz.CSRFModeHeader, Origin: authz.OriginModeSameWhenPresent, Kind: authz.RouteKindSSE}
 	userWS     = authz.RoutePolicy{Methods: []string{http.MethodGet}, Auth: authz.AuthModeUser, CSRF: authz.CSRFModeWebSocketProtocol, Origin: authz.OriginModeWebSocket, Kind: authz.RouteKindWebSocket}
 
-	// Dashboard endpoints keep public-dashboard fallback in handlers. Both use
+	// Dashboard endpoints keep public-dashboard fallback in handlers. It uses
 	// optional auth: no auth cookie may fall back to public dashboard, a valid
 	// auth cookie must pass header CSRF, and an invalid auth cookie is rejected
 	// by Guard before public fallback.
-	dashboardSnapshot = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeOptional, CSRF: authz.CSRFModeHeaderWhenAuthenticated, Origin: authz.OriginModeNone, Kind: authz.RouteKindAPI}
-	dashboardEvents   = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeOptional, CSRF: authz.CSRFModeHeaderWhenAuthenticated, Origin: authz.OriginModeNone, Kind: authz.RouteKindSSE}
+	dashboardEvents = authz.RoutePolicy{Methods: []string{http.MethodPost}, Auth: authz.AuthModeOptional, CSRF: authz.CSRFModeHeaderWhenAuthenticated, Origin: authz.OriginModeNone, Kind: authz.RouteKindSSE}
 )
 
 var Routes = []Route{
@@ -53,7 +51,6 @@ var Routes = []Route{
 	// Dashboard supports public access when public dashboard is enabled; handlers
 	// trust only the Guard-populated request context for authenticated users.
 	{Path: "/api/dashboard/events", Policy: dashboardEvents, Handler: HandleApiDashboardEvents},
-	{Path: "/api/dashboard/snapshot", Policy: dashboardSnapshot, Handler: HandleApiDashboardSnapshot},
 
 	// Auth
 	{Path: "/api/auth/pow", Policy: publicGet, Handler: HandleApiAuthPow},

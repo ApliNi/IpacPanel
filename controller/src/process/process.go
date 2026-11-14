@@ -4,6 +4,7 @@ import (
 	cfg "IpacPanel/controller/src/config"
 	"IpacPanel/controller/src/logbuf"
 	"IpacPanel/controller/src/msg"
+	"IpacPanel/daemon/ipc"
 	"errors"
 	"fmt"
 	"log"
@@ -134,10 +135,6 @@ func (sp *InstanceProcess) activeTerminalLocked() int {
 	return terminal
 }
 
-func (sp *InstanceProcess) ActiveTerminalLocked() int {
-	return sp.activeTerminalLocked()
-}
-
 func (sp *InstanceProcess) ActiveTerminalModeSnapshot() int {
 	if sp == nil {
 		return cfg.Terminal
@@ -183,24 +180,6 @@ func (sp *InstanceProcess) IsDeleting() bool {
 	sp.Mu.RLock()
 	defer sp.Mu.RUnlock()
 	return sp.Deleting
-}
-
-func (sp *InstanceProcess) IsRunning() bool {
-	if sp == nil {
-		return false
-	}
-	sp.Mu.RLock()
-	defer sp.Mu.RUnlock()
-	return sp.Running
-}
-
-func (sp *InstanceProcess) IsUpdating() bool {
-	if sp == nil {
-		return false
-	}
-	sp.Mu.RLock()
-	defer sp.Mu.RUnlock()
-	return sp.Updating
 }
 
 func (sp *InstanceProcess) IsActive() bool {
@@ -251,7 +230,7 @@ type startReservation struct {
 }
 
 type preparedStart struct {
-	state     *DaemonRuntimeState
+	state     *ipc.InstanceRuntimeState
 	startTime time.Time
 }
 
@@ -291,10 +270,6 @@ func (sp *InstanceProcess) enterRunningStateLocked() {
 
 func (sp *InstanceProcess) enterStoppingStateLocked() {
 	sp.setStateLocked(processStateStopping)
-}
-
-func (sp *InstanceProcess) enterStoppingForRestartLocked() {
-	sp.setStateLocked(processStateStoppingForRestart)
 }
 
 func (sp *InstanceProcess) enterRestartWaitingLocked() {
@@ -348,7 +323,7 @@ func (sp *InstanceProcess) setProcessExitedLocked() {
 	sp.ProxySeq = 0
 	sp.resetPTYAlternateScreenStateLocked()
 	sp.enterStoppedStateLocked()
-	sp.shrinkTerminalHistoryLocked()
+	sp.ShrinkTerminalHistoryLocked()
 }
 
 func (sp *InstanceProcess) setProcessStartedLocked(startTime time.Time, restartCount int) uint64 {
@@ -576,7 +551,7 @@ func (sp *InstanceProcess) scheduleAutoRestart() {
 	_ = proxySeq
 }
 
-func (sp *InstanceProcess) handleDaemonProcessExit(state *DaemonRuntimeState) bool {
+func (sp *InstanceProcess) handleDaemonProcessExit(state *ipc.InstanceRuntimeState) bool {
 	limit := cfg.GetHistoryLimit() * 1024
 	sp.Mu.Lock()
 	defer sp.Mu.Unlock()
@@ -588,14 +563,14 @@ func (sp *InstanceProcess) handleDaemonProcessExit(state *DaemonRuntimeState) bo
 	sp.setProcessExitedLocked()
 
 	ins := sp.InstanceSnapshotLocked()
-	runtimeCode := RuntimeCodeUnknown
+	runtimeCode := ipc.RuntimeCodeUnknown
 	if state != nil {
 		runtimeCode = state.RuntimeCode
 		if state.RestartCount > sp.RestartCount {
 			sp.RestartCount = state.RestartCount
 		}
 	}
-	shouldAutoRestart := prevState == processStateStoppingForRestart || runtimeCode == RuntimeCodeRestarting || (ins.AutoRestart && runtimeCode == RuntimeCodeUnexpectedExit)
+	shouldAutoRestart := prevState == processStateStoppingForRestart || runtimeCode == ipc.RuntimeCodeRestarting || (ins.AutoRestart && runtimeCode == ipc.RuntimeCodeUnexpectedExit)
 	if shouldAutoRestart {
 		sp.enterRestartWaitingLocked()
 		sp.AppendAndBroadcastNormalSystemMessageLocked(msg.ProcessExitedWaitingRestart, limit)
@@ -603,7 +578,7 @@ func (sp *InstanceProcess) handleDaemonProcessExit(state *DaemonRuntimeState) bo
 		sp.AppendAndBroadcastNormalSystemMessageLocked(msg.ProcessExited, limit)
 	}
 	if !shouldAutoRestart {
-		sp.shrinkTerminalHistoryLocked()
+		sp.ShrinkTerminalHistoryLocked()
 	}
 
 	NotifyInstanceStatusChanged(ins.Name)
@@ -611,7 +586,7 @@ func (sp *InstanceProcess) handleDaemonProcessExit(state *DaemonRuntimeState) bo
 	return shouldAutoRestart
 }
 
-func (sp *InstanceProcess) ScheduleRecoveredAutoRestart(state DaemonRuntimeState) {
+func (sp *InstanceProcess) ScheduleRecoveredAutoRestart(state ipc.InstanceRuntimeState) {
 	if sp == nil {
 		return
 	}
@@ -730,10 +705,6 @@ func (sp *InstanceProcess) requestRestart(mode restartRequestMode) RestartReques
 	return sp.requestRestartWithKillStopAndCommand(mode, false, "")
 }
 
-func (sp *InstanceProcess) requestRestartWithKillStop(mode restartRequestMode, useKillStop bool) RestartRequestResult {
-	return sp.requestRestartWithKillStopAndCommand(mode, useKillStop, "")
-}
-
 func (sp *InstanceProcess) requestRestartWithKillStopAndCommand(mode restartRequestMode, useKillStop bool, command string) RestartRequestResult {
 	shouldSchedule := false
 
@@ -756,7 +727,7 @@ func (sp *InstanceProcess) requestRestartWithKillStopAndCommand(mode restartRequ
 		sp.beginStopLocked(processStateStoppingForRestart)
 		NotifyInstanceStatusChanged(instanceName)
 		sp.Mu.Unlock()
-		if err := markDaemonInstanceRuntimeCode(instanceName, RuntimeCodeRestarting); err != nil {
+		if err := markDaemonInstanceRuntimeCode(instanceName, ipc.RuntimeCodeRestarting); err != nil {
 			log.Printf(msg.MarkInstanceRestartingIntentFailedLogFmt, instanceName, err)
 		}
 		if useKillStop {
@@ -773,9 +744,9 @@ func (sp *InstanceProcess) requestRestartWithKillStopAndCommand(mode restartRequ
 		NotifyInstanceStatusChanged(instanceName)
 		sp.Mu.Unlock()
 		if useKillStop {
-			_ = stopDaemonInstanceWithCode(instanceName, true, RuntimeCodeRestarting)
+			_ = stopDaemonInstanceWithCode(instanceName, true, ipc.RuntimeCodeRestarting)
 		} else {
-			sendDaemonStopRequest(instanceName, stopCommand, noTerminal, RuntimeCodeRestarting, msg.MarkInstanceRestartingIntentFailedLogFmt, msg.WriteInstanceRestartStopCommandFailedLogFmt)
+			sendDaemonStopRequest(instanceName, stopCommand, noTerminal, ipc.RuntimeCodeRestarting, msg.MarkInstanceRestartingIntentFailedLogFmt, msg.WriteInstanceRestartStopCommandFailedLogFmt)
 		}
 		return RestartRequestAccepted
 	}
@@ -795,28 +766,12 @@ func (sp *InstanceProcess) requestRestartWithKillStopAndCommand(mode restartRequ
 	return RestartRequestAccepted
 }
 
-func (sp *InstanceProcess) RequestRestart() bool {
-	return sp.RequestRestartResult().IsAllowed()
-}
-
 func (sp *InstanceProcess) RequestRestartResult() RestartRequestResult {
 	return sp.requestRestart(restartRequestModeDefault)
 }
 
-func (sp *InstanceProcess) RequestRestartWithKillStopResult(useKillStop bool) RestartRequestResult {
-	return sp.RequestRestartWithKillStopAndCommand(useKillStop, "")
-}
-
 func (sp *InstanceProcess) RequestRestartWithKillStopAndCommand(useKillStop bool, command string) RestartRequestResult {
 	return sp.requestRestartWithKillStopAndCommand(restartRequestModeDefault, useKillStop, command)
-}
-
-func (sp *InstanceProcess) RequestStrictRestart() RestartRequestResult {
-	return sp.requestRestart(restartRequestModeStrict)
-}
-
-func (sp *InstanceProcess) RequestStrictRestartWithKillStop(useKillStop bool) RestartRequestResult {
-	return sp.RequestStrictRestartWithKillStopAndCommand(useKillStop, "")
 }
 
 func (sp *InstanceProcess) RequestStrictRestartWithKillStopAndCommand(useKillStop bool, command string) RestartRequestResult {
@@ -877,7 +832,7 @@ func (sp *InstanceProcess) Stop(force bool) {
 		sp.cancelStopLocked()
 		sp.enterStoppedStateLocked()
 		sp.AppendAndBroadcastNormalSystemMessageLocked(msg.AutoRestartStopped, limit)
-		sp.shrinkTerminalHistoryLocked()
+		sp.ShrinkTerminalHistoryLocked()
 		NotifyInstanceStatusChanged(instanceName)
 		sp.Mu.Unlock()
 		if force {
@@ -893,9 +848,9 @@ func (sp *InstanceProcess) Stop(force bool) {
 		sp.beginStopLocked(processStateStopping)
 		NotifyInstanceStatusChanged(instanceName)
 		sp.Mu.Unlock()
-		intentCode := RuntimeCodeManualStop
+		intentCode := ipc.RuntimeCodeManualStop
 		if force {
-			intentCode = RuntimeCodeManualKill
+			intentCode = ipc.RuntimeCodeManualKill
 		}
 		if err := markDaemonInstanceRuntimeCode(instanceName, intentCode); err != nil {
 			log.Printf(msg.MarkInstanceStopIntentFailedLogFmt, instanceName, err)
@@ -903,7 +858,7 @@ func (sp *InstanceProcess) Stop(force bool) {
 		if force {
 			_ = stopDaemonInstance(instanceName, true)
 		} else {
-			sendDaemonStopRequest(instanceName, stopCommand, noTerminal, RuntimeCodeManualStop, msg.MarkInstanceManualStopIntentFailedLogFmt, msg.WriteInstanceStopCommandFailedLogFmt)
+			sendDaemonStopRequest(instanceName, stopCommand, noTerminal, ipc.RuntimeCodeManualStop, msg.MarkInstanceManualStopIntentFailedLogFmt, msg.WriteInstanceStopCommandFailedLogFmt)
 		}
 		return
 	}
@@ -921,7 +876,7 @@ func (sp *InstanceProcess) Stop(force bool) {
 			stopCommand := sp.InstanceSnapshotLocked().StopCommand
 			noTerminal := cfg.IsNoTerminal(sp.activeTerminalLocked())
 			sp.Mu.Unlock()
-			sendDaemonStopRequest(instanceName, stopCommand, noTerminal, RuntimeCodeManualStop, msg.MarkInstanceManualStopIntentFailedLogFmt, msg.WriteInstanceStopCommandFailedLogFmt)
+			sendDaemonStopRequest(instanceName, stopCommand, noTerminal, ipc.RuntimeCodeManualStop, msg.MarkInstanceManualStopIntentFailedLogFmt, msg.WriteInstanceStopCommandFailedLogFmt)
 			return
 		}
 		sp.Mu.Unlock()
@@ -940,9 +895,9 @@ func (sp *InstanceProcess) Stop(force bool) {
 	noTerminal := cfg.IsNoTerminal(sp.activeTerminalLocked())
 	sp.beginStopLocked(processStateStopping)
 	NotifyInstanceStatusChanged(instanceName)
-	intentCode := RuntimeCodeManualStop
+	intentCode := ipc.RuntimeCodeManualStop
 	if force {
-		intentCode = RuntimeCodeManualKill
+		intentCode = ipc.RuntimeCodeManualKill
 	}
 	sp.Mu.Unlock()
 
@@ -953,7 +908,7 @@ func (sp *InstanceProcess) Stop(force bool) {
 		_ = stopDaemonInstance(instanceName, true)
 		return
 	}
-	sendDaemonStopRequest(instanceName, stopCommand, noTerminal, RuntimeCodeManualStop, msg.MarkInstanceManualStopIntentFailedLogFmt, msg.WriteInstanceStopCommandFailedLogFmt)
+	sendDaemonStopRequest(instanceName, stopCommand, noTerminal, ipc.RuntimeCodeManualStop, msg.MarkInstanceManualStopIntentFailedLogFmt, msg.WriteInstanceStopCommandFailedLogFmt)
 }
 
 func (sp *InstanceProcess) BeginDelete() (running bool, restarting bool, starting bool, deleting bool) {

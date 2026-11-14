@@ -154,7 +154,7 @@ const escapeAttrSelectorValue = (value) => {
 	return text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 };
 
-export const renderInstanceList = (instances, onSelect) => {
+const renderInstanceList = (instances, onSelect) => {
 	const baseInstances = getBaseInstancesForCounts();
 	if (pageState.currentFilter === 'all') {
 		setGroupViewMode('all');
@@ -382,11 +382,6 @@ const handleInstanceAccessLinkClick = async (link) => {
 	markAccessLinkCopied(instanceName, linkName);
 };
 
-const renderFlatList = (instances, onSelect) => {
-	const grid = dom.listContainer;
-	syncInstanceCards(grid, instances, onSelect);
-};
-
 const getGroupBuckets = (instances) => {
 	const buckets = new Map();
 	instances.forEach(svc => {
@@ -581,7 +576,7 @@ const renderGroupDetailsList = (groups, onSelect) => {
 	dom.listContainer.appendChild(frag);
 };
 
-export const getFilteredInstances = () => {
+const getFilteredInstances = () => {
     if (!dom.instanceSearch) {
         console.error('[服务列表页] DOM 中未找到 instanceSearch 元素');
         return [];
@@ -637,7 +632,7 @@ export const getFilteredInstances = () => {
 	return filteredAll.filter(svc => matchedGroups.has(normalizeGroupName(svc.group)) || svc.name.toLowerCase().includes(searchText));
 };
 
-export const bindInstanceListEvents = ({ onCreateInstance, onOpenInstance, onApplyFilters }) => {
+const bindInstanceListEvents = ({ onCreateInstance, onOpenInstance, onApplyFilters }) => {
     if (dom.instanceSearch) {
         dom.instanceSearch.oninput = () => {
             onApplyFilters();

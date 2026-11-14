@@ -2,7 +2,6 @@
 
 // Run Build: go run ./build.go
 // Run Build for selected platforms: go run ./build.go --platform windows/amd64,linux/arm64
-// Run Build with tester: go run ./build.go --build-tester
 
 package main
 
@@ -58,7 +57,6 @@ func main() {
 }
 func run() error {
 	platforms := flag.String("platform", "", "comma-separated target platforms, e.g. windows/amd64,linux/arm64")
-	buildTester := flag.Bool("build-tester", false, "include tester binary in release archives")
 	flag.Parse()
 
 	repoRoot, err := os.Getwd()
@@ -74,7 +72,7 @@ func run() error {
 		return err
 	}
 	for _, target := range targets {
-		if err := buildTarget(repoRoot, buildDir, target, *buildTester); err != nil {
+		if err := buildTarget(repoRoot, buildDir, target); err != nil {
 			return err
 		}
 	}
@@ -145,13 +143,10 @@ func recreateDir(path string) error {
 	}
 	return nil
 }
-func buildTarget(repoRoot string, buildDir string, target target, buildTester bool) error {
+func buildTarget(repoRoot string, buildDir string, target target) error {
 	products := []buildProduct{
 		{Pkg: "./daemon", Artifact: "IpacPanel"},
 		{Pkg: "./controller", Artifact: "IpacPanel_Controller"},
-	}
-	if buildTester {
-		products = append(products, buildProduct{Pkg: "./tester", Artifact: "tester"})
 	}
 	var exePaths []string
 	var binaryEntries []zipEntry

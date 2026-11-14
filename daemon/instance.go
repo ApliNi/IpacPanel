@@ -1,6 +1,7 @@
 package main
 
 import (
+	"IpacPanel/daemon/ipc"
 	"IpacPanel/daemon/terminal"
 	"errors"
 	"fmt"
@@ -66,15 +67,15 @@ type DaemonInstance struct {
 	Cols               uint16
 	Rows               uint16
 	State              instanceState
-	Runtime            InstanceRuntimeState
+	Runtime            ipc.InstanceRuntimeState
 	Proxy              *terminal.Proxy
 	Cmd                *exec.Cmd
 	ProcessTree        *terminal.ProcessTree
 	CleanupCmd         *exec.Cmd
 	CleanupTree        *terminal.ProcessTree
 	DevNull            *os.File
-	OutputCh           chan<- IPCResponse
-	EventCh            chan<- IPCResponse
+	OutputCh           chan<- ipc.Response
+	EventCh            chan<- ipc.Response
 	runtimeID          string
 	proxySeq           uint64
 	outputDone         chan struct{}
@@ -85,13 +86,13 @@ type DaemonInstance struct {
 func instanceLifecycle(state instanceState) string {
 	switch state {
 	case instanceRunning:
-		return InstanceLifecycleRunning
+		return ipc.InstanceLifecycleRunning
 	case instanceStopping:
-		return InstanceLifecycleStopping
+		return ipc.InstanceLifecycleStopping
 	case instanceCleaning:
-		return InstanceLifecycleCleaning
+		return ipc.InstanceLifecycleCleaning
 	default:
-		return InstanceLifecycleStopped
+		return ipc.InstanceLifecycleStopped
 	}
 }
 
@@ -129,10 +130,10 @@ func (m *InstanceManager) List() []*DaemonInstance {
 	return list
 }
 
-func (m *InstanceManager) ListRuntime() []InstanceRuntimeState {
+func (m *InstanceManager) ListRuntime() []ipc.InstanceRuntimeState {
 	m.Mu.RLock()
 	defer m.Mu.RUnlock()
-	runtime := make([]InstanceRuntimeState, 0, len(m.instances))
+	runtime := make([]ipc.InstanceRuntimeState, 0, len(m.instances))
 	for _, ins := range m.instances {
 		if ins == nil {
 			continue
@@ -170,18 +171,18 @@ func (m *InstanceManager) RenameInstance(oldName string, newName string) error {
 	return nil
 }
 
-func (m *InstanceManager) prepareInstanceForStartLocked(req *IPCRequest) *DaemonInstance {
+func (m *InstanceManager) prepareInstanceForStartLocked(req *ipc.Request) *DaemonInstance {
 	ins, ok := m.instances[req.Instance]
 	if !ok || ins == nil {
 		// StartCount 语义: 未曾启动为 -1, 每次成功启动 +1.
-		ins = &DaemonInstance{Name: req.Instance, Runtime: InstanceRuntimeState{RestartCount: -1}}
+		ins = &DaemonInstance{Name: req.Instance, Runtime: ipc.InstanceRuntimeState{RestartCount: -1}}
 	}
 	ins.Mu.Lock()
 	ins.Name = req.Instance
 	ins.CommandArgv = slices.Clone(req.CommandArgv)
 	ins.CleanupCommandArgv = slices.Clone(req.CleanupCommandArgv)
 	ins.Path = req.Path
-	ins.Terminal = NormalizeTerminalMode(req.Terminal)
+	ins.Terminal = ipc.NormalizeTerminalMode(req.Terminal)
 	ins.InputEnc = req.InputEnc
 	ins.OutputEnc = req.OutputEnc
 	ins.Cols = req.Cols
@@ -199,7 +200,7 @@ func (ins *DaemonInstance) UpdateRuntimeConfig(cleanupCommandArgv []string) {
 	ins.CleanupCommandArgv = slices.Clone(cleanupCommandArgv)
 }
 
-func (ins *DaemonInstance) RuntimeSnapshot() InstanceRuntimeState {
+func (ins *DaemonInstance) RuntimeSnapshot() ipc.InstanceRuntimeState {
 	ins.Mu.Lock()
 	defer ins.Mu.Unlock()
 	rt := ins.Runtime
@@ -213,7 +214,7 @@ func (ins *DaemonInstance) RuntimeSnapshot() InstanceRuntimeState {
 	return rt
 }
 
-func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse, eventCh chan<- IPCResponse) error {
+func (ins *DaemonInstance) Start(outputCh chan<- ipc.Response, eventCh chan<- ipc.Response) error {
 	ins.Mu.Lock()
 	defer ins.Mu.Unlock()
 
@@ -248,7 +249,7 @@ func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse, eventCh chan<- IPC
 	var processTree *terminal.ProcessTree
 	var devNull *os.File
 	var pid int
-	if IsNoTerminal(ins.Terminal) {
+	if ipc.IsNoTerminal(ins.Terminal) {
 		cmd, processTree, devNull, err = startNoTerminalProcess(resolvedPath, ins.CommandArgv)
 		if err != nil {
 			return fmt.Errorf("start instance: %w", err)
@@ -257,7 +258,7 @@ func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse, eventCh chan<- IPC
 			pid = cmd.Process.Pid
 		}
 	} else {
-		proxy, err = terminal.Start(resolvedPath, ins.CommandArgv, IsPTYTerminal(ins.Terminal), ins.InputEnc, ins.OutputEnc, ins.Cols, ins.Rows)
+		proxy, err = terminal.Start(resolvedPath, ins.CommandArgv, ipc.IsPTYTerminal(ins.Terminal), ins.InputEnc, ins.OutputEnc, ins.Cols, ins.Rows)
 		if err != nil {
 			return fmt.Errorf("start instance: %w", err)
 		}
@@ -281,11 +282,11 @@ func (ins *DaemonInstance) Start(outputCh chan<- IPCResponse, eventCh chan<- IPC
 	ins.skipCleanup = false
 	// StartCount 语义: 未曾启动为 -1, 每次成功启动 +1.
 	startCount := ins.Runtime.RestartCount + 1
-	ins.Runtime = InstanceRuntimeState{
+	ins.Runtime = ipc.InstanceRuntimeState{
 		InstanceName: ins.Name,
 		RuntimeAlias: "",
-		Lifecycle:    InstanceLifecycleRunning,
-		RuntimeCode:  RuntimeCodeRunning,
+		Lifecycle:    ipc.InstanceLifecycleRunning,
+		RuntimeCode:  ipc.RuntimeCodeRunning,
 		PID:          pid,
 		StartTime:    time.Now(),
 		RestartCount: startCount,
@@ -362,7 +363,7 @@ func startNoTerminalProcess(path string, argv []string) (*exec.Cmd, *terminal.Pr
 func (ins *DaemonInstance) Stop(force bool, runtimeCode int) {
 	ins.Mu.Lock()
 	if ins.State == instanceCleaning {
-		if runtimeCode != RuntimeCodeUnknown {
+		if runtimeCode != ipc.RuntimeCodeUnknown {
 			ins.markRuntimeCodeLocked(runtimeCode)
 		}
 		cleanupCmd := ins.CleanupCmd
@@ -380,7 +381,7 @@ func (ins *DaemonInstance) Stop(force bool, runtimeCode int) {
 		}
 		return
 	}
-	if runtimeCode != RuntimeCodeUnknown {
+	if runtimeCode != ipc.RuntimeCodeUnknown {
 		ins.markRuntimeCodeLocked(runtimeCode)
 	}
 	if (ins.State != instanceRunning && !(force && ins.State == instanceStopping)) || (ins.Proxy == nil && ins.Cmd == nil) {
@@ -389,11 +390,11 @@ func (ins *DaemonInstance) Stop(force bool, runtimeCode int) {
 	}
 	ins.State = instanceStopping
 	ins.skipCleanup = force
-	ins.Runtime.Lifecycle = InstanceLifecycleStopping
-	if runtimeCode == RuntimeCodeUnknown && force {
-		ins.Runtime.RuntimeCode = RuntimeCodeManualKill
-	} else if runtimeCode == RuntimeCodeUnknown {
-		ins.Runtime.RuntimeCode = RuntimeCodeManualStop
+	ins.Runtime.Lifecycle = ipc.InstanceLifecycleStopping
+	if runtimeCode == ipc.RuntimeCodeUnknown && force {
+		ins.Runtime.RuntimeCode = ipc.RuntimeCodeManualKill
+	} else if runtimeCode == ipc.RuntimeCodeUnknown {
+		ins.Runtime.RuntimeCode = ipc.RuntimeCodeManualStop
 	}
 	proxy := ins.Proxy
 	cmd := ins.Cmd
@@ -462,12 +463,12 @@ func killNoTerminalProcess(name string, cmd *exec.Cmd, processTree *terminal.Pro
 func (ins *DaemonInstance) MarkStopping(runtimeCode int) {
 	ins.Mu.Lock()
 	defer ins.Mu.Unlock()
-	if runtimeCode != RuntimeCodeUnknown {
+	if runtimeCode != ipc.RuntimeCodeUnknown {
 		ins.markRuntimeCodeLocked(runtimeCode)
 	}
 	if ins.State == instanceRunning {
 		ins.State = instanceStopping
-		ins.Runtime.Lifecycle = InstanceLifecycleStopping
+		ins.Runtime.Lifecycle = ipc.InstanceLifecycleStopping
 	}
 }
 
@@ -478,7 +479,7 @@ func (ins *DaemonInstance) MarkRuntimeCode(runtimeCode int) {
 }
 
 func (ins *DaemonInstance) markRuntimeCodeLocked(runtimeCode int) {
-	if runtimeCode == RuntimeCodeUnknown {
+	if runtimeCode == ipc.RuntimeCodeUnknown {
 		return
 	}
 	if ins.Runtime.InstanceName == "" {
@@ -488,13 +489,13 @@ func (ins *DaemonInstance) markRuntimeCodeLocked(runtimeCode int) {
 }
 
 func (ins *DaemonInstance) Kill() {
-	ins.Stop(true, RuntimeCodeManualKill)
+	ins.Stop(true, ipc.RuntimeCodeManualKill)
 }
 
 func (ins *DaemonInstance) WriteStdin(data []byte) error {
 	ins.Mu.Lock()
 	defer ins.Mu.Unlock()
-	if IsNoTerminal(ins.Terminal) {
+	if ipc.IsNoTerminal(ins.Terminal) {
 		return errors.New("instance has no active terminal")
 	}
 	if (ins.State != instanceRunning && ins.State != instanceStopping) || ins.Proxy == nil {
@@ -507,7 +508,7 @@ func (ins *DaemonInstance) WriteStdin(data []byte) error {
 func (ins *DaemonInstance) ResizeTerminal(cols, rows uint16) error {
 	ins.Mu.Lock()
 	defer ins.Mu.Unlock()
-	if ins.Proxy == nil || IsNoTerminal(ins.Terminal) {
+	if ins.Proxy == nil || ipc.IsNoTerminal(ins.Terminal) {
 		return nil
 	}
 	if err := ins.Proxy.Resize(cols, rows); err != nil {
@@ -543,7 +544,7 @@ func (ins *DaemonInstance) readOutput(proxy *terminal.Proxy, proxySeq uint64, ru
 			}
 			if outputCh != nil {
 				select {
-				case outputCh <- IPCResponse{Type: "o", Instance: runtimeID, Body: data, ReleaseBuf: bufObj, ReleasePool: &daemonOutputBufferPool}:
+				case outputCh <- ipc.Response{Type: "o", Instance: runtimeID, Body: data, ReleaseBuf: bufObj, ReleasePool: &daemonOutputBufferPool}:
 				default:
 					putDaemonOutputBuffer(bufObj)
 					log.Printf("instance %s output dropped (channel full, %d bytes)", runtimeID, len(data))
@@ -591,8 +592,8 @@ func (ins *DaemonInstance) finishProcessExit(proxy *terminal.Proxy, cmd *exec.Cm
 	ins.DevNull = nil
 	outputDone := ins.outputDone
 	ins.outputDone = nil
-	if ins.Runtime.RuntimeCode == RuntimeCodeRunning {
-		ins.Runtime.RuntimeCode = RuntimeCodeUnexpectedExit
+	if ins.Runtime.RuntimeCode == ipc.RuntimeCodeRunning {
+		ins.Runtime.RuntimeCode = ipc.RuntimeCodeUnexpectedExit
 	}
 	ins.Runtime.PID = 0
 	ins.Runtime.ExitTime = time.Now()
@@ -607,10 +608,10 @@ func (ins *DaemonInstance) finishProcessExit(proxy *terminal.Proxy, cmd *exec.Cm
 	}
 	cleanupArgv := slices.Clone(ins.CleanupCommandArgv)
 	cleanupPath := ins.Path
-	shouldCleanup := len(cleanupArgv) > 0 && !ins.skipCleanup && ins.Runtime.RuntimeCode != RuntimeCodeManualKill
+	shouldCleanup := len(cleanupArgv) > 0 && !ins.skipCleanup && ins.Runtime.RuntimeCode != ipc.RuntimeCodeManualKill
 	if shouldCleanup {
 		ins.State = instanceCleaning
-		ins.Runtime.Lifecycle = InstanceLifecycleCleaning
+		ins.Runtime.Lifecycle = ipc.InstanceLifecycleCleaning
 		runtime := ins.Runtime
 		ins.Mu.Unlock()
 		waitDaemonOutputDone(runtimeID, outputDone)
@@ -623,7 +624,7 @@ func (ins *DaemonInstance) finishProcessExit(proxy *terminal.Proxy, cmd *exec.Cm
 		return
 	}
 	ins.State = instanceStopped
-	ins.Runtime.Lifecycle = InstanceLifecycleStopped
+	ins.Runtime.Lifecycle = ipc.InstanceLifecycleStopped
 	runtime := ins.Runtime
 	ins.Mu.Unlock()
 	waitDaemonOutputDone(runtimeID, outputDone)
@@ -632,7 +633,7 @@ func (ins *DaemonInstance) finishProcessExit(proxy *terminal.Proxy, cmd *exec.Cm
 	}
 	cleanupProcessTree(runtimeID, processTree, "instance exit")
 
-	ins.sendRuntimeEvent(eventCh, IPCResponse{Type: "instance_exited", State: &runtime})
+	ins.sendRuntimeEvent(eventCh, ipc.Response{Type: "instance_exited", State: &runtime})
 }
 
 func cleanupProcessTree(runtimeID string, processTree *terminal.ProcessTree, context string) {
@@ -657,7 +658,7 @@ func waitDaemonOutputDone(runtimeID string, done <-chan struct{}) {
 	}
 }
 
-func (ins *DaemonInstance) runCleanupCommand(path string, argv []string, outputCh chan<- IPCResponse, eventCh chan<- IPCResponse, runtimeID string) {
+func (ins *DaemonInstance) runCleanupCommand(path string, argv []string, outputCh chan<- ipc.Response, eventCh chan<- ipc.Response, runtimeID string) {
 	if len(argv) == 0 {
 		return
 	}
@@ -749,7 +750,7 @@ func (ins *DaemonInstance) runCleanupCommand(path string, argv []string, outputC
 	}
 }
 
-func (ins *DaemonInstance) copyCleanupOutput(wg *sync.WaitGroup, outputCh chan<- IPCResponse, runtimeID string, src io.ReadCloser) {
+func (ins *DaemonInstance) copyCleanupOutput(wg *sync.WaitGroup, outputCh chan<- ipc.Response, runtimeID string, src io.ReadCloser) {
 	defer wg.Done()
 	defer src.Close()
 	bufObj, buf := getDaemonOutputBuffer()
@@ -776,28 +777,28 @@ const (
 	cleanupMessageCompleted    = "cleanup_command.completed"
 )
 
-func (ins *DaemonInstance) sendCleanupMessage(eventCh chan<- IPCResponse, runtimeID string, placeholder string, args ...string) {
+func (ins *DaemonInstance) sendCleanupMessage(eventCh chan<- ipc.Response, runtimeID string, placeholder string, args ...string) {
 	if eventCh == nil || runtimeID == "" || strings.TrimSpace(placeholder) == "" {
 		return
 	}
 	select {
-	case eventCh <- IPCResponse{Type: "cleanup_message", Instance: runtimeID, Placeholder: placeholder, Args: args}:
+	case eventCh <- ipc.Response{Type: "cleanup_message", Instance: runtimeID, Placeholder: placeholder, Args: args}:
 	default:
 		log.Printf("instance %s cleanup message %s dropped", runtimeID, placeholder)
 	}
 }
 
-func (ins *DaemonInstance) sendOutput(outputCh chan<- IPCResponse, runtimeID string, data []byte) {
+func (ins *DaemonInstance) sendOutput(outputCh chan<- ipc.Response, runtimeID string, data []byte) {
 	if outputCh == nil || runtimeID == "" || len(data) == 0 {
 		return
 	}
 	select {
-	case outputCh <- IPCResponse{Type: "o", Instance: runtimeID, Body: data}:
+	case outputCh <- ipc.Response{Type: "o", Instance: runtimeID, Body: data}:
 	default:
 	}
 }
 
-func (ins *DaemonInstance) finishCleanupExit(proxySeq uint64, runtime InstanceRuntimeState) {
+func (ins *DaemonInstance) finishCleanupExit(proxySeq uint64, runtime ipc.InstanceRuntimeState) {
 	ins.Mu.Lock()
 	if ins.proxySeq != proxySeq || ins.State != instanceCleaning {
 		ins.Mu.Unlock()
@@ -807,7 +808,7 @@ func (ins *DaemonInstance) finishCleanupExit(proxySeq uint64, runtime InstanceRu
 	cleanupTree := ins.CleanupTree
 	ins.CleanupTree = nil
 	ins.State = instanceStopped
-	ins.Runtime.Lifecycle = InstanceLifecycleStopped
+	ins.Runtime.Lifecycle = ipc.InstanceLifecycleStopped
 	ins.Runtime.PID = 0
 	ins.Runtime.ExitTime = time.Now()
 	runtime = ins.Runtime
@@ -824,10 +825,10 @@ func (ins *DaemonInstance) finishCleanupExit(proxySeq uint64, runtime InstanceRu
 		cleanupProcessTree(runtimeID, cleanupTree, "cleanup finalization")
 	}
 
-	ins.sendRuntimeEvent(eventCh, IPCResponse{Type: "instance_exited", State: &runtime})
+	ins.sendRuntimeEvent(eventCh, ipc.Response{Type: "instance_exited", State: &runtime})
 }
 
-func (ins *DaemonInstance) sendRuntimeEvent(eventCh chan<- IPCResponse, resp IPCResponse) {
+func (ins *DaemonInstance) sendRuntimeEvent(eventCh chan<- ipc.Response, resp ipc.Response) {
 	if eventCh == nil {
 		resp.Release()
 		return
@@ -842,7 +843,7 @@ func (ins *DaemonInstance) sendRuntimeEvent(eventCh chan<- IPCResponse, resp IPC
 	}
 }
 
-func runtimeEventInstanceName(resp IPCResponse) string {
+func runtimeEventInstanceName(resp ipc.Response) string {
 	if resp.Instance != "" {
 		return resp.Instance
 	}
@@ -871,7 +872,7 @@ func (ins *DaemonInstance) Shutdown() {
 	ins.DevNull = nil
 	ins.outputDone = nil
 	ins.State = instanceStopped
-	ins.Runtime.Lifecycle = InstanceLifecycleStopped
+	ins.Runtime.Lifecycle = ipc.InstanceLifecycleStopped
 	ins.OutputCh = nil
 	ins.EventCh = nil
 	ins.Mu.Unlock()

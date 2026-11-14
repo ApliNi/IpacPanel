@@ -88,7 +88,6 @@ type wsOutMessage struct {
 	Type                     int
 	Data                     []byte
 	SkipTerminalFlush        bool
-	EnableTerminalAfterWrite bool
 }
 
 type TerminalInitialMessage struct {
@@ -182,10 +181,6 @@ func (client *WSClient) writeQueuedMessage(msg wsOutMessage) error {
 	if err := client.writeMessage(msg.Type, msg.Data); err != nil {
 		return err
 	}
-	if msg.EnableTerminalAfterWrite {
-		client.TerminalReady.Store(true)
-		client.wakeTerminalWriter()
-	}
 	return nil
 }
 
@@ -261,10 +256,6 @@ func (client *WSClient) flushTerminalHistory() error {
 	return nil
 }
 
-func (client *WSClient) StartWriter() {
-	client.startWriter()
-}
-
 func (client *WSClient) Enqueue(messageType int, data []byte) bool {
 	if client == nil {
 		return false
@@ -289,25 +280,6 @@ func (client *WSClient) Enqueue(messageType int, data []byte) bool {
 	}
 }
 
-func (client *WSClient) EnqueueTerminalControl(data []byte) bool {
-	if client == nil {
-		return false
-	}
-	client.startWriter()
-	if client.Send == nil {
-		return false
-	}
-	select {
-	case <-client.Done:
-		return false
-	case client.Send <- wsOutMessage{Type: websocket.BinaryMessage, Data: data, SkipTerminalFlush: true, EnableTerminalAfterWrite: true}:
-		return true
-	default:
-		_ = client.closeTransportOnly()
-		return false
-	}
-}
-
 func (client *WSClient) EnqueueTerminalLive(data []byte) bool {
 	if client == nil {
 		return false
@@ -323,25 +295,6 @@ func (client *WSClient) EnqueueTerminalLive(data []byte) bool {
 	case <-client.Done:
 		return false
 	case client.Send <- wsOutMessage{Type: websocket.BinaryMessage, Data: data, SkipTerminalFlush: true}:
-		return true
-	default:
-		_ = client.closeTransportOnly()
-		return false
-	}
-}
-
-func (client *WSClient) EnqueueTerminal(data []byte) bool {
-	if client == nil {
-		return false
-	}
-	client.startWriter()
-	if client.Send == nil {
-		return false
-	}
-	select {
-	case <-client.Done:
-		return false
-	case client.Send <- wsOutMessage{Type: websocket.BinaryMessage, Data: data}:
 		return true
 	default:
 		_ = client.closeTransportOnly()
@@ -436,22 +389,6 @@ func (sp *InstanceProcess) wakeTerminalClientsLocked() {
 	}
 }
 
-func (sp *InstanceProcess) sendClientsLocked(messageType int, data []byte) {
-	sp.writeClientsLocked(messageType, data)
-}
-
-func (sp *InstanceProcess) resetTerminalClientsLocked(reset []byte) {
-	for client := range sp.Clients {
-		if client == nil {
-			delete(sp.Clients, client)
-			continue
-		}
-		if !client.EnqueueTerminalControl(reset) {
-			delete(sp.Clients, client)
-		}
-	}
-}
-
 func (sp *InstanceProcess) detachClientsLocked() []*WSClient {
 	sp.outputMu.Lock()
 	defer sp.outputMu.Unlock()
@@ -463,22 +400,6 @@ func (sp *InstanceProcess) detachClientsLocked() []*WSClient {
 		delete(sp.Clients, client)
 	}
 	return clients
-}
-
-func (sp *InstanceProcess) DetachClientsLocked() []*WSClient {
-	return sp.detachClientsLocked()
-}
-
-func (sp *InstanceProcess) attachClientsLocked(clients []*WSClient) {
-	sp.outputMu.Lock()
-	defer sp.outputMu.Unlock()
-	for _, client := range clients {
-		if client == nil {
-			continue
-		}
-		client.Instance = sp
-		sp.Clients[client] = true
-	}
 }
 
 func (sp *InstanceProcess) closeDetachedClients(clients []*WSClient) {
@@ -496,7 +417,7 @@ func (sp *InstanceProcess) DetachAndCloseAllClients() {
 	sp.Mu.Lock()
 	clients := sp.detachClientsLocked()
 	if sp.State == processStateStopped {
-		sp.shrinkTerminalHistoryLocked()
+		sp.ShrinkTerminalHistoryLocked()
 	}
 	sp.Mu.Unlock()
 	sp.closeDetachedClients(clients)
@@ -520,10 +441,6 @@ func (sp *InstanceProcess) DisconnectClientsByUser(user string) {
 	}
 }
 
-func (sp *InstanceProcess) disconnectAllClients() {
-	sp.DetachAndCloseAllClients()
-}
-
 func (sp *InstanceProcess) appendAndBroadcastLocked(messageType int, data []byte, limit int) {
 	sp.outputMu.Lock()
 	defer sp.outputMu.Unlock()
@@ -542,23 +459,6 @@ func (sp *InstanceProcess) AppendAndBroadcastNormalSystemMessageLocked(text stri
 
 func (sp *InstanceProcess) AppendAndBroadcastWarningSystemMessageLocked(text string, limit int) {
 	sp.appendAndBroadcastLocked(websocket.BinaryMessage, BuildWarningTerminalSystemMessage(text), limit)
-}
-
-func (sp *InstanceProcess) AddClientWithHistoryLocked(client *WSClient) []byte {
-	if sp == nil || client == nil {
-		return nil
-	}
-	sp.outputMu.Lock()
-	defer sp.outputMu.Unlock()
-	historyCopy, cursor := sp.History.Snapshot()
-	if sp.shouldSkipHistoryForTerminalInitialLocked() {
-		historyCopy = nil
-	}
-	client.Instance = sp
-	client.TerminalCursor = cursor
-	client.TerminalReady.Store(false)
-	sp.Clients[client] = true
-	return historyCopy
 }
 
 func (sp *InstanceProcess) AddClientTerminalInitialLocked(client *WSClient, reset []byte) TerminalInitialMessage {
@@ -608,13 +508,6 @@ func (sp *InstanceProcess) appendHistoryLocked(data []byte, limit int) {
 	sp.History.Append(data, limit)
 }
 
-func (sp *InstanceProcess) resetHistoryLocked(data []byte, limit int) {
-	if len(data) > limit {
-		limit = len(data)
-	}
-	sp.History.Reset(data, limit)
-}
-
 // ShrinkTerminalHistoryLocked 压缩终端历史缓冲区 (调用者须持有 sp.Mu 或确保并发安全).
 func (sp *InstanceProcess) ShrinkTerminalHistoryLocked() {
 	if sp == nil {
@@ -623,13 +516,4 @@ func (sp *InstanceProcess) ShrinkTerminalHistoryLocked() {
 	sp.outputMu.Lock()
 	sp.History.ShrinkToFit()
 	sp.outputMu.Unlock()
-}
-
-func (sp *InstanceProcess) shrinkTerminalHistoryLocked() {
-	sp.ShrinkTerminalHistoryLocked()
-}
-
-// ShrinkTerminalHistory 压缩终端历史缓冲区.
-func (sp *InstanceProcess) ShrinkTerminalHistory() {
-	sp.ShrinkTerminalHistoryLocked()
 }

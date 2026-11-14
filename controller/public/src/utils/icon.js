@@ -186,7 +186,7 @@ const getIconTemplate = (name) => {
 	return template || iconTemplates.get('file');
 };
 
-export const cloneIconNode = (name) => {
+const cloneIconNode = (name) => {
 	const template = getIconTemplate(name);
 	if (!template) {
 		return null;

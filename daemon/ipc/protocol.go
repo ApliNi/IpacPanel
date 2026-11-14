@@ -17,7 +17,6 @@ const (
 	MagicByte   byte = 0x49 // 'I'
 	HeaderSize       = 12
 	MaxBodySize      = 16 * 1024 * 1024
-	MaxHeaderSize    = 64 * 1024
 )
 
 // 帧类型
@@ -97,20 +96,7 @@ type Request struct {
 	Rows                      uint16   `json:"rows,omitempty"`
 	ControllerShutdownPurpose string   `json:"controller_shutdown_purpose,omitempty"`
 	BodyLen                   int      `json:"body_len,omitempty"`
-	Data                      []byte   `json:"-"`
 	Body                      []byte   `json:"-"`
-}
-
-func (r *Request) Payload() []byte {
-	if r.Body != nil {
-		return r.Body
-	}
-	return r.Data
-}
-
-func (r *Request) SetPayload(data []byte) {
-	r.Data = data
-	r.Body = data
 }
 
 type Response struct {
@@ -193,16 +179,6 @@ func (c *Conn) Flush() error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	return c.writer.Flush()
-}
-
-func ValidateBodyLen(bodyLen int) error {
-	if bodyLen < 0 {
-		return fmt.Errorf("IPC body length is negative: %d", bodyLen)
-	}
-	if bodyLen > MaxBodySize {
-		return fmt.Errorf("IPC body too large: %d bytes", bodyLen)
-	}
-	return nil
 }
 
 func (c *Conn) ReadHeader() (Header, error) {
@@ -308,7 +284,6 @@ func (c *Conn) ReadRequest() (*Request, error) {
 			Type:     RequestInputStdin,
 			Instance: c.instanceName,
 			BodyLen:  dataLen,
-			Data:     data,
 			Body:     data,
 		}
 		return &c.req, nil

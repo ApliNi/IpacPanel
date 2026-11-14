@@ -225,7 +225,6 @@ export const reconnect = (delay = null) => {
 };
 
 export const isConnected = () => connected;
-export const getRefCount = () => refCount;
 
 export const sseClient = {
 	start,
@@ -235,7 +234,6 @@ export const sseClient = {
 	off,
 	subscribe,
 	isConnected,
-	getRefCount,
 };
 
 export default sseClient;

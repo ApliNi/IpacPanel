@@ -7,24 +7,6 @@ const (
 	ptyAlternateScreenMaxPending = 32
 )
 
-func (sp *InstanceProcess) trackPTYAlternateScreenLocked(data []byte) {
-	if sp == nil {
-		return
-	}
-	_, active, pending := filterPTYAlternateScreenHistory(sp.PTYAlternateScreenActive, sp.PTYAlternateScreenPending, data)
-	sp.PTYAlternateScreenActive = active
-	if len(pending) == 0 {
-		sp.PTYAlternateScreenPending = nil
-	} else {
-		sp.PTYAlternateScreenPending = append(sp.PTYAlternateScreenPending[:0], pending...)
-	}
-}
-
-func trackPTYAlternateScreenState(active bool, pending []byte, data []byte) (bool, []byte) {
-	_, active, pending = filterPTYAlternateScreenHistory(active, pending, data)
-	return active, pending
-}
-
 func (sp *InstanceProcess) filterPTYHistoryOutputLocked(data []byte) []byte {
 	if sp == nil || len(data) == 0 {
 		return nil

@@ -2,6 +2,7 @@ package process
 
 import (
 	cfg "IpacPanel/controller/src/config"
+	"IpacPanel/daemon/ipc"
 	"sort"
 )
 
@@ -70,8 +71,8 @@ func InitializeInstanceRegistry(instances []cfg.Instance) {
 	NotifyInstanceStatusChanged("")
 }
 
-func RestoreDaemonRuntimeStates(states []DaemonRuntimeState) {
-	runtimeByName := make(map[string]DaemonRuntimeState, len(states))
+func RestoreDaemonRuntimeStates(states []ipc.InstanceRuntimeState) {
+	runtimeByName := make(map[string]ipc.InstanceRuntimeState, len(states))
 	for _, state := range states {
 		if state.InstanceName == "" {
 			continue
@@ -106,9 +107,9 @@ func RestoreDaemonRuntimeStates(states []DaemonRuntimeState) {
 		}
 		RegisterInstanceProcessAliasLocked(runtimeAlias, sp)
 		switch state.Lifecycle {
-		case DaemonLifecycleRunning:
+		case ipc.InstanceLifecycleRunning:
 			sp.enterRunningStateLocked()
-		case DaemonLifecycleStopping, DaemonLifecycleCleaning:
+		case ipc.InstanceLifecycleStopping, ipc.InstanceLifecycleCleaning:
 			sp.setStateLocked(processStateStopping)
 		default:
 			sp.enterStoppedStateLocked()
@@ -119,9 +120,9 @@ func RestoreDaemonRuntimeStates(states []DaemonRuntimeState) {
 	cfg.ManagerMu.Unlock()
 }
 
-func RestoreDaemonAutoRestarts(states []DaemonRuntimeState) {
+func RestoreDaemonAutoRestarts(states []ipc.InstanceRuntimeState) {
 	for _, state := range states {
-		if state.RuntimeCode != RuntimeCodeUnexpectedExit || state.InstanceName == "" {
+		if state.RuntimeCode != ipc.RuntimeCodeUnexpectedExit || state.InstanceName == "" {
 			continue
 		}
 		sp, ok := Get(state.InstanceName)

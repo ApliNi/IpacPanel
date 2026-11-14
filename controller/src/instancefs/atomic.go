@@ -3,6 +3,7 @@ package instancefs
 import (
 	"IpacPanel/controller/src/atomic/file"
 	"IpacPanel/controller/src/compat"
+	daemoncompat "IpacPanel/daemon/compat"
 	"IpacPanel/controller/src/msg"
 	"context"
 	"errors"
@@ -90,28 +91,6 @@ func removeCommittedFileIfSame(targetPath string, committedInfo os.FileInfo) err
 		return nil
 	}
 	return os.Remove(targetPath)
-}
-
-func CommitAtomicTempDirWithinRoot(rootPath string, tempDir string, targetPath string, overwrite bool) error {
-	tempDir = strings.TrimSpace(tempDir)
-	targetPath = strings.TrimSpace(targetPath)
-	if tempDir == "" || targetPath == "" {
-		return errors.New(msg.TempDirectoryAndTargetPathRequired)
-	}
-	if err := EnsurePathComponentsWithinRoot(rootPath, targetPath, false); err != nil {
-		return err
-	}
-	if info, err := os.Lstat(targetPath); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return ErrPathOutsideInstanceRoot
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := file.CommitTempDir(tempDir, targetPath, file.DirOptions{Overwrite: overwrite, SyncDir: true}); err != nil {
-		return err
-	}
-	return EnsurePathComponentsWithinRoot(rootPath, targetPath, true)
 }
 
 func EnsureDirectoryWithinRoot(rootPath string, dirPath string) error {
@@ -313,7 +292,7 @@ func RenameFileOnlyWithinRoot(rootPath string, srcPath string, dstPath string, o
 		return err
 	}
 	if overwrite {
-		if err := compat.ReplaceFileAtomic(srcPath, dstPath); err != nil {
+		if err := daemoncompat.ReplaceFileAtomic(srcPath, dstPath); err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
 				return err
 			}

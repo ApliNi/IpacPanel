@@ -4,10 +4,10 @@ import { setupAutoResizeTextarea } from '../utils/autoTextarea.js';
 import { normalizeSingleLineText } from '../utils/utils.js';
 
 export const NEW_GROUP_VALUE = ':new';
-export const NONE_GROUP_VALUE = '';
-export const GROUP_SEPARATOR_VALUE = ':sep';
-export const DEFAULT_TERMINAL_ENCODING = 'utf-8';
-export const TERMINAL_ENCODING_OPTIONS = [
+const NONE_GROUP_VALUE = '';
+const GROUP_SEPARATOR_VALUE = ':sep';
+const DEFAULT_TERMINAL_ENCODING = 'utf-8';
+const TERMINAL_ENCODING_OPTIONS = [
 	{ value: 'utf-8', label: 'UTF-8' },
 	{ value: 'gbk', label: 'GBK / CP936' },
 	{ value: 'gb18030', label: 'GB18030' },
@@ -42,7 +42,7 @@ const createOption = ({ value = '', text = '', disabled = false, selected = fals
 	return node;
 };
 
-export const renderEncodingOptions = (select, selectedValue) => {
+const renderEncodingOptions = (select, selectedValue) => {
 	if (!select) {
 		return;
 	}
@@ -140,11 +140,10 @@ export const buildTaskRow = (task = {}) => {
 	const name = task.name || '';
 	const enabled = task.enabled !== false;
 	const expr = task.expr || '';
-	const legacyStrictRestart = task.action === 'strict_restart';
-	const action = legacyStrictRestart ? 'restart' : (task.action || 'start');
+	const action = task.action || 'start';
 	const command = task.command || '';
 	const useKillStop = task.use_kill_stop === true;
-	const strictRestart = task.strict_restart === true || legacyStrictRestart;
+	const strictRestart = task.strict_restart === true;
 	const showCommand = action === 'command';
 	const showStartCommand = action === 'start' || action === 'restart';
 	const showStopOptions = action === 'stop' || action === 'restart';

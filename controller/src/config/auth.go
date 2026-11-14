@@ -20,14 +20,6 @@ func IsBcryptHash(s string) bool {
 	return strings.HasPrefix(s, "$2a$") || strings.HasPrefix(s, "$2b$") || strings.HasPrefix(s, "$2y$")
 }
 
-func WrapStoredHash(hash string) string {
-	hash = strings.TrimSpace(hash)
-	if hash == "" {
-		return ""
-	}
-	return storedHashPrefix + hash
-}
-
 func prehashPassword(password string) []byte {
 	sum := sha256.Sum256([]byte(password))
 	encoded := base64.RawStdEncoding.EncodeToString(sum[:])
@@ -49,36 +41,13 @@ func HashPassword(password string) (string, error) {
 	return storedHashPrefix + storedPasswordV2Prefix + string(hash), nil
 }
 
-func UnwrapStoredHash(pass string) (string, bool) {
-	pass = strings.TrimSpace(pass)
-	if pass == "" {
-		return "", false
-	}
-	if strings.HasPrefix(pass, storedHashPrefix) {
-		h := strings.TrimSpace(strings.TrimPrefix(pass, storedHashPrefix))
-		if !IsBcryptHash(h) {
-			return "", false
-		}
-		return h, true
-	}
-	if IsBcryptHash(pass) {
-		return pass, true
-	}
-	return "", false
-}
-
 func compareStoredPassword(stored string, password string) bool {
 	stored = strings.TrimSpace(stored)
-	if strings.HasPrefix(stored, storedHashPrefix+storedPasswordV2Prefix) {
-		hash := strings.TrimSpace(strings.TrimPrefix(stored, storedHashPrefix+storedPasswordV2Prefix))
-		return IsBcryptHash(hash) && bcrypt.CompareHashAndPassword([]byte(hash), prehashPassword(password)) == nil
+	if !strings.HasPrefix(stored, storedHashPrefix+storedPasswordV2Prefix) {
+		return false
 	}
-	if strings.HasPrefix(stored, storedPasswordV2Prefix) {
-		hash := strings.TrimSpace(strings.TrimPrefix(stored, storedPasswordV2Prefix))
-		return IsBcryptHash(hash) && bcrypt.CompareHashAndPassword([]byte(hash), prehashPassword(password)) == nil
-	}
-	hash, ok := UnwrapStoredHash(stored)
-	return ok && bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+	hash := strings.TrimSpace(strings.TrimPrefix(stored, storedHashPrefix+storedPasswordV2Prefix))
+	return IsBcryptHash(hash) && bcrypt.CompareHashAndPassword([]byte(hash), prehashPassword(password)) == nil
 }
 
 func CheckPassword(stored string, password string) bool {
@@ -93,14 +62,8 @@ func NormalizeAuthUserPasswords(users []AuthUser) (bool, error) {
 			log.Printf(msg.UserEmptyPasswordLoginDisabledLogFmt, strings.TrimSpace(users[i].User))
 			continue
 		}
-		if !strings.HasPrefix(pass, storedHashPrefix) && !IsBcryptHash(pass) && len([]rune(pass)) > MaxUserPasswordLen {
-			log.Printf(msg.UserPlainPasswordTooLongLoginDisabledLogFmt, strings.TrimSpace(users[i].User))
-			users[i].Pass = ""
-			changed = true
-			continue
-		}
-		if strings.HasPrefix(pass, storedHashPrefix+storedPasswordV2Prefix) || strings.HasPrefix(pass, storedPasswordV2Prefix) {
-			hash := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(pass, storedHashPrefix), storedPasswordV2Prefix))
+		if strings.HasPrefix(pass, storedHashPrefix+storedPasswordV2Prefix) {
+			hash := strings.TrimSpace(strings.TrimPrefix(pass, storedHashPrefix+storedPasswordV2Prefix))
 			if !IsBcryptHash(hash) {
 				return changed, errors.New(msg.InvalidUsernameOrPassword)
 			}
@@ -111,15 +74,14 @@ func NormalizeAuthUserPasswords(users []AuthUser) (bool, error) {
 			}
 			continue
 		}
-		if _, ok := UnwrapStoredHash(pass); ok {
-			if users[i].Pass != pass {
-				users[i].Pass = pass
-				changed = true
-			}
-			continue
-		}
-		if strings.HasPrefix(pass, storedHashPrefix) {
+		if strings.HasPrefix(pass, storedHashPrefix) || strings.HasPrefix(pass, storedPasswordV2Prefix) || IsBcryptHash(pass) {
 			return changed, errors.New(msg.InvalidUsernameOrPassword)
+		}
+		if len([]rune(pass)) > MaxUserPasswordLen {
+			log.Printf(msg.UserPlainPasswordTooLongLoginDisabledLogFmt, strings.TrimSpace(users[i].User))
+			users[i].Pass = ""
+			changed = true
+			continue
 		}
 		stored, err := HashPassword(pass)
 		if err != nil {

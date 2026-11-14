@@ -64,18 +64,5 @@ func roleFromPerm(perm int) UserRole {
 }
 
 func normalizeStringSet(values []string) []string {
-	result := make([]string, 0, len(values))
-	seen := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
-	}
-	return result
+	return cfg.CleanStringList(values)
 }

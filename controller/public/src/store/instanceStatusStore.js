@@ -40,8 +40,6 @@ export const getSnapshot = () => ({
 	ready: storeState.ready,
 });
 
-export const getInstances = () => cloneInstances(storeState.instances);
-
 export const getInstance = (name) => {
 	const target = String(name || '').trim();
 	if (!target) return null;
@@ -161,7 +159,6 @@ export const instanceStatusStore = {
 	stop,
 	subscribe,
 	getSnapshot,
-	getInstances,
 	getInstance,
 	waitForReady,
 };

@@ -37,7 +37,7 @@ const settingsLimits = Object.freeze({
 const SETTINGS_NAME_INVALID_PATTERN = /[\\/:*?"<>|]/;
 const SETTINGS_SINGLE_LINE_CONTROL_CHAR_PATTERN = /[\u0000-\u001F]/;
 const SETTINGS_MULTILINE_CONTROL_CHAR_PATTERN = /[\t\u0000-\u0008\u000B\u000C\u000E-\u001F]/;
-const TASK_ACTIONS = Object.freeze(new Set(['start', 'stop', 'restart', 'strict_restart', 'command']));
+const TASK_ACTIONS = Object.freeze(new Set(['start', 'stop', 'restart', 'command']));
 
 const getTextLength = (value) => Array.from(String(value || '').trim()).length;
 
@@ -153,12 +153,6 @@ const validateSettingsWebTextFields = ({ webPrivateKeyPath = '', webPublicKeyPat
 		return reject('webPublicKeyPath', 'HTTPS PUBLIC KEY PATH 包含非法控制字符');
 	}
 	return ok();
-};
-
-const validateSettingsTextFields = (fields = {}) => {
-	const generalResult = validateSettingsGeneralTextFields(fields);
-	if (!generalResult.ok) return generalResult;
-	return validateSettingsWebTextFields(fields);
 };
 
 const validateInstanceTasks = (tasks) => {
@@ -295,7 +289,6 @@ export const InputValidation = Object.freeze({
 		limits: settingsLimits,
 		validateGeneralTextFields: validateSettingsGeneralTextFields,
 		validateWebTextFields: validateSettingsWebTextFields,
-		validateTextFields: validateSettingsTextFields,
 	}),
 	instance: Object.freeze({
 		validateFields: validateInstanceFields,

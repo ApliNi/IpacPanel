@@ -1,6 +1,7 @@
 package main
 
 import (
+	"IpacPanel/daemon/ipc"
 	"IpacPanel/daemon/terminal"
 	"IpacPanel/daemon/version"
 	"fmt"
@@ -18,7 +19,7 @@ import (
 
 type controllerProcess struct {
 	cmd         *exec.Cmd
-	ipc         *IPCConn
+	ipc         *ipc.Conn
 	ready       chan struct{}
 	exited      chan struct{}
 	processTree *terminal.ProcessTree
@@ -222,7 +223,7 @@ func startController(binaryPath string, firstStart bool) (*controllerProcess, er
 		return nil, fmt.Errorf("start controller: %w", err)
 	}
 	log.Printf("controller started [pid=%d, ipc=stdio]", cmd.Process.Pid)
-	ipcConn := NewIPCConn(controllerStdout, controllerStdin, controllerPipeCloser{
+	ipcConn := ipc.NewConn(controllerStdout, controllerStdin, controllerPipeCloser{
 		stdin:  controllerStdin,
 		stdout: controllerStdout,
 	})

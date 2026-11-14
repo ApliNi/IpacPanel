@@ -16,37 +16,12 @@ import (
 	"unsafe"
 )
 
-
-const (
-	RuntimeCodeUnknown        = ipc.RuntimeCodeUnknown
-	RuntimeCodeRunning        = ipc.RuntimeCodeRunning
-	RuntimeCodeManualStop     = ipc.RuntimeCodeManualStop
-	RuntimeCodeManualKill     = ipc.RuntimeCodeManualKill
-	RuntimeCodeRestarting     = ipc.RuntimeCodeRestarting
-	RuntimeCodeUnexpectedExit = ipc.RuntimeCodeUnexpectedExit
-
-	ControllerShutdownPurposeRestart = ipc.ControllerShutdownPurposeRestart
-	ControllerShutdownPurposeUpdate  = ipc.ControllerShutdownPurposeUpdate
-)
-
-type DaemonRuntimeState = ipc.InstanceRuntimeState
-
-const (
-	DaemonLifecycleStopped  = ipc.InstanceLifecycleStopped
-	DaemonLifecycleRunning  = ipc.InstanceLifecycleRunning
-	DaemonLifecycleStopping = ipc.InstanceLifecycleStopping
-	DaemonLifecycleCleaning = ipc.InstanceLifecycleCleaning
-)
-
-type daemonIPCRequest = ipc.Request
-type daemonIPCResponse = ipc.Response
-
 type daemonIPCClient struct {
 	closer    ipcCloser
 	conn      *ipc.Conn
 	nextID    atomic.Uint64
 	pendingMu sync.Mutex
-	pending   map[uint64]chan daemonIPCResponse
+	pending   map[uint64]chan ipc.Response
 	done      chan struct{}
 }
 
@@ -90,7 +65,7 @@ func ConnectDaemonStdio() error {
 	client := &daemonIPCClient{
 		closer:  closer,
 		conn:    conn,
-		pending: make(map[uint64]chan daemonIPCResponse),
+		pending: make(map[uint64]chan ipc.Response),
 		done:    make(chan struct{}),
 	}
 	daemonClient = client
@@ -160,8 +135,8 @@ func (c *daemonIPCClient) readLoop() {
 	}
 }
 
-func (c *daemonIPCClient) registerPending(id uint64) chan daemonIPCResponse {
-	ch := make(chan daemonIPCResponse, 1)
+func (c *daemonIPCClient) registerPending(id uint64) chan ipc.Response {
+	ch := make(chan ipc.Response, 1)
 	c.pendingMu.Lock()
 	c.pending[id] = ch
 	c.pendingMu.Unlock()
@@ -174,7 +149,7 @@ func (c *daemonIPCClient) unregisterPending(id uint64) {
 	c.pendingMu.Unlock()
 }
 
-func (c *daemonIPCClient) deliverResponse(resp daemonIPCResponse) {
+func (c *daemonIPCClient) deliverResponse(resp ipc.Response) {
 	if resp.ID == 0 {
 		return
 	}
@@ -194,7 +169,7 @@ func (c *daemonIPCClient) deliverResponse(resp daemonIPCResponse) {
 func (c *daemonIPCClient) closeWithPendingError() {
 	c.pendingMu.Lock()
 	old := c.pending
-	c.pending = make(map[uint64]chan daemonIPCResponse)
+	c.pending = make(map[uint64]chan ipc.Response)
 	c.pendingMu.Unlock()
 	for _, ch := range old {
 		close(ch)
@@ -210,17 +185,17 @@ func handleDaemonInstanceOutputFrame(instanceName string, data []byte) {
 	HandleDaemonInstanceOutput(instanceName, data)
 }
 
-func daemonRequest(req daemonIPCRequest) (daemonIPCResponse, error) {
+func daemonRequest(req ipc.Request) (ipc.Response, error) {
 	client := daemonClient
 	if client == nil {
-		return daemonIPCResponse{}, errors.New(msg.DaemonIPCNotConnected)
+		return ipc.Response{}, errors.New(msg.DaemonIPCNotConnected)
 	}
 	req.ID = client.nextID.Add(1)
 	respCh := client.registerPending(req.ID)
 	defer client.unregisterPending(req.ID)
 
 	if err := client.conn.WriteControlRequest(&req); err != nil {
-		return daemonIPCResponse{}, fmt.Errorf(msg.WriteDaemonIPCRequestFailedFmt, err)
+		return ipc.Response{}, fmt.Errorf(msg.WriteDaemonIPCRequestFailedFmt, err)
 	}
 
 	timer := time.NewTimer(30 * time.Second)
@@ -228,22 +203,22 @@ func daemonRequest(req daemonIPCRequest) (daemonIPCResponse, error) {
 	select {
 	case resp, ok := <-respCh:
 		if !ok {
-			return daemonIPCResponse{}, errors.New(msg.DaemonIPCDisconnected)
+			return ipc.Response{}, errors.New(msg.DaemonIPCDisconnected)
 		}
 		if resp.Error != "" {
 			return resp, errors.New(resp.Error)
 		}
 		return resp, nil
 	case <-client.done:
-		return daemonIPCResponse{}, errors.New(msg.DaemonIPCDisconnected)
+		return ipc.Response{}, errors.New(msg.DaemonIPCDisconnected)
 	case <-timer.C:
-		return daemonIPCResponse{}, errors.New(msg.DaemonIPCRequestTimeout)
+		return ipc.Response{}, errors.New(msg.DaemonIPCRequestTimeout)
 	}
 }
 
 func DaemonHello() (int, error) {
 	helloMsg := fmt.Sprintf("%s %d", "shanghai_crab", time.Now().UnixNano())
-	resp, err := daemonRequest(daemonIPCRequest{Type: "hello", Msg: helloMsg})
+	resp, err := daemonRequest(ipc.Request{Type: "hello", Msg: helloMsg})
 	if err != nil {
 		return 0, err
 	}
@@ -253,8 +228,8 @@ func DaemonHello() (int, error) {
 	return resp.DaemonProtocol, nil
 }
 
-func ListDaemonRuntime() ([]DaemonRuntimeState, error) {
-	resp, err := daemonRequest(daemonIPCRequest{Type: "list_runtime"})
+func ListDaemonRuntime() ([]ipc.InstanceRuntimeState, error) {
+	resp, err := daemonRequest(ipc.Request{Type: "list_runtime"})
 	if err != nil {
 		return nil, err
 	}
@@ -262,17 +237,17 @@ func ListDaemonRuntime() ([]DaemonRuntimeState, error) {
 }
 
 func SetDaemonDebug(debug bool) error {
-	_, err := daemonRequest(daemonIPCRequest{Type: "set_debug", Debug: debug})
+	_, err := daemonRequest(ipc.Request{Type: "set_debug", Debug: debug})
 	return err
 }
 
 // RestartController 请求守护进程重启管理进程 (设置页手动重启).
 func RestartController() error {
-	return restartControllerWithPurpose(ControllerShutdownPurposeRestart)
+	return restartControllerWithPurpose(ipc.ControllerShutdownPurposeRestart)
 }
 
 func StopDaemon() error {
-	_, err := daemonRequest(daemonIPCRequest{Type: "stop_daemon"})
+	_, err := daemonRequest(ipc.Request{Type: "stop_daemon"})
 	return err
 }
 
@@ -283,22 +258,22 @@ func NotifyControllerUpdateExit() error {
 }
 
 func restartControllerWithPurpose(purpose string) error {
-	_, err := daemonRequest(daemonIPCRequest{Type: "restart_controller", ControllerShutdownPurpose: purpose})
+	_, err := daemonRequest(ipc.Request{Type: "restart_controller", ControllerShutdownPurpose: purpose})
 	return err
 }
 
 func NotifyControllerReady() error {
-	_, err := daemonRequest(daemonIPCRequest{Type: "controller_ready"})
+	_, err := daemonRequest(ipc.Request{Type: "controller_ready"})
 	return err
 }
 
 func RenameDaemonInstance(oldName string, newName string) error {
-	_, err := daemonRequest(daemonIPCRequest{Type: "rename_daemon_instance", Instance: oldName, NewName: newName})
+	_, err := daemonRequest(ipc.Request{Type: "rename_daemon_instance", Instance: oldName, NewName: newName})
 	return err
 }
 
-func startDaemonInstance(insName string, commandArgv []string, cleanupCommandArgv []string, path string, terminal int, inputEnc string, outputEnc string, cols uint16, rows uint16) (*DaemonRuntimeState, error) {
-	resp, err := daemonRequest(daemonIPCRequest{
+func startDaemonInstance(insName string, commandArgv []string, cleanupCommandArgv []string, path string, terminal int, inputEnc string, outputEnc string, cols uint16, rows uint16) (*ipc.InstanceRuntimeState, error) {
+	resp, err := daemonRequest(ipc.Request{
 		Type:               "start_instance",
 		Instance:           insName,
 		CommandArgv:        commandArgv,
@@ -317,7 +292,7 @@ func startDaemonInstance(insName string, commandArgv []string, cleanupCommandArg
 }
 
 func UpdateDaemonInstanceConfig(insName string, cleanupCommandArgv []string) error {
-	_, err := daemonRequest(daemonIPCRequest{
+	_, err := daemonRequest(ipc.Request{
 		Type:               "update_instance_config",
 		Instance:           insName,
 		CleanupCommandArgv: cleanupCommandArgv,
@@ -330,24 +305,24 @@ func stopDaemonInstanceWithCode(insName string, force bool, runtimeCode int) err
 	if force {
 		reqType = "kill_instance"
 	}
-	_, err := daemonRequest(daemonIPCRequest{Type: reqType, Instance: insName, Force: force, RuntimeCode: runtimeCode})
+	_, err := daemonRequest(ipc.Request{Type: reqType, Instance: insName, Force: force, RuntimeCode: runtimeCode})
 	return err
 }
 
 func markDaemonInstanceRuntimeCode(insName string, runtimeCode int) error {
-	_, err := daemonRequest(daemonIPCRequest{Type: "mark_runtime_code", Instance: insName, RuntimeCode: runtimeCode})
+	_, err := daemonRequest(ipc.Request{Type: "mark_runtime_code", Instance: insName, RuntimeCode: runtimeCode})
 	return err
 }
 
 func markDaemonInstanceStopping(insName string, runtimeCode int) error {
-	_, err := daemonRequest(daemonIPCRequest{Type: "mark_stopping", Instance: insName, RuntimeCode: runtimeCode})
+	_, err := daemonRequest(ipc.Request{Type: "mark_stopping", Instance: insName, RuntimeCode: runtimeCode})
 	return err
 }
 
 func stopDaemonInstance(insName string, force bool) error {
-	runtimeCode := RuntimeCodeManualStop
+	runtimeCode := ipc.RuntimeCodeManualStop
 	if force {
-		runtimeCode = RuntimeCodeManualKill
+		runtimeCode = ipc.RuntimeCodeManualKill
 	}
 	return stopDaemonInstanceWithCode(insName, force, runtimeCode)
 }
@@ -374,7 +349,7 @@ func writeDaemonInstanceInputFastPath(insName string, data []byte) error {
 }
 
 func resizeDaemonInstanceTerminal(insName string, cols uint16, rows uint16) error {
-	_, err := daemonRequest(daemonIPCRequest{Type: "resize_terminal", Instance: insName, Cols: cols, Rows: rows})
+	_, err := daemonRequest(ipc.Request{Type: "resize_terminal", Instance: insName, Cols: cols, Rows: rows})
 	return err
 }
 
@@ -510,7 +485,7 @@ func normalizeDaemonMessageArgs(args []string) []string {
 	return normalized
 }
 
-func HandleDaemonInstanceExited(state *DaemonRuntimeState) {
+func HandleDaemonInstanceExited(state *ipc.InstanceRuntimeState) {
 	runtimeAlias := daemonRuntimeRouteAlias(state)
 	sp, ok := GetByRuntimeAlias(runtimeAlias)
 	if !ok || sp == nil {
@@ -521,7 +496,7 @@ func HandleDaemonInstanceExited(state *DaemonRuntimeState) {
 	}
 }
 
-func daemonRuntimeRouteAlias(state *DaemonRuntimeState) string {
+func daemonRuntimeRouteAlias(state *ipc.InstanceRuntimeState) string {
 	if state == nil {
 		return ""
 	}

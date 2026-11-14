@@ -497,13 +497,6 @@ func writeUploadChunkToStage(session *fileUploadSession, plan uploadChunkPlan, s
 	return nil
 }
 
-func drainUploadRequestBody(src io.Reader) {
-	if src == nil {
-		return
-	}
-	_, _ = io.Copy(io.Discard, src)
-}
-
 func drainUploadRequestBodyLimited(src io.Reader, expectedSize int64) error {
 	if src == nil {
 		return nil
@@ -696,12 +689,6 @@ func replaceUploadSession(session *fileUploadSession) *fileUploadSession {
 	uploads.sessions[session.UploadID] = session
 	ensureUploadCleanupTimerLocked()
 	return old
-}
-
-func deleteUploadSession(uploadID string) {
-	uploads.mu.Lock()
-	defer uploads.mu.Unlock()
-	delete(uploads.sessions, uploadID)
 }
 
 func loadUploadSession(uploadID string) (*fileUploadSession, bool) {

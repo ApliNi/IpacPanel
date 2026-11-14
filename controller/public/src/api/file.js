@@ -259,7 +259,7 @@ export const downloadFileArchive = async (name, include, exclude = [], fallbackN
 	});
 };
 
-export const createEmptyFile = async (name, path, fileName, content = '', overwrite = false) => {
+const createEmptyFile = async (name, path, fileName, content = '', overwrite = false) => {
 	return await postFileAction('/api/file/create/file', {
 		instance: name,
 		path,
@@ -325,7 +325,7 @@ export const readFileContent = async (name, path, options = {}) => {
 	});
 };
 
-export const saveFileContentDetailed = async (name, path, content) => {
+const saveFileContentDetailed = async (name, path, content) => {
 	return await withApiResult(async () => {
 		const res = await authedFetch('/api/file/save', {
 			method: 'POST',
@@ -371,7 +371,7 @@ export const abortFileUpload = async (name, uploadId) => {
 	});
 };
 
-export const completeFileUpload = async (name, uploadId, options = {}) => {
+const completeFileUpload = async (name, uploadId, options = {}) => {
 	return await postFileActionSilent('/api/file/upload/complete', {
 		instance: name,
 		upload_id: uploadId,

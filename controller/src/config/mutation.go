@@ -11,7 +11,6 @@ type MutationStepSeverity string
 
 const (
 	MutationStepRequired   MutationStepSeverity = "required"
-	MutationStepBestEffort MutationStepSeverity = "best_effort"
 )
 
 type MutationPostCommitStep struct {

@@ -2,7 +2,7 @@ import { mainModalOverlay, state } from "../ui.js";
 import { DEFAULT_UI_REFRESH_INTERVAL_MS, clearTimer, closeAnimatedModal, formatFileSize, getUploadErrorText, openAnimatedModal, setActionsDisabled, withActionsDisabled } from '../utils/utils.js';
 import { abortFileUpload, completeFileUploadWithRetry, createDirectory, createTextFileAdaptive, initFileUpload, uploadFileChunk } from '../api/file.js';
 import { showAlert, showConfirm } from './dialog.js';
-import { applyFileUploadFolderGroupView, applyFileUploadItemView, buildFileUploadFolderGroupNode, buildFileUploadItemNode, ceilTo, computeFolderGroupAggregates, renderFileUploadSummaryText } from './fileUploadView.js';
+import { applyFileUploadFolderGroupView, applyFileUploadItemView, buildFileUploadFolderGroupNode, buildFileUploadItemNode, computeFolderGroupAggregates, renderFileUploadSummaryText } from './fileUploadView.js';
 import { InputValidation } from '../utils/inputValidation.js';
 
 mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
@@ -645,19 +645,6 @@ const queueFileUploadDomUpdate = (id) => {
 	}, DEFAULT_UI_REFRESH_INTERVAL_MS);
 };
 
-const setFileUploadItems = (items) => {
-    clearFileUploadDoneClearTimers();
-    modalState.fileUploadRunToken += 1;
-    modalState.fileUploadRemovedIds.clear();
-    modalState.fileUploadItems = Array.isArray(items) ? items : [];
-	modalState.fileUploadItemById.clear();
-	modalState.fileUploadItems.forEach(rememberUploadItem);
-    modalState.fileUploadStats.total = countUploadLeafItems(modalState.fileUploadItems);
-    modalState.fileUploadStats.success = 0;
-    renderFileUploadList();
-    updateFileUploadDropzoneState();
-};
-
 const resetFileUploadState = () => {
 	abortAllScans();
 	stopFileUploadSpeedTimer();
@@ -999,11 +986,6 @@ const compareUploadPath = (a, b) => {
 		return 1;
 	}
 	return 0;
-};
-
-const getUploadPathWithoutRoot = (path) => {
-	const parts = getUploadPathParts(path);
-	return parts.slice(1).join('/');
 };
 
 const getClosestFolderGroupId = (element) => {
@@ -2053,26 +2035,6 @@ const uploadSelectedFiles = async (overwrite) => {
         hasDone = true;
     }
     return hasDone;
-};
-
-const replaceFileUploadItems = (files) => {
-	const items = buildUploadItemsFromPickedEntries(Array.from(files || []).map((file) => ({
-		file,
-		relativePath: file.webkitRelativePath || file.name,
-		isDirectory: !!file.webkitRelativePath,
-	})));
-    replaceFileUploadItemsWithItems(items);
-};
-
-const replaceFileUploadItemsWithItems = (items) => {
-    setFileUploadAwaitConfirm(false);
-    setFileUploadItems(items);
-    if (dom.fileUploadInput) {
-        dom.fileUploadInput.value = '';
-    }
-	if (dom.fileUploadDirectoryInput) {
-		dom.fileUploadDirectoryInput.value = '';
-	}
 };
 
 /** 获取上传项的去重标识 */

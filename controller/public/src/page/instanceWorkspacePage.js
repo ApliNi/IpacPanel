@@ -571,7 +571,7 @@ const renderInstanceTasksInModal = (tasks) => renderInstanceTasks(dom.instanceTa
 const collectInstanceTasksInModal = () => collectInstanceTasks(dom.instanceTasksList);
 const getUniqueTaskNameInModal = () => getUniqueTaskName(dom.instanceTasksList);
 
-export const getInstanceEditorValue = (type) => {
+const getInstanceEditorValue = (type) => {
 	if (type === 'path') {
 		return dom.instanceModalPath ? normalizeSingleLineText(dom.instanceModalPath.value || '') : './instances/';
 	}
@@ -697,7 +697,7 @@ export const openCreateInstanceModal = (options = {}) => {
 	focusInstanceNameInput();
 };
 
-export const openEditInstanceModal = async (svc) => {
+const openEditInstanceModal = async (svc) => {
 	if (!svc?.name) return;
 	const loadSeq = pageState.instanceModalLoadSeq + 1;
 	pageState.instanceModalLoadSeq = loadSeq;
@@ -754,14 +754,14 @@ export const openEditInstanceModal = async (svc) => {
 	focusInstanceNameInput();
 };
 
-export const closeInstanceModal = () => {
+const closeInstanceModal = () => {
 	closeInstanceTasksHelpModal();
 	pageState.modalCloseTimer = closeAnimatedModal(dom.instanceModal, pageState.modalCloseTimer, () => {
 		pageState.modalCloseTimer = null;
 	});
 };
 
-export const getInstanceModalState = () => ({
+const getInstanceModalState = () => ({
     mode: pageState.instanceModalMode,
     editingInstanceName: pageState.editingInstanceName,
 });

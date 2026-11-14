@@ -106,15 +106,6 @@ func (h *dashboardHub) run(stopCh chan struct{}) {
 	}
 }
 
-type dashboardSnapshotResponse struct {
-	Enabled         bool                   `json:"enabled"`
-	MemoryMaxMin    int                    `json:"memory_max_min"`
-	SelectedMinutes int                    `json:"selected_minutes"`
-	Interfaces      []string               `json:"interfaces"`
-	Disks           []string               `json:"disks"`
-	Samples         []metrics.PublicSample `json:"samples"`
-	Latest          *metrics.PublicSample  `json:"latest"`
-}
 
 type dashboardStreamFilter struct {
 	NIC  string `json:"nic"`
@@ -125,20 +116,6 @@ type dashboardRequest struct {
 	Minutes int    `json:"minutes"`
 	NIC     string `json:"nic"`
 	Disk    string `json:"disk"`
-}
-
-type dashboardFullEvent struct {
-	Seq             int64                 `json:"seq"`
-	Enabled         bool                  `json:"enabled"`
-	MemoryMaxMin    int                   `json:"memory_max_min"`
-	SelectedMinutes int                   `json:"selected_minutes"`
-	Filter          dashboardStreamFilter `json:"filter"`
-	Interfaces      []string              `json:"interfaces"`
-	Disks           []string              `json:"disks"`
-	BaseTS          int64                 `json:"base_ts"`
-	SampleSchema    []string              `json:"sample_schema"`
-	ScaleHints      dashboardScaleHints   `json:"scale_hints"`
-	Samples         [][]int64             `json:"samples"`
 }
 
 type dashboardScaleHints struct {
@@ -218,54 +195,6 @@ func visibleDashboardDeviceList(values []string, isAdmin bool) []string {
 func isPublicDashboardEnabled() bool {
 	metricsConfig := cfg.GetMetricsConfig()
 	return metricsConfig.PublicDashboard
-}
-
-func resolveDashboardRequestUser(w http.ResponseWriter, r *http.Request) (*cfg.AuthUser, bool) {
-	authedUser, authed := authz.DefaultRuntime.CurrentAuthUser(r)
-	if authed {
-		return authedUser, true
-	}
-	if isPublicDashboardEnabled() {
-		return nil, true
-	}
-	web.WriteAPIError(w, http.StatusUnauthorized, msg.Unauthorized, nil)
-	return nil, false
-}
-
-func HandleApiDashboardSnapshot(w http.ResponseWriter, r *http.Request) {
-	var req dashboardRequest
-	if !web.DecodeJSONBody(w, r, &req) {
-		return
-	}
-	authedUser, ok := resolveDashboardRequestUser(w, r)
-	if !ok {
-		return
-	}
-	if dashboardCollector == nil {
-		web.WriteAPIError(w, http.StatusServiceUnavailable, msg.DashboardMetricsNotInitialized, nil)
-		return
-	}
-	isAdmin := isDashboardAdmin(authedUser)
-	minutes, ok := parseDashboardMinutes(w, req.Minutes)
-	if !ok {
-		return
-	}
-	nic := ""
-	disk := ""
-	if isAdmin {
-		nic = strings.TrimSpace(req.NIC)
-		disk = strings.TrimSpace(req.Disk)
-	}
-	snapshot := dashboardCollector.Snapshot(minutes, nic, disk, dashboardMaxPoints)
-	web.WriteOK(w, dashboardSnapshotResponse{
-		Enabled:         snapshot.Enabled,
-		MemoryMaxMin:    snapshot.MemoryMaxMin,
-		SelectedMinutes: minutes,
-		Interfaces:      visibleDashboardDeviceList(snapshot.Interfaces, isAdmin),
-		Disks:           visibleDashboardDeviceList(snapshot.Disks, isAdmin),
-		Samples:         snapshot.Samples,
-		Latest:          snapshot.Latest,
-	})
 }
 
 func HandleApiDashboardEvents(w http.ResponseWriter, r *http.Request) {
@@ -427,16 +356,6 @@ func HandleApiDashboardEvents(w http.ResponseWriter, r *http.Request) {
 			lastSampleTime = sample.Time.Unix()
 		}
 	}
-}
-func parseDashboardMinutes(w http.ResponseWriter, minutes int) (int, bool) {
-	if minutes == 0 {
-		return 30, true
-	}
-	if minutes <= 0 {
-		web.WriteAPIError(w, http.StatusBadRequest, msg.DashboardMinutesMustBePositive, nil)
-		return 0, false
-	}
-	return minutes, true
 }
 
 func parseDashboardStreamMinutes(sse *web.SSEWriter, minutes int) (int, bool) {

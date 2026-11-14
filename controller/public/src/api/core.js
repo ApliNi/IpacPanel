@@ -1,5 +1,3 @@
-import { showAlert } from '../module/dialog.js';
-
 const STORAGE_KEY_PREFIX = 'IpacPanel';
 const CSRF_COOKIE_KEY = 'csrf';
 const CSRF_HEADER_KEY = 'X-CSRF-Token';
@@ -149,7 +147,7 @@ export const parseJsonData = async (res) => {
 };
 
 
-export const postJson = async (url, payload = {}, options = {}) => {
+const postJson = async (url, payload = {}, options = {}) => {
 	const requestOptions = Object.assign({}, options);
 	delete requestOptions.headers;
 	const headers = Object.assign({
@@ -192,7 +190,7 @@ export const postEventStream = async (url, payload = {}, options = {}) => {
 	return res;
 };
 
-export const createSSEParser = (onEvent) => {
+const createSSEParser = (onEvent) => {
 	let buffer = '';
 	let eventName = 'message';
 	let dataLines = [];
@@ -386,7 +384,7 @@ const AUTHENTICATED_EVENT = 'ipacpanel:authenticated';
 
 export const UNAUTHORIZED_REASON_RUNTIME = 'runtime';
 export const UNAUTHORIZED_REASON_LOGOUT = 'logout';
-export const AUTHENTICATED_REASON_LOGIN_SUCCESS = 'login_success';
+const AUTHENTICATED_REASON_LOGIN_SUCCESS = 'login_success';
 
 export const clearAllStoredDataAndEnterUnauthorizedState = () => {
 	clearAllStoredData();

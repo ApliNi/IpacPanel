@@ -19,6 +19,7 @@ import (
 
 	"IpacPanel/controller/src/atomic/file"
 	"IpacPanel/controller/src/compat"
+	daemoncompat "IpacPanel/daemon/compat"
 	cfg "IpacPanel/controller/src/config"
 	"IpacPanel/controller/src/msg"
 	"IpacPanel/controller/src/process"
@@ -459,7 +460,7 @@ func copyControllerUpdateDocFile(sourcePath string, targetPath string, mode os.F
 	if err := os.Chmod(tempPath, mode); err != nil {
 		return err
 	}
-	if err := compat.ReplaceFileAtomic(tempPath, targetPath); err != nil {
+	if err := daemoncompat.ReplaceFileAtomic(tempPath, targetPath); err != nil {
 		return err
 	}
 	cleanupTemp = false
@@ -487,15 +488,6 @@ func requireControllerUpdateSession(session *fileUploadSession, ownerUser string
 		return errors.New(msg.UploadSessionForbidden)
 	}
 	return nil
-}
-
-func cleanupControllerUpdateUploadSession(ownerUser string) {
-	cleanupPath, _, err := cancelUploadSession(controllerUpdateUploadID, func(session *fileUploadSession) error {
-		return requireControllerUpdateSession(session, ownerUser)
-	})
-	if err == nil && cleanupPath != "" {
-		_ = file.RemoveRegisteredTempPath(cleanupPath)
-	}
 }
 
 func failControllerUpdateUploadCompletion(session *fileUploadSession) {
@@ -1061,7 +1053,7 @@ func installControllerUpdateReplace(stageZipPath string, workDir string) error {
 	}
 	for i := range targets {
 		// 暂存到任务目录中, 覆盖已有同名暂存文件.
-		if err := compat.ReplaceFileAtomic(targets[i].workPath, targets[i].stagedPath); err != nil {
+		if err := daemoncompat.ReplaceFileAtomic(targets[i].workPath, targets[i].stagedPath); err != nil {
 			return &controllerUpdateReplaceError{status: http.StatusInternalServerError, userMessage: msg.CommitControllerUpdateFileFailed, err: err}
 		}
 	}
@@ -1092,7 +1084,7 @@ func installReplacedBinary(sourcePath string, targetPath string) error {
 	} else if err != nil {
 		return &controllerUpdateReplaceError{status: http.StatusInternalServerError, userMessage: msg.CommitControllerUpdateFileFailed, err: err}
 	}
-	if err := compat.ReplaceFileAtomic(sourcePath, targetPath); err != nil {
+	if err := daemoncompat.ReplaceFileAtomic(sourcePath, targetPath); err != nil {
 		return &controllerUpdateReplaceError{status: http.StatusInternalServerError, userMessage: msg.CommitControllerUpdateFileFailed, err: err}
 	}
 	if runtime.GOOS != "windows" {

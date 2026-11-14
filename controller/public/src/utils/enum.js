@@ -1,5 +1,5 @@
 
-export const userPerm = {
+const userPerm = {
 	ADMIN: 7,
 	USER: 2,
 	DISABLE: 0,

@@ -187,7 +187,7 @@ const loadMonacoScript = (url) => {
 
 let monacoAssetsPromise = null;
 
-export const loadMonacoAssets = () => {
+const loadMonacoAssets = () => {
 	if (monacoAssetsPromise) {
 		return monacoAssetsPromise;
 	}

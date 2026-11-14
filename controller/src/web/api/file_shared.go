@@ -1,7 +1,6 @@
 package api
 
 import (
-	"IpacPanel/controller/src/atomic/file"
 	"IpacPanel/controller/src/compat"
 	cfg "IpacPanel/controller/src/config"
 	"IpacPanel/controller/src/instancefs"
@@ -154,82 +153,6 @@ func moveFileWithinRoot(ctx context.Context, rootPath string, srcPath string, ds
 		}
 	}
 	return nil
-}
-
-func ensureFileMoveDestinationWithinRoot(rootPath string, dstPath string, noReplace bool) error {
-	if err := instancefs.EnsurePathComponentsWithinRoot(rootPath, dstPath, false); err != nil {
-		return err
-	}
-	info, err := os.Lstat(dstPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	if noReplace {
-		return os.ErrExist
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return errors.New(msg.PathOutsideInstanceRoot)
-	}
-	if info.IsDir() {
-		return instancefs.ErrUploadTargetIsDirectory
-	}
-	return nil
-}
-
-func renameDirectoryWithinRoot(rootPath string, srcPath string, dstPath string) error {
-	if err := instancefs.EnsurePathComponentsWithinRoot(rootPath, dstPath, false); err != nil {
-		return err
-	}
-	if info, err := os.Lstat(dstPath); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return errors.New(msg.PathOutsideInstanceRoot)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := os.Rename(srcPath, dstPath); err != nil {
-		return err
-	}
-	if err := file.SyncDir(filepath.Dir(dstPath)); err != nil {
-		return err
-	}
-	return instancefs.EnsurePathComponentsWithinRoot(rootPath, dstPath, true)
-}
-
-func ensureUploadRelativePath(path string) (string, error) {
-	path = strings.TrimSpace(strings.ReplaceAll(path, "\\", "/"))
-	if path == "" {
-		return "", errors.New(msg.FileNameRequired)
-	}
-	if textTooLong(path, maxFilePathTextLen) {
-		return "", errors.New(msg.PathTooLong)
-	}
-	if strings.ContainsRune(path, 0) || strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") {
-		return "", errors.New(msg.PathOutsideInstanceRoot)
-	}
-	osPath := strings.ReplaceAll(path, "/", string(filepath.Separator))
-	if filepath.IsAbs(osPath) || filepath.VolumeName(osPath) != "" {
-		return "", errors.New(msg.PathOutsideInstanceRoot)
-	}
-	parts := strings.Split(path, "/")
-	normalizedParts := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" || part == "." || part == ".." {
-			return "", errors.New(msg.FileNameInvalid)
-		}
-		if _, err := instancefs.EnsureFileName(part); err != nil {
-			return "", err
-		}
-		normalizedParts = append(normalizedParts, part)
-	}
-	if len(normalizedParts) == 0 {
-		return "", errors.New(msg.FileNameRequired)
-	}
-	return strings.Join(normalizedParts, "/"), nil
 }
 
 type fileEntry struct {

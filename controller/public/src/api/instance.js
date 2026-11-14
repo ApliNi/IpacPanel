@@ -21,15 +21,6 @@ export const controlInstance = async (name, action) => {
 	}, { logMessage: `[API] 对实例 ${name} 执行 ${action} 操作失败:` });
 };
 
-const toInstanceConfigPayload = (payload = {}) => {
-	const config = Object.assign({}, payload || {});
-	if (Object.prototype.hasOwnProperty.call(config, 'name')) {
-		config.instance = config.name;
-		delete config.name;
-	}
-	return config;
-};
-
 export const createInstance = async (payload) => {
 	return await withApiResult(async () => {
 		const res = await authedFetch('/api/instance/create', {
@@ -37,7 +28,7 @@ export const createInstance = async (payload) => {
 			headers: {
 				'Content-Type': 'application/json'
 			},
-			body: JSON.stringify(toInstanceConfigPayload(payload))
+			body: JSON.stringify(payload)
 		});
 		return await parseJsonData(res);
 	}, {
@@ -69,7 +60,7 @@ export const updateInstance = async (name, payload) => {
 			headers: {
 				'Content-Type': 'application/json'
 			},
-			body: JSON.stringify({ instance: name, config: toInstanceConfigPayload(payload) })
+			body: JSON.stringify({ instance: name, config: payload })
 		});
 		return await parseJsonData(res);
 	}, {

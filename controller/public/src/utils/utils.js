@@ -10,23 +10,6 @@ export const clearTimer = (timer) => {
     return null;
 };
 
-export const parseOptionalNonNegativeInt = (input, label) => {
-    const value = input ? input.value.trim() : '';
-    if (value === '') {
-        return { value: null };
-    }
-
-    const parsed = Number.parseInt(value, 10);
-    if (!Number.isInteger(parsed) || parsed < 0) {
-        return {
-            error: `${label} 必须是大于等于 0 的整数`,
-            input,
-        };
-    }
-
-    return { value: parsed };
-};
-
 export const parseOptionalIntegerInRange = (input, label, min, max) => {
 	const value = input ? input.value.trim() : '';
 	if (value === '') {
@@ -74,18 +57,6 @@ export const formatFileSize = (size) => {
 export const getUrlSearchParam = (key) => {
     const params = new URLSearchParams(window.location.search);
     return params.get(key);
-};
-
-export const setUrlSearchParam = (key, value) => {
-    const url = new URL(window.location);
-    if (value) {
-        url.searchParams.set(key, value);
-    } else {
-        url.searchParams.delete(key);
-    }
-    if (window.location.search !== url.search) {
-        window.history.pushState({}, '', url);
-    }
 };
 
 export const setUrlSearchParams = (updates = {}, options = {}) => {

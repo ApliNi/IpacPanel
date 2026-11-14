@@ -67,10 +67,6 @@ func (fs *InstanceFS) ResolveArchiveLayout(instanceName string, include []Archiv
 	return commonParent, SafeArchiveDownloadName(filepath.Base(commonParent)), nil
 }
 
-func (fs *InstanceFS) EnsureArchiveFileWithinRoot(rootReal string, filePath string) error {
-	return EnsureArchiveFileWithinRootStatic(rootReal, filePath)
-}
-
 func EnsureArchiveFileWithinRootStatic(rootReal string, filePath string) error {
 	realPath, err := filepath.EvalSymlinks(filePath)
 	if err != nil {
@@ -80,10 +76,6 @@ func EnsureArchiveFileWithinRootStatic(rootReal string, filePath string) error {
 		return ErrPathOutsideInstanceRoot
 	}
 	return nil
-}
-
-func (fs *InstanceFS) SafeArchiveEntryName(basePath string, targetPath string) (string, bool) {
-	return SafeArchiveEntryName(basePath, targetPath)
 }
 
 func commonArchiveParent(a string, b string) string {

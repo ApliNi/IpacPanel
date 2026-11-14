@@ -22,10 +22,6 @@ func NewCookieManager(originResolver *OriginResolver) *CookieManager {
 	return &CookieManager{AuthCookieName: DefaultAuthCookieName, CSRFCookieName: DefaultCSRFCookieName, MaxAge: DefaultCookieMaxAge, OriginResolver: originResolver}
 }
 
-func (m *CookieManager) AuthToken(r *http.Request) string {
-	return m.cookieToken(r, m.authCookieName())
-}
-
 func (m *CookieManager) AuthTokenWithPresence(r *http.Request) (string, bool) {
 	return m.cookieTokenWithPresence(r, m.authCookieName())
 }

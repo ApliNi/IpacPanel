@@ -301,8 +301,6 @@ const getReconnectDelay = (attempt) => {
 const formatBytes = (value) => formatScaled(value, DATA_UNITS, 1024, 1);
 const formatBps = (value) => formatScaled(value, DATA_UNITS, 1024, 1);
 
-const formatBytesCeil = (value) => formatBytes(value);
-
 const ceilBytesToDisplayUnit = (value) => {
 	let numeric = Number(value);
 	if (!Number.isFinite(numeric) || numeric <= 0) {
@@ -2093,8 +2091,6 @@ const hidePage = () => {
 	destroyCharts();
 };
 
-const cleanup = hidePage;
-
 export const bootDashboardPage = () => {
 	pageState.requestedMinutes = readStoredMinutes();
 	pageState.displayMinutes = pageState.requestedMinutes;
@@ -2112,7 +2108,5 @@ export const bootDashboardPage = () => {
 	return {
 		showPage,
 		hidePage,
-		cleanup,
-		refresh: restartDashboardStream,
 	};
 };

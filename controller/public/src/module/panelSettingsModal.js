@@ -606,13 +606,6 @@ const readClampedInteger = (input, fallback, minValue, maxValue) => {
 	return Math.min(maxValue, Math.max(minValue, value));
 };
 
-const showInputLimitAlert = async (message, input, setStatus) => {
-	setStatus(message, true);
-	input.focus();
-	await showAlert(message, { title: 'INVALID', okText: 'OK' });
-	return false;
-};
-
 const syncMetricsStorageModeFields = () => {
 	const storageMode = normalizeMetricsStorageMode(dom.metricsStorageMode.value);
 	dom.metricsMemoryGroup.classList.toggle('hidden', storageMode !== 'memory');

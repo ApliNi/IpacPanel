@@ -80,21 +80,6 @@ func (fs *InstanceFS) Resolve(relativePath string) (SafePath, error) {
 	return SafePath{absPath: targetPath, relSlash: relSlash}, nil
 }
 
-func (fs *InstanceFS) ResolveExisting(relativePath string) (SafePath, os.FileInfo, error) {
-	safePath, err := fs.Resolve(relativePath)
-	if err != nil {
-		return SafePath{}, nil, err
-	}
-	info, err := os.Stat(safePath.AbsPath())
-	if err != nil {
-		return SafePath{}, nil, err
-	}
-	if err := fs.ensureResolvedPathWithinRoot(safePath.AbsPath()); err != nil {
-		return SafePath{}, nil, err
-	}
-	return safePath, info, nil
-}
-
 func (fs *InstanceFS) ResolveRequired(relativePath string) (SafePath, error) {
 	safePath, err := fs.Resolve(relativePath)
 	if err != nil {
@@ -139,28 +124,6 @@ func (fs *InstanceFS) ResolveRequiredExistingFile(relativePath string) (SafePath
 	}
 	if info.IsDir() {
 		return SafePath{}, nil, &PathAccessError{Kind: PathAccessErrorDirectory, Err: errors.New(msg.TargetIsDirectory)}
-	}
-	return safePath, info, nil
-}
-
-func (fs *InstanceFS) ResolveExistingFile(relativePath string) (SafePath, os.FileInfo, error) {
-	safePath, info, err := fs.ResolveExisting(relativePath)
-	if err != nil {
-		return SafePath{}, nil, err
-	}
-	if info.IsDir() {
-		return SafePath{}, nil, errors.New(msg.TargetIsDirectory)
-	}
-	return safePath, info, nil
-}
-
-func (fs *InstanceFS) ResolveExistingDir(relativePath string) (SafePath, os.FileInfo, error) {
-	safePath, info, err := fs.ResolveExisting(relativePath)
-	if err != nil {
-		return SafePath{}, nil, err
-	}
-	if !info.IsDir() {
-		return SafePath{}, nil, errors.New(msg.PathNotDirectory)
 	}
 	return safePath, info, nil
 }

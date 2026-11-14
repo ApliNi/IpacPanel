@@ -3,6 +3,7 @@ package instancefs
 import (
 	"IpacPanel/controller/src/atomic/file"
 	"IpacPanel/controller/src/compat"
+	daemoncompat "IpacPanel/daemon/compat"
 	"IpacPanel/controller/src/msg"
 	"errors"
 	"os"
@@ -112,10 +113,6 @@ func (fs *InstanceFS) CheckUploadTargetFile(target UploadTarget, overwrite bool)
 	return err
 }
 
-func (fs *InstanceFS) OpenUploadAtomicFile(target UploadTarget, mode os.FileMode) (*os.File, string, error) {
-	return OpenAtomicTempFileWithinRoot(fs.rootPath, target.TargetPath(), mode)
-}
-
 func (fs *InstanceFS) OpenRegisteredUploadAtomicFile(target UploadTarget, mode os.FileMode) (*os.File, string, error) {
 	targetPath := strings.TrimSpace(target.TargetPath())
 	if targetPath == "" {
@@ -141,10 +138,6 @@ func (fs *InstanceFS) OpenRegisteredUploadAtomicFile(target UploadTarget, mode o
 		return nil, "", err
 	}
 	return tmp, tmpPath, nil
-}
-
-func (fs *InstanceFS) CommitUploadAtomicFile(tempPath string, target UploadTarget, overwrite bool) error {
-	return CommitAtomicTempFileWithinRoot(fs.rootPath, tempPath, target.TargetPath(), overwrite)
 }
 
 func (fs *InstanceFS) CommitRegisteredUploadFile(tempPath string, target UploadTarget, overwrite bool) (bool, error) {
@@ -175,7 +168,7 @@ func (fs *InstanceFS) CommitRegisteredUploadFile(tempPath string, target UploadT
 	}
 
 	if overwrite {
-		if err := compat.ReplaceFileAtomic(tempPath, targetPath); err != nil {
+		if err := daemoncompat.ReplaceFileAtomic(tempPath, targetPath); err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
 				return false, err
 			}

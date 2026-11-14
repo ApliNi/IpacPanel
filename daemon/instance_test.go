@@ -1,6 +1,7 @@
 package main
 
 import (
+	"IpacPanel/daemon/ipc"
 	"testing"
 )
 
@@ -12,7 +13,7 @@ func BenchmarkDaemonBufferPoolZeroAllocs(b *testing.B) {
 		if len(buf) == 0 {
 			b.Fatal("empty buf")
 		}
-		resp := IPCResponse{
+		resp := ipc.Response{
 			Type:        "o",
 			Instance:    "bench",
 			Body:        buf[:100],
@@ -28,7 +29,7 @@ func TestDaemonBufferPoolAcquireAndRelease(t *testing.T) {
 	if len(buf) != daemonOutputReadBufferSize {
 		t.Fatalf("expected buffer size %d, got %d", daemonOutputReadBufferSize, len(buf))
 	}
-	resp := IPCResponse{
+	resp := ipc.Response{
 		Type:        "o",
 		Instance:    "test",
 		Body:        buf[:10],

@@ -1,7 +1,7 @@
 package process
 
 import (
-	compat "IpacPanel/controller/src/compat"
+	daemoncompat "IpacPanel/daemon/compat"
 	"IpacPanel/controller/src/msg"
 
 	"errors"
@@ -20,7 +20,7 @@ type pathLockEntry struct {
 var (
 	instanceStartPathMu    sync.Mutex
 	instanceStartPathLocks = make(map[string]*pathLockEntry)
-	instanceUpdateSyncDir  = compat.SyncDirIfPossible
+	instanceUpdateSyncDir  = daemoncompat.SyncDirIfPossible
 	instanceUpdateRename   = os.Rename
 )
 

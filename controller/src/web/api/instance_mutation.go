@@ -29,7 +29,7 @@ type updateInstanceRequest struct {
 }
 
 type instanceConfigRequest struct {
-	Instance        string     `json:"instance"`
+	Name            string     `json:"name"`
 	Group           string     `json:"group,omitempty"`
 	Path            string     `json:"path"`
 	Command         string     `json:"command"`
@@ -48,7 +48,7 @@ type instanceConfigRequest struct {
 
 func instanceConfigFromRequest(req instanceConfigRequest) cfg.Instance {
 	return cfg.Instance{
-		Name:            req.Instance,
+		Name:            req.Name,
 		Group:           req.Group,
 		Path:            req.Path,
 		Command:         req.Command,

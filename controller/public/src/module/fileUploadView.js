@@ -2,7 +2,7 @@ import { formatFileSize } from '../utils/utils.js';
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
-export const ceilTo = (value, decimals) => {
+const ceilTo = (value, decimals) => {
 	const factor = Math.pow(10, Math.max(0, decimals || 0));
 	return Math.ceil(clamp((Number(value) || 0), 0, 100) * factor) / factor;
 };

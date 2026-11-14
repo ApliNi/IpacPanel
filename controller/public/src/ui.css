@@ -470,12 +470,6 @@ input[type="password"] {
 	margin-left: -3px;
 }
 
-.version {
-    font-size: 0.8rem;
-    color: var(--text-faint-color);
-    margin-left: 10px;
-}
-
 /* 主容器 */
 #mainContainer {
     flex: 1;
@@ -643,12 +637,6 @@ input[type="password"] {
 
 .dashboard-page-tabs {
 	flex-shrink: 0;
-}
-
-.dashboard-title-group {
-	display: flex;
-	flex-direction: column;
-	gap: 4px;
 }
 
 .dashboard-chart-label,
@@ -2466,10 +2454,6 @@ input[type="radio"]:checked { border: 6px double var(--text-subtle-color); }
     to { opacity: 1; }
 }
 
-.fade-in {
-    animation: fadeIn 0.3s ease forwards;
-}
-
 /* 中等屏幕 (Tablets) */
 @media (max-width: 1024px) {
 
@@ -2619,10 +2603,6 @@ input[type="radio"]:checked { border: 6px double var(--text-subtle-color); }
 	word-break: break-all;
 }
 
-.log-entry:last-child {
-	border-bottom: none;
-}
-
 .log-time {
 	flex-shrink: 0;
 	color: var(--text-faint-color);
@@ -2642,7 +2622,6 @@ input[type="radio"]:checked { border: 6px double var(--text-subtle-color); }
 
 .log-instance:hover {
 	color: var(--text-color);
-	text-decoration: underline;
 }
 
 .log-message {

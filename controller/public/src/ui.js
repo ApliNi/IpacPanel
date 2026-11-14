@@ -30,7 +30,7 @@ export const state = {
 	publicDashboardEnabled: false,
 };
 
-export const pageNames = {
+const pageNames = {
 	instanceList: 'instance-list',
 	dashboard: 'dashboard',
 	terminal: 'terminal',
@@ -41,7 +41,7 @@ const routePages = {
 	dashboard: 'dashboard',
 };
 
-export const mainHeader = document.getElementById('mainHeader');
+const mainHeader = document.getElementById('mainHeader');
 export const mainContainer = document.getElementById('mainContainer');
 export const mainModalOverlay = document.getElementById('mainModalOverlay');
 

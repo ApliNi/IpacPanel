@@ -2,6 +2,7 @@ package main
 
 import (
 	"IpacPanel/daemon/version"
+	"IpacPanel/daemon/ipc"
 	"errors"
 	"fmt"
 	"log"
@@ -22,10 +23,10 @@ const (
 )
 
 type IPCServer struct {
-	Conn            *IPCConn
+	Conn            *ipc.Conn
 	Instances       *InstanceManager
-	outputCh        chan IPCResponse
-	eventCh         chan IPCResponse
+	outputCh        chan ipc.Response
+	eventCh         chan ipc.Response
 	done            chan struct{}
 	closeOnce       sync.Once
 	serveDone       chan struct{}
@@ -40,21 +41,21 @@ type IPCServer struct {
 func NewIPCServer(instances *InstanceManager) (*IPCServer, error) {
 	return &IPCServer{
 		Instances: instances,
-		outputCh:  make(chan IPCResponse, outputChannelSize),
-		eventCh:   make(chan IPCResponse, eventChannelSize),
+		outputCh:  make(chan ipc.Response, outputChannelSize),
+		eventCh:   make(chan ipc.Response, eventChannelSize),
 		done:      make(chan struct{}),
 	}, nil
 }
 
-func (s *IPCServer) OutputCh() chan<- IPCResponse {
+func (s *IPCServer) OutputCh() chan<- ipc.Response {
 	return s.outputCh
 }
 
-func (s *IPCServer) EventCh() chan<- IPCResponse {
+func (s *IPCServer) EventCh() chan<- ipc.Response {
 	return s.eventCh
 }
 
-func (s *IPCServer) Bind(conn *IPCConn) {
+func (s *IPCServer) Bind(conn *ipc.Conn) {
 	s.connMu.Lock()
 	oldConn := s.Conn
 	oldServeDone := s.serveDone
@@ -100,7 +101,7 @@ func (s *IPCServer) Serve(readyCh chan struct{}) {
 	if conn == nil {
 		return
 	}
-	controlCh := make(chan IPCResponse, ipcControlQueueSize)
+	controlCh := make(chan ipc.Response, ipcControlQueueSize)
 	defer func() {
 		close(connDone)
 		<-forwardDone
@@ -146,7 +147,7 @@ func (s *IPCServer) Serve(readyCh chan struct{}) {
 	}
 }
 
-func (s *IPCServer) queueControlResponse(controlCh chan<- IPCResponse, forwardDone <-chan struct{}, resp IPCResponse) bool {
+func (s *IPCServer) queueControlResponse(controlCh chan<- ipc.Response, forwardDone <-chan struct{}, resp ipc.Response) bool {
 	select {
 	case controlCh <- resp:
 		return true
@@ -159,7 +160,7 @@ func (s *IPCServer) queueControlResponse(controlCh chan<- IPCResponse, forwardDo
 	}
 }
 
-func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, connDone <-chan struct{}) {
+func (s *IPCServer) forwardOutput(conn *ipc.Conn, controlCh <-chan ipc.Response, connDone <-chan struct{}) {
 	ticker := time.NewTicker(ipcOutputFlushInterval)
 	defer ticker.Stop()
 	defer func() {
@@ -174,7 +175,7 @@ func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, c
 		}
 	}()
 	needFlush := false
-	writeControl := func(conn *IPCConn, resp IPCResponse) bool {
+	writeControl := func(conn *ipc.Conn, resp ipc.Response) bool {
 		if err := conn.WriteResponse(resp); err != nil {
 			log.Printf("IPC write error: %v", err)
 			_ = conn.Close()
@@ -182,7 +183,7 @@ func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, c
 		}
 		return true
 	}
-	writeEvent := func(conn *IPCConn, resp IPCResponse) bool {
+	writeEvent := func(conn *ipc.Conn, resp ipc.Response) bool {
 		if err := conn.WriteEvent(resp, true); err != nil {
 			log.Printf("IPC write error: %v", err)
 			_ = conn.Close()
@@ -190,7 +191,7 @@ func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, c
 		}
 		return true
 	}
-	writeOutput := func(conn *IPCConn, resp IPCResponse) bool {
+	writeOutput := func(conn *ipc.Conn, resp ipc.Response) bool {
 		if err := conn.WriteInstanceOutputResponse(resp, false); err != nil {
 			log.Printf("IPC output write error: %v", err)
 			_ = conn.Close()
@@ -198,7 +199,7 @@ func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, c
 		}
 		return true
 	}
-	flush := func(conn *IPCConn) bool {
+	flush := func(conn *ipc.Conn) bool {
 		if !needFlush {
 			return true
 		}
@@ -273,15 +274,15 @@ func (s *IPCServer) forwardOutput(conn *IPCConn, controlCh <-chan IPCResponse, c
 	}
 }
 
-func (s *IPCServer) dispatch(req *IPCRequest) *IPCResponse {
+func (s *IPCServer) dispatch(req *ipc.Request) *ipc.Response {
 	switch req.Type {
 	case "start_instance":
 		return s.handleStartInstance(req)
 	case "hello":
-		resp := IPCResponse{Type: "hello", Msg: req.Msg, DaemonProtocol: version.DaemonProtocol}
+		resp := ipc.Response{Type: "hello", Msg: req.Msg, DaemonProtocol: version.DaemonProtocol}
 		return &resp
 	case "list_runtime":
-		resp := IPCResponse{Type: "runtime_snapshot", Runtime: s.Instances.ListRuntime()}
+		resp := ipc.Response{Type: "runtime_snapshot", Runtime: s.Instances.ListRuntime()}
 		return &resp
 	case "set_debug":
 		return s.handleSetDebug(req)
@@ -303,22 +304,17 @@ func (s *IPCServer) dispatch(req *IPCRequest) *IPCResponse {
 		return s.handleStopInstance(req)
 	case "kill_instance":
 		return s.handleKillInstance(req)
-	case ipcRequestInputStdin:
+	case ipc.RequestInputStdin:
 		return s.handleInputStdin(req)
-	case "write_stdin":
-		return s.handleWriteStdin(req)
 	case "resize_terminal":
 		return s.handleResizeTerminal(req)
-	case "log":
-		log.Printf("[controller] %s", string(req.Data))
-		return nil
 	default:
-		resp := NewIPCResponse("instance_error", req.Instance, nil, "unknown request type: "+req.Type)
+		resp := ipc.NewResponse("instance_error", req.Instance, nil, "unknown request type: "+req.Type)
 		return &resp
 	}
 }
 
-func (s *IPCServer) handleControllerReady(req *IPCRequest) *IPCResponse {
+func (s *IPCServer) handleControllerReady(req *ipc.Request) *ipc.Response {
 	s.connMu.Lock()
 	readyCh := s.readyCh
 	s.connMu.Unlock()
@@ -329,36 +325,36 @@ func (s *IPCServer) handleControllerReady(req *IPCRequest) *IPCResponse {
 			close(readyCh)
 		}
 	}
-	resp := NewIPCResponse("ok", "", nil, "")
+	resp := ipc.NewResponse("ok", "", nil, "")
 	return &resp
 }
 
-func (s *IPCServer) handleSetDebug(req *IPCRequest) *IPCResponse {
+func (s *IPCServer) handleSetDebug(req *ipc.Request) *ipc.Response {
 	ipcDebug.Store(req.Debug)
 	s.connMu.Lock()
 	if s.Conn != nil {
 		s.Conn.SetDebug(req.Debug)
 	}
 	s.connMu.Unlock()
-	resp := NewIPCResponse("ok", "", nil, "")
+	resp := ipc.NewResponse("ok", "", nil, "")
 	return &resp
 }
 
-func (s *IPCServer) handleRestartController(req *IPCRequest) *IPCResponse {
+func (s *IPCServer) handleRestartController(req *ipc.Request) *ipc.Response {
 	purpose := req.ControllerShutdownPurpose
 	if purpose == "" {
-		purpose = ControllerShutdownPurposeRestart
+		purpose = ipc.ControllerShutdownPurposeRestart
 	}
 	switch purpose {
-	case ControllerShutdownPurposeRestart:
-	case ControllerShutdownPurposeUpdate:
+	case ipc.ControllerShutdownPurposeRestart:
+	case ipc.ControllerShutdownPurposeUpdate:
 		// 更新退出: 管理进程已自行替换文件, 立即重启无需等待.
 		s.controllerUpdateRestartPending.Store(true)
 	default:
-		resp := NewIPCResponse("controller_error", "", nil, "invalid controller shutdown purpose")
+		resp := ipc.NewResponse("controller_error", "", nil, "invalid controller shutdown purpose")
 		return &resp
 	}
-	resp := NewIPCResponse("ok", "", nil, "")
+	resp := ipc.NewResponse("ok", "", nil, "")
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		s.connMu.Lock()
@@ -371,8 +367,8 @@ func (s *IPCServer) handleRestartController(req *IPCRequest) *IPCResponse {
 	return &resp
 }
 
-func (s *IPCServer) handleStopDaemon(req *IPCRequest) *IPCResponse {
-	resp := NewIPCResponse("ok", "", nil, "")
+func (s *IPCServer) handleStopDaemon(req *ipc.Request) *ipc.Response {
+	resp := ipc.NewResponse("ok", "", nil, "")
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		markDaemonStopping()
@@ -413,20 +409,20 @@ func hasNULByte(value string) bool {
 	return strings.Contains(value, "\x00")
 }
 
-func (s *IPCServer) handleStartInstance(req *IPCRequest) *IPCResponse {
+func (s *IPCServer) handleStartInstance(req *ipc.Request) *ipc.Response {
 	if req.Instance == "" {
-		resp := NewIPCResponse("instance_error", "", nil, "instance required")
+		resp := ipc.NewResponse("instance_error", "", nil, "instance required")
 		return &resp
 	}
 	if err := validateDaemonCommandArgv(req.CommandArgv); err != nil {
-		resp := NewIPCResponse("instance_error", req.Instance, nil, "command required")
+		resp := ipc.NewResponse("instance_error", req.Instance, nil, "command required")
 		if err.Error() != "command required" {
 			resp.Error = err.Error()
 		}
 		return &resp
 	}
 	if err := validateDaemonOptionalArgv(req.CleanupCommandArgv, "cleanup_command_argv"); err != nil {
-		resp := NewIPCResponse("instance_error", req.Instance, nil, err.Error())
+		resp := ipc.NewResponse("instance_error", req.Instance, nil, err.Error())
 		return &resp
 	}
 
@@ -439,12 +435,12 @@ func (s *IPCServer) handleStartInstance(req *IPCRequest) *IPCResponse {
 		if state == instanceRunning {
 			s.Instances.Mu.Unlock()
 			runtime := existing.RuntimeSnapshot()
-			resp := IPCResponse{Type: "instance_started", State: &runtime}
+			resp := ipc.Response{Type: "instance_started", State: &runtime}
 			return &resp
 		}
 		if state == instanceStopping || state == instanceCleaning {
 			s.Instances.Mu.Unlock()
-			resp := NewIPCResponse("instance_error", req.Instance, nil, daemonInstanceStopping)
+			resp := ipc.NewResponse("instance_error", req.Instance, nil, daemonInstanceStopping)
 			return &resp
 		}
 	} else {
@@ -458,109 +454,95 @@ func (s *IPCServer) handleStartInstance(req *IPCRequest) *IPCResponse {
 		if created {
 			s.Instances.Delete(req.Instance)
 		}
-		resp := NewIPCResponse("instance_error", req.Instance, nil, err.Error())
+		resp := ipc.NewResponse("instance_error", req.Instance, nil, err.Error())
 		return &resp
 	}
 	state := ins.RuntimeSnapshot()
-	resp := IPCResponse{Type: "instance_started", State: &state}
+	resp := ipc.Response{Type: "instance_started", State: &state}
 	return &resp
 }
 
-func (s *IPCServer) handleRenameDaemonInstance(req *IPCRequest) *IPCResponse {
+func (s *IPCServer) handleRenameDaemonInstance(req *ipc.Request) *ipc.Response {
 	if req.Instance == "" || req.NewName == "" {
-		resp := NewIPCResponse("instance_error", req.Instance, nil, "old_name and new_name required")
+		resp := ipc.NewResponse("instance_error", req.Instance, nil, "old_name and new_name required")
 		return &resp
 	}
 	if err := s.Instances.RenameInstance(req.Instance, req.NewName); err != nil {
-		resp := NewIPCResponse("instance_error", req.Instance, nil, err.Error())
+		resp := ipc.NewResponse("instance_error", req.Instance, nil, err.Error())
 		return &resp
 	}
-	resp := NewIPCResponse("ok", req.NewName, nil, "")
+	resp := ipc.NewResponse("ok", req.NewName, nil, "")
 	return &resp
 }
 
-func (s *IPCServer) handleUpdateInstanceConfig(req *IPCRequest) *IPCResponse {
+func (s *IPCServer) handleUpdateInstanceConfig(req *ipc.Request) *ipc.Response {
 	if req.Instance == "" {
-		resp := NewIPCResponse("instance_error", "", nil, "instance required")
+		resp := ipc.NewResponse("instance_error", "", nil, "instance required")
 		return &resp
 	}
 	ins, ok := s.Instances.Get(req.Instance)
 	if !ok {
-		resp := NewIPCResponse("ok", req.Instance, nil, "")
+		resp := ipc.NewResponse("ok", req.Instance, nil, "")
 		return &resp
 	}
 	if err := validateDaemonOptionalArgv(req.CleanupCommandArgv, "cleanup_command_argv"); err != nil {
-		resp := NewIPCResponse("instance_error", req.Instance, nil, err.Error())
+		resp := ipc.NewResponse("instance_error", req.Instance, nil, err.Error())
 		return &resp
 	}
 	ins.UpdateRuntimeConfig(req.CleanupCommandArgv)
-	resp := NewIPCResponse("ok", req.Instance, nil, "")
+	resp := ipc.NewResponse("ok", req.Instance, nil, "")
 	return &resp
 }
 
-func (s *IPCServer) handleStopInstance(req *IPCRequest) *IPCResponse {
+func (s *IPCServer) handleStopInstance(req *ipc.Request) *ipc.Response {
 	ins, ok := s.Instances.Get(req.Instance)
 	if !ok {
-		resp := NewIPCResponse("instance_error", req.Instance, nil, "instance not found")
+		resp := ipc.NewResponse("instance_error", req.Instance, nil, "instance not found")
 		return &resp
 	}
 	ins.Stop(req.Force, req.RuntimeCode)
-	resp := NewIPCResponse("ok", req.Instance, nil, "")
+	resp := ipc.NewResponse("ok", req.Instance, nil, "")
 	return &resp
 }
 
-func (s *IPCServer) handleMarkRuntimeCode(req *IPCRequest) *IPCResponse {
+func (s *IPCServer) handleMarkRuntimeCode(req *ipc.Request) *ipc.Response {
 	ins, ok := s.Instances.Get(req.Instance)
 	if !ok {
-		resp := NewIPCResponse("instance_error", req.Instance, nil, "instance not found")
+		resp := ipc.NewResponse("instance_error", req.Instance, nil, "instance not found")
 		return &resp
 	}
 	ins.MarkRuntimeCode(req.RuntimeCode)
-	resp := NewIPCResponse("ok", req.Instance, nil, "")
+	resp := ipc.NewResponse("ok", req.Instance, nil, "")
 	return &resp
 }
 
-func (s *IPCServer) handleMarkStopping(req *IPCRequest) *IPCResponse {
+func (s *IPCServer) handleMarkStopping(req *ipc.Request) *ipc.Response {
 	ins, ok := s.Instances.Get(req.Instance)
 	if !ok {
-		resp := NewIPCResponse("instance_error", req.Instance, nil, "instance not found")
+		resp := ipc.NewResponse("instance_error", req.Instance, nil, "instance not found")
 		return &resp
 	}
 	ins.MarkStopping(req.RuntimeCode)
-	resp := NewIPCResponse("ok", req.Instance, nil, "")
+	resp := ipc.NewResponse("ok", req.Instance, nil, "")
 	return &resp
 }
 
-func (s *IPCServer) handleKillInstance(req *IPCRequest) *IPCResponse {
+func (s *IPCServer) handleKillInstance(req *ipc.Request) *ipc.Response {
 	ins, ok := s.Instances.Get(req.Instance)
 	if !ok {
-		resp := NewIPCResponse("instance_error", req.Instance, nil, "instance not found")
+		resp := ipc.NewResponse("instance_error", req.Instance, nil, "instance not found")
 		return &resp
 	}
 	runtimeCode := req.RuntimeCode
-	if runtimeCode == RuntimeCodeUnknown {
-		runtimeCode = RuntimeCodeManualKill
+	if runtimeCode == ipc.RuntimeCodeUnknown {
+		runtimeCode = ipc.RuntimeCodeManualKill
 	}
 	ins.Stop(true, runtimeCode)
-	resp := NewIPCResponse("ok", req.Instance, nil, "")
+	resp := ipc.NewResponse("ok", req.Instance, nil, "")
 	return &resp
 }
 
-func (s *IPCServer) handleWriteStdin(req *IPCRequest) *IPCResponse {
-	ins, ok := s.Instances.Get(req.Instance)
-	if !ok {
-		resp := NewIPCResponse("instance_error", req.Instance, nil, "instance not found")
-		return &resp
-	}
-	if err := ins.WriteStdin(req.Data); err != nil {
-		resp := NewIPCResponse("instance_error", req.Instance, nil, err.Error())
-		return &resp
-	}
-	resp := NewIPCResponse("ok", req.Instance, nil, "")
-	return &resp
-}
-
-func (s *IPCServer) handleInputStdin(req *IPCRequest) *IPCResponse {
+func (s *IPCServer) handleInputStdin(req *ipc.Request) *ipc.Response {
 	if req.BodyLen == 0 {
 		return nil
 	}
@@ -569,7 +551,7 @@ func (s *IPCServer) handleInputStdin(req *IPCRequest) *IPCResponse {
 		s.logInputStdinError(req.Instance, "instance not found")
 		return nil
 	}
-	if err := ins.WriteStdin(req.Data); err != nil {
+	if err := ins.WriteStdin(req.Body); err != nil {
 		s.logInputStdinError(req.Instance, err.Error())
 		return nil
 	}
@@ -588,18 +570,18 @@ func (s *IPCServer) logInputStdinError(instance string, errMsg string) {
 	log.Printf("write instance %s stdin failed: %s", instance, errMsg)
 }
 
-func (s *IPCServer) handleResizeTerminal(req *IPCRequest) *IPCResponse {
+func (s *IPCServer) handleResizeTerminal(req *ipc.Request) *ipc.Response {
 	ins, ok := s.Instances.Get(req.Instance)
 	if !ok {
-		resp := NewIPCResponse("instance_error", req.Instance, nil, "instance not found")
+		resp := ipc.NewResponse("instance_error", req.Instance, nil, "instance not found")
 		return &resp
 	}
 	if err := ins.ResizeTerminal(req.Cols, req.Rows); err != nil {
 		log.Printf("resize instance %s terminal failed: %v", req.Instance, err)
-		resp := NewIPCResponse("instance_error", req.Instance, nil, err.Error())
+		resp := ipc.NewResponse("instance_error", req.Instance, nil, err.Error())
 		return &resp
 	}
-	resp := NewIPCResponse("ok", req.Instance, nil, "")
+	resp := ipc.NewResponse("ok", req.Instance, nil, "")
 	return &resp
 }
 

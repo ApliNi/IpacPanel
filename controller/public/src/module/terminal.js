@@ -285,34 +285,6 @@ const decodeTerminalPayload = (payload) => {
 	return String(payload || '');
 };
 
-const encodeTerminalControlFrame = (type, payload) => `:${type}: ${JSON.stringify(payload)}`;
-
-const parseTerminalControlFrame = (frame) => {
-	if (typeof frame !== 'string' || !frame.startsWith(':')) {
-		throw new Error('无效的 WebSocket 终端帧前缀');
-	}
-
-	const separator = frame.indexOf(':', 1);
-	if (separator <= 1) {
-		throw new Error('无效的 WebSocket 终端帧头');
-	}
-
-	const type = frame.slice(1, separator);
-	if (type.trim() !== type || /[\s:]/u.test(type)) {
-		throw new Error(`无效的 WebSocket 终端帧类型: ${type}`);
-	}
-
-	const payloadText = frame.slice(separator + 1);
-	if (!payloadText.startsWith(' ')) {
-		throw new Error('缺少 WebSocket 终端帧负载分隔符');
-	}
-
-	return {
-		type,
-		payload: JSON.parse(payloadText.slice(1).trim()),
-	};
-};
-
 const writeTerminalBinary = (data) => {
 	if (!cardState.term || !data) {
 		return;
@@ -352,9 +324,6 @@ const sendSocketMessage = (type, payload) => {
 const parseTerminalControlMessage = (message) => {
 	if (typeof message !== 'string') {
 		throw new Error('无效的 WebSocket 终端控制消息');
-	}
-	if (message.startsWith(':')) {
-		return parseTerminalControlFrame(message);
 	}
 	const payload = JSON.parse(message);
 	return {

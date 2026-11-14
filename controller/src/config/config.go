@@ -2,7 +2,7 @@ package config
 
 import (
 	"IpacPanel/controller/src/atomic/file"
-	compat "IpacPanel/controller/src/compat"
+	"IpacPanel/daemon/terminal"
 	"IpacPanel/controller/src/msg"
 	"IpacPanel/daemon/version"
 	"bytes"
@@ -135,8 +135,8 @@ var defaultInstanceConfig = Instance{
 	Path:           "./instances/",
 	Command:        "",
 	Terminal:       Terminal,
-	InputEncoding:  compat.DefaultTerminalEncoding,
-	OutputEncoding: compat.DefaultTerminalEncoding,
+	InputEncoding:  terminal.DefaultTerminalEncoding,
+	OutputEncoding: terminal.DefaultTerminalEncoding,
 	StopCommand:    "^C",
 	AutoStart:      false,
 	AutoRestart:    false,
@@ -664,12 +664,12 @@ func ApplyInstanceDefaults(ins *Instance) {
 	}
 	if ins.InputEncoding == "" {
 		ins.InputEncoding = defaultInstanceConfig.InputEncoding
-	} else if normalized, ok := compat.NormalizeTerminalEncoding(ins.InputEncoding); ok {
+	} else if normalized, ok := terminal.NormalizeTerminalEncoding(ins.InputEncoding); ok {
 		ins.InputEncoding = normalized
 	}
 	if ins.OutputEncoding == "" {
 		ins.OutputEncoding = defaultInstanceConfig.OutputEncoding
-	} else if normalized, ok := compat.NormalizeTerminalEncoding(ins.OutputEncoding); ok {
+	} else if normalized, ok := terminal.NormalizeTerminalEncoding(ins.OutputEncoding); ok {
 		ins.OutputEncoding = normalized
 	}
 	ins.Tasks = NormalizeInstanceTasks(ins.Tasks)
@@ -692,20 +692,6 @@ func NormalizeGroupNameForStorage(group string) string {
 		return ""
 	}
 	return g
-}
-
-func marshalConfig(cfg Config) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(cfg); err != nil {
-		_ = enc.Close()
-		return nil, err
-	}
-	if err := enc.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }
 
 type persistedConfig struct {
@@ -901,6 +887,7 @@ func saveInstances(instances []Instance) error {
 	}
 	return writeConfigAtomic(ResolveDataPath("instances.yml"), data)
 }
+
 func migrateInstanceUpdateStagingDir(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -975,7 +962,6 @@ func LoadConfig() error {
 		needsSave = true
 	}
 	CurrentConfig = loadedCfg
-
 	authUsers, err := loadNormalizedAuth()
 	if err != nil {
 		return fmt.Errorf(msg.ReadAuthFileFailedFmt, err)
@@ -1187,25 +1173,12 @@ func NormalizeHistorySize(size int) int {
 	return clampInt(size, minHistorySizeKB, maxHistorySizeKB)
 }
 
-func ValidateHistorySize(size int) error {
-	if size < minHistorySizeKB || size > maxHistorySizeKB {
-		return fmt.Errorf(msg.HistorySizeInvalidFmt, minHistorySizeKB, maxHistorySizeKB)
-	}
-	return nil
-}
-
 func NormalizeAutoStartInterval(value int) int {
 	return clampInt(value, minAutoIntervalMS, maxAutoIntervalMS)
 }
 
 func NormalizeAutoRestartInterval(value int) int {
 	return clampInt(value, minAutoIntervalMS, maxAutoIntervalMS)
-}
-
-func GetWebTitle() string {
-	ManagerMu.RLock()
-	defer ManagerMu.RUnlock()
-	return NormalizeWebTitle(CurrentConfig.WebTitle)
 }
 
 func GetDebug() bool {
@@ -1248,50 +1221,59 @@ func ValidatePowConfig(pow PowConfig) error {
 	return nil
 }
 
-func normalizePathList(paths []string) []string {
-	if paths == nil {
-		return nil
+// CleanStringList removes leading and trailing spaces, empty items, and duplicates from values.
+func CleanStringList(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
 	}
-	seen := make(map[string]struct{}, len(paths))
-	out := make([]string, 0, len(paths))
-	for i := range paths {
-		path := strings.TrimSpace(paths[i])
-		if path == "" {
-			continue
-		}
-		if utf8.RuneCountInString(path) > maxTrustedProxyIPLen {
-			continue
-		}
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		seen[path] = struct{}{}
-		out = append(out, path)
-	}
-	return out
+	return filterUniqueStrings(values, 0, 0, false)
 }
 
-func normalizeLimitedStringList(values []string, maxLen int, maxItems int) []string {
-	if len(values) == 0 || maxLen <= 0 || maxItems <= 0 {
+func filterUniqueStrings(values []string, maxLen int, maxItems int, truncate bool) []string {
+	if len(values) == 0 {
 		return nil
 	}
 	seen := make(map[string]struct{}, len(values))
 	out := make([]string, 0, len(values))
 	for i := range values {
-		value := truncateRunes(strings.TrimSpace(values[i]), maxLen)
+		value := strings.TrimSpace(values[i])
 		if value == "" {
 			continue
+		}
+		if maxLen > 0 {
+			if truncate {
+				value = truncateRunes(value, maxLen)
+				if value == "" {
+					continue
+				}
+			} else if utf8.RuneCountInString(value) > maxLen {
+				continue
+			}
 		}
 		if _, ok := seen[value]; ok {
 			continue
 		}
 		seen[value] = struct{}{}
 		out = append(out, value)
-		if len(out) >= maxItems {
+		if maxItems > 0 && len(out) >= maxItems {
 			break
 		}
 	}
 	return out
+}
+
+func normalizePathList(paths []string) []string {
+	if len(paths) == 0 || maxTrustedProxyIPLen <= 0 {
+		return nil
+	}
+	return filterUniqueStrings(paths, maxTrustedProxyIPLen, 0, false)
+}
+
+func normalizeLimitedStringList(values []string, maxLen int, maxItems int) []string {
+	if len(values) == 0 || maxLen <= 0 || maxItems <= 0 {
+		return nil
+	}
+	return filterUniqueStrings(values, maxLen, maxItems, true)
 }
 
 func ValidateInstanceConfig(ins *Instance) error {
@@ -1313,10 +1295,10 @@ func ValidateInstanceConfig(ins *Instance) error {
 	if ins.RestartInterval != nil && (*ins.RestartInterval < minRestartIntervalMS || *ins.RestartInterval > maxRestartIntervalMS) {
 		return errors.New(msg.RestartIntervalInvalid)
 	}
-	if _, ok := compat.NormalizeTerminalEncoding(ins.InputEncoding); !ok {
+	if _, ok := terminal.NormalizeTerminalEncoding(ins.InputEncoding); !ok {
 		return errors.New(msg.InputEncodingInvalid)
 	}
-	if _, ok := compat.NormalizeTerminalEncoding(ins.OutputEncoding); !ok {
+	if _, ok := terminal.NormalizeTerminalEncoding(ins.OutputEncoding); !ok {
 		return errors.New(msg.OutputEncodingInvalid)
 	}
 	if err := ValidateGroupName(ins.Group); err != nil {
@@ -1393,10 +1375,6 @@ func NormalizeInstanceTasks(tasks []Task) []Task {
 		t.Name = normalizeTaskName(t.Name)
 		t.Expr = strings.TrimSpace(t.Expr)
 		t.Action = strings.TrimSpace(t.Action)
-		if t.Action == "strict_restart" {
-			t.Action = "restart"
-			t.StrictRestart = true
-		}
 		if t.Action != "stop" && t.Action != "restart" {
 			t.UseKillStop = false
 		}
@@ -1490,26 +1468,7 @@ func normalizeDeviceFilter(values []string) []string {
 	if len(values) == 0 || maxDeviceFilterLen <= 0 || maxDeviceFilterItems <= 0 {
 		return nil
 	}
-	seen := make(map[string]struct{}, len(values))
-	out := make([]string, 0, len(values))
-	for i := range values {
-		value := strings.TrimSpace(values[i])
-		if value == "" {
-			continue
-		}
-		if utf8.RuneCountInString(value) > maxDeviceFilterLen {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-		if len(out) >= maxDeviceFilterItems {
-			break
-		}
-	}
-	return out
+	return filterUniqueStrings(values, maxDeviceFilterLen, maxDeviceFilterItems, false)
 }
 
 func ValidateMetricsConfig(metrics MetricsConfig) error {
@@ -1553,11 +1512,6 @@ func GetMetricsConfig() MetricsConfig {
 	metrics := CurrentConfig.Metrics
 	normalizeMetricsConfig(&metrics)
 	return metrics
-}
-
-func IsMetricsEnabled() bool {
-	metrics := GetMetricsConfig()
-	return metrics.Enabled
 }
 
 func GetAutoStartInterval() int {

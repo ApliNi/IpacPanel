@@ -210,11 +210,3 @@ func ParseInstanceControlParams(w http.ResponseWriter, r *http.Request) (string,
 	}
 	return name, action, true
 }
-
-func RequireCSRFFromRequest(w http.ResponseWriter, r *http.Request) bool {
-	if err := authz.DefaultRuntime.CSRF.RequireFromRequest(w, r); err != nil {
-		WriteAPIError(w, http.StatusForbidden, msg.CSRFValidationFailed, nil)
-		return false
-	}
-	return true
-}

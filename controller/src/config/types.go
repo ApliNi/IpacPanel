@@ -108,8 +108,6 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		Web                      *WebConfig     `yaml:"web"`
 		Pow                      *PowConfig     `yaml:"pow"`
 		Debug                    *bool          `yaml:"debug"`
-		Auth                     *[]AuthUser    `yaml:"auth"`
-		Instances                *[]Instance    `yaml:"instances"`
 	}
 	var decoded rawConfig
 	if err := value.Decode(&decoded); err != nil {

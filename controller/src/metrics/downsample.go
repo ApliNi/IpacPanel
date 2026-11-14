@@ -128,17 +128,3 @@ func bytesPerSecond(current uint64, previous uint64, seconds float64) uint64 {
 	}
 	return uint64(float64(current-previous) / seconds)
 }
-
-func maxUint64(a uint64, b uint64) uint64 {
-	if b > a {
-		return b
-	}
-	return a
-}
-
-func maxFloat64(a float64, b float64) float64 {
-	if b > a {
-		return b
-	}
-	return a
-}

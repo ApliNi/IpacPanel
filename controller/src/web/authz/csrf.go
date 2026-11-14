@@ -51,12 +51,6 @@ func (v *CSRFValidator) ValidateHeaderAndCookie(r *http.Request) bool {
 	return cookieToken != "" && headerToken != "" && cookieToken == headerToken
 }
 
-func (v *CSRFValidator) ValidateToken(r *http.Request, token string) bool {
-	cookieToken := v.cookieManager().CSRFToken(r)
-	token = strings.TrimSpace(token)
-	return cookieToken != "" && token != "" && cookieToken == token
-}
-
 func (v *CSRFValidator) ParseTerminalWebSocketSubprotocolParams(r *http.Request) (string, string, string, error) {
 	if r == nil {
 		return "", "", "", errors.New(msg.WebSocketSubprotocolRequestNil)
@@ -77,7 +71,7 @@ func (v *CSRFValidator) ParseTerminalWebSocketSubprotocolParams(r *http.Request)
 			return "", "", "", errors.New(msg.WebSocketSubprotocolTokenInvalid)
 		}
 		if selectedProtocol != "" {
-			// 当前终端握手设计只接受单个子协议 token, 多 token 明确失败。
+			// 当前终端握手设计只接受单个子协议 token, 多 token 明确失败.
 			return "", "", "", errors.New(msg.WebSocketSubprotocolTokenMultiple)
 		}
 		selectedProtocol = token

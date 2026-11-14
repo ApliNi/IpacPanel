@@ -3,7 +3,6 @@ package file
 import (
 	"bytes"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"IpacPanel/controller/src/compat"
+	daemoncompat "IpacPanel/daemon/compat"
 	"IpacPanel/controller/src/msg"
 
 	"gopkg.in/yaml.v3"
@@ -33,11 +33,6 @@ type tempRegistry struct {
 type Options struct {
 	Overwrite bool
 	Mode      os.FileMode
-	SyncDir   bool
-}
-
-type DirOptions struct {
-	Overwrite bool
 	SyncDir   bool
 }
 
@@ -216,7 +211,7 @@ func CommitTemp(tempPath string, targetPath string, overwrite bool, syncDir bool
 		return errors.New(msg.TempPathAndTargetPathRequired)
 	}
 	if overwrite {
-		if err := compat.ReplaceFileAtomic(tempPath, targetPath); err != nil {
+		if err := daemoncompat.ReplaceFileAtomic(tempPath, targetPath); err != nil {
 			if os.IsNotExist(err) {
 				if renameErr := compat.RenameNoReplace(tempPath, targetPath); renameErr != nil {
 					return renameErr
@@ -232,65 +227,6 @@ func CommitTemp(tempPath string, targetPath string, overwrite bool, syncDir bool
 	}
 	if syncDir {
 		return SyncDir(filepath.Dir(targetPath))
-	}
-	return nil
-}
-
-func CommitTempDir(tempDir string, targetPath string, options DirOptions) error {
-	tempDir = strings.TrimSpace(tempDir)
-	targetPath = strings.TrimSpace(targetPath)
-	if tempDir == "" || targetPath == "" {
-		return errors.New(msg.TempDirectoryAndTargetPathRequired)
-	}
-	parent := filepath.Dir(targetPath)
-	if parent == "" {
-		parent = "."
-	}
-	if !options.Overwrite {
-		if err := compat.RenameNoReplace(tempDir, targetPath); err != nil {
-			return err
-		}
-		if options.SyncDir {
-			return SyncDir(parent)
-		}
-		return nil
-	}
-
-	backupPath := filepath.Join(parent, TempName()+"-backup")
-	targetExisted := false
-	if _, err := os.Lstat(targetPath); err == nil {
-		targetExisted = true
-		if err := compat.RenameNoReplace(targetPath, backupPath); err != nil {
-			return err
-		}
-		if options.SyncDir {
-			if err := SyncDir(parent); err != nil {
-				_ = os.Rename(backupPath, targetPath)
-				return err
-			}
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
-	if err := compat.RenameNoReplace(tempDir, targetPath); err != nil {
-		if targetExisted {
-			_ = os.Rename(backupPath, targetPath)
-		}
-		return err
-	}
-	if options.SyncDir {
-		if err := SyncDir(parent); err != nil {
-			return err
-		}
-	}
-	if targetExisted {
-		if err := os.RemoveAll(backupPath); err != nil {
-			return err
-		}
-		if options.SyncDir {
-			return SyncDir(parent)
-		}
 	}
 	return nil
 }
@@ -327,44 +263,8 @@ func WriteFile(path string, data []byte, options Options) error {
 	return nil
 }
 
-func CopyFile(src string, dst string, options Options) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	tmp, tmpPath, err := OpenTempForTarget(dst, options.Mode)
-	if err != nil {
-		return err
-	}
-	committed := false
-	defer cleanupTemp(tmpPath, &committed)
-
-	if _, err := io.Copy(tmp, in); err != nil {
-		closeErr := tmp.Close()
-		return errors.Join(err, closeErr)
-	}
-	if err := tmp.Chmod(effectiveMode(options.Mode)); err != nil {
-		closeErr := tmp.Close()
-		return errors.Join(err, closeErr)
-	}
-	if err := tmp.Sync(); err != nil {
-		closeErr := tmp.Close()
-		return errors.Join(err, closeErr)
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := CommitTemp(tmpPath, dst, options.Overwrite, options.SyncDir); err != nil {
-		return err
-	}
-	committed = true
-	return nil
-}
-
 func SyncDir(path string) error {
-	return compat.SyncDirIfPossible(path)
+	return daemoncompat.SyncDirIfPossible(path)
 }
 
 func effectiveMode(mode os.FileMode) os.FileMode {

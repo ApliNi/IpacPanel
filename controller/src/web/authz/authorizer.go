@@ -15,16 +15,6 @@ func NewAuthorizer() *Authorizer {
 	return &Authorizer{}
 }
 
-func (a *Authorizer) RequireAdmin(principal *Principal, forbiddenMessage string) error {
-	if principal != nil && principal.Role == UserRoleAdmin {
-		return nil
-	}
-	if strings.TrimSpace(forbiddenMessage) == "" {
-		forbiddenMessage = msg.Forbidden
-	}
-	return newError(ErrorCodeForbidden, forbiddenMessage, nil)
-}
-
 func (a *Authorizer) CanAccessInstance(principal *Principal, instanceName string) bool {
 	return a.canAccessInstance(principal, strings.TrimSpace(instanceName))
 }

@@ -915,7 +915,7 @@ const updateFileRowSelection = () => {
 	syncFileSelectionState();
 };
 
-export const renderFileList = (data) => {
+const renderFileList = (data) => {
     if (!ensureDom()) {
         return;
     }
@@ -948,7 +948,7 @@ export const renderFileList = (data) => {
 	syncFileSelectionState();
 };
 
-export const applyFileListResponse = (data, options = {}) => {
+const applyFileListResponse = (data, options = {}) => {
     const skipRemember = !!options.skipRemember;
 	const instanceName = String(options.instanceName || state.currentInstanceName || '').trim();
 	if (!instanceName) {

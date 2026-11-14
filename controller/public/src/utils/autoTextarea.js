@@ -13,7 +13,7 @@ const getMaxHeight = (style) => {
 	return Number.isFinite(maxHeight) ? maxHeight : Number.POSITIVE_INFINITY;
 };
 
-export const resizeAutoTextarea = (textarea) => {
+const resizeAutoTextarea = (textarea) => {
 	if (!isTextarea(textarea)) {
 		return;
 	}
