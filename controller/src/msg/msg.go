@@ -15,6 +15,7 @@ const (
 	StopCommandTooLong        = "停止命令最多包含 4096 个字符"
 	CleanupCommandTooLong     = "清理命令最多包含 4096 个字符"
 	AccessLinksTooLong        = "访问链接文本最多包含 2048 个字符"
+	NotesTooLong              = "备注最多包含 4096 个字符"
 	StartPriorityInvalid      = "启动优先级必须在 -99999999 到 99999999 范围内"
 	RestartIntervalInvalid    = "重启延迟必须在 0 到 86400000 范围内"
 	InputEncodingInvalid      = "输入编码无效"

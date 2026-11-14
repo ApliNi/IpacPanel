@@ -67,6 +67,8 @@ func writeInstanceConfigValidationError(w http.ResponseWriter, err error) {
 		web.WriteAPIError(w, http.StatusBadRequest, msg.CleanupCommandTooLong, err)
 	case errText == msg.AccessLinksTooLong:
 		web.WriteAPIError(w, http.StatusBadRequest, msg.AccessLinksTooLong, err)
+	case errText == msg.NotesTooLong:
+		web.WriteAPIError(w, http.StatusBadRequest, msg.NotesTooLong, err)
 	case errText == msg.StartPriorityInvalid:
 		web.WriteAPIError(w, http.StatusBadRequest, msg.StartPriorityInvalid, err)
 	case errText == msg.RestartIntervalInvalid:

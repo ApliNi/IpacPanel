@@ -45,6 +45,7 @@ func HandleApiInstanceGet(w http.ResponseWriter, r *http.Request) {
 		Path:                     ins.Path,
 		Command:                  ins.Command,
 		AccessLinks:              ins.AccessLinks,
+		Notes:                    ins.Notes,
 		Terminal:                 cfg.NormalizeTerminalMode(ins.Terminal),
 		ActiveTerminal:           status.ActiveTerminal,
 		InputEncoding:            ins.InputEncoding,

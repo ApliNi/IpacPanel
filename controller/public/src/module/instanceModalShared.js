@@ -340,6 +340,7 @@ export const fillInstanceModalForm = ({
 	form,
 	ins = {},
 	nameInput,
+	notesInput,
 	groupSelect,
 	groupInput,
 	groups,
@@ -396,6 +397,9 @@ export const fillInstanceModalForm = ({
 	}
 	if (accessLinksInput) {
 		accessLinksInput.value = InputValidation.instance.formatAccessLinksText(ins.access_links);
+	}
+	if (notesInput) {
+		notesInput.value = ins.notes || '';
 	}
 	renderInstanceTasks(taskList, Array.isArray(ins.tasks) ? ins.tasks : []);
 };

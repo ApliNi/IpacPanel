@@ -1029,7 +1029,8 @@ input[type="password"] {
 	outline: none;
 }
 
-.instance-access-links-input {
+.instance-access-links-input,
+.instance-notes-input {
 	min-height: 96px;
 	resize: vertical;
 }

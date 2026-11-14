@@ -2,9 +2,14 @@ package api
 
 import (
 	cfg "IpacPanel/controller/src/config"
+	"IpacPanel/controller/src/msg"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -89,5 +94,74 @@ func TestDashboardSnapshotRouteRemoved(t *testing.T) {
 	}
 	if !hasEvents {
 		t.Errorf("expected /api/dashboard/events route to exist")
+	}
+}
+
+func TestInstanceConfigRequestNotesField(t *testing.T) {
+	raw := []byte(`{"name":"test-ins","path":"./instances/test-ins","command":"run","notes":"hello\r\nworld"}`)
+	var req instanceConfigRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if req.Notes != "hello\r\nworld" {
+		t.Errorf("expected Notes 'hello\\r\\nworld', got %q", req.Notes)
+	}
+
+	ins := instanceConfigFromRequest(req)
+	if ins.Notes != "hello\r\nworld" {
+		t.Errorf("expected ins.Notes 'hello\\r\\nworld', got %q", ins.Notes)
+	}
+
+	cfg.NormalizeInstanceRequest(&ins)
+	if ins.Notes != "hello\nworld" {
+		t.Errorf("expected normalized notes 'hello\\nworld', got %q", ins.Notes)
+	}
+}
+
+func TestWriteInstanceConfigValidationErrorNotesTooLong(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeInstanceConfigValidationError(rec, errors.New(msg.NotesTooLong))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, msg.NotesTooLong) {
+		t.Errorf("expected response to contain %q, got %q", msg.NotesTooLong, body)
+	}
+}
+
+func TestInstanceDetailResponseNotesSerialization(t *testing.T) {
+	resp := instanceDetailResponse{
+		instanceListItem: instanceListItem{Name: "demo"},
+		Path:             "./instances/demo",
+		Command:          "run",
+		Notes:            "my notes",
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if parsed["notes"] != "my notes" {
+		t.Errorf("expected notes 'my notes', got %v", parsed["notes"])
+	}
+
+	emptyResp := instanceDetailResponse{
+		instanceListItem: instanceListItem{Name: "demo"},
+	}
+	emptyData, err := json.Marshal(emptyResp)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	var emptyParsed map[string]interface{}
+	if err := json.Unmarshal(emptyData, &emptyParsed); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if _, ok := emptyParsed["notes"]; ok {
+		t.Errorf("expected empty notes to be omitted from JSON")
 	}
 }

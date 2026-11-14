@@ -236,3 +236,83 @@ func TestAuthPasswordStrictP2(t *testing.T) {
 		t.Errorf("expected plain password to be hashed with P2 prefix, changed=%v pass=%q", changed, usersPlain[0].Pass)
 	}
 }
+
+func TestNormalizeInstanceNotesText(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{"", ""},
+		{"   ", ""},
+		{"\r\n\r\n", ""},
+		{"  hello world  ", "hello world"},
+		{"line1\r\nline2\r\nline3", "line1\nline2\nline3"},
+		{"  \r\nline1\r\nline2\r\n  ", "line1\nline2"},
+		{"第一行\r\n第二行", "第一行\n第二行"},
+	}
+	for _, tc := range cases {
+		actual := NormalizeInstanceNotesText(tc.input)
+		if actual != tc.expected {
+			t.Errorf("NormalizeInstanceNotesText(%q) = %q, expected %q", tc.input, actual, tc.expected)
+		}
+	}
+}
+
+func TestValidateInstanceNotes(t *testing.T) {
+	if err := ValidateInstanceNotes(""); err != nil {
+		t.Errorf("expected empty notes to be valid, got: %v", err)
+	}
+
+	validNotes := strings.Repeat("a", 4096)
+	if err := ValidateInstanceNotes(validNotes); err != nil {
+		t.Errorf("expected 4096-char notes to be valid, got: %v", err)
+	}
+
+	validUnicodeNotes := strings.Repeat("测", 4096)
+	if err := ValidateInstanceNotes(validUnicodeNotes); err != nil {
+		t.Errorf("expected 4096-rune unicode notes to be valid, got: %v", err)
+	}
+
+	tooLongNotes := strings.Repeat("a", 4097)
+	if err := ValidateInstanceNotes(tooLongNotes); err == nil {
+		t.Errorf("expected 4097-char notes to fail validation")
+	}
+
+	tooLongUnicode := strings.Repeat("备", 4097)
+	if err := ValidateInstanceNotes(tooLongUnicode); err == nil {
+		t.Errorf("expected 4097-rune unicode notes to fail validation")
+	}
+}
+
+func TestInstanceConfigNotes(t *testing.T) {
+	ins := Instance{
+		Name:    "demo",
+		Path:    "./instances/demo",
+		Command: "run.sh",
+		Notes:   "line1\r\nline2\r\n",
+	}
+	NormalizeInstanceRequest(&ins)
+	if ins.Notes != "line1\nline2" {
+		t.Errorf("expected normalized notes %q, got %q", "line1\nline2", ins.Notes)
+	}
+	if err := ValidateInstanceConfig(&ins); err != nil {
+		t.Errorf("expected valid instance config, got: %v", err)
+	}
+
+	ins.Notes = strings.Repeat("x", 4097)
+	if err := ValidateInstanceConfig(&ins); err == nil {
+		t.Errorf("expected validation to fail for notes longer than 4096 runes")
+	}
+
+	data, err := yaml.Marshal(ins)
+	if err != nil {
+		t.Fatalf("yaml.Marshal failed: %v", err)
+	}
+	var decoded Instance
+	if err := yaml.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("yaml.Unmarshal failed: %v", err)
+	}
+	if decoded.Notes != ins.Notes {
+		t.Errorf("expected decoded notes %q, got %q", ins.Notes, decoded.Notes)
+	}
+}

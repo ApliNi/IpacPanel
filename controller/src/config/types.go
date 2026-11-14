@@ -49,6 +49,7 @@ type Instance struct {
 	Path            string `yaml:"path" json:"path"`
 	Command         string `yaml:"command" json:"command"`
 	AccessLinks     string `yaml:"access_links,omitempty" json:"access_links,omitempty"`
+	Notes           string `yaml:"notes,omitempty" json:"notes,omitempty"`
 	Terminal        int    `yaml:"terminal,omitempty" json:"terminal,omitempty"`
 	InputEncoding   string `yaml:"input_encoding,omitempty" json:"input_encoding,omitempty"`
 	OutputEncoding  string `yaml:"output_encoding,omitempty" json:"output_encoding,omitempty"`

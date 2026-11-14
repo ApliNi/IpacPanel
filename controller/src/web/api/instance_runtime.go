@@ -17,6 +17,7 @@ type instanceDetailResponse struct {
 	Path                     string     `json:"path"`
 	Command                  string     `json:"command"`
 	AccessLinks              string     `json:"access_links,omitempty"`
+	Notes                    string     `json:"notes,omitempty"`
 	Terminal                 int        `json:"terminal"`
 	ActiveTerminal           int        `json:"active_terminal"`
 	InputEncoding            string     `json:"input_encoding,omitempty"`

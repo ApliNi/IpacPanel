@@ -6,6 +6,7 @@ const limits = Object.freeze({
 	instanceStopCommand: 4096,
 	instanceCleanupCommand: 4096,
 	instanceAccessLinksText: 2048,
+	instanceNotes: 4096,
 	fileSearch: 4096,
 	fileName: 255,
 	fileContent: 10 * 1024 * 1024,

@@ -59,6 +59,7 @@ const (
 	maxStopCommandLen     = 4096
 	maxCleanupCommandLen  = 4096
 	maxAccessLinksTextLen = 2048
+	maxNotesLen           = 4096
 	maxTrustedProxyIPs    = 512
 	maxTrustedProxyIPLen  = 128
 	maxTaskTimezoneLen    = 128
@@ -673,6 +674,7 @@ func ApplyInstanceDefaults(ins *Instance) {
 		ins.OutputEncoding = normalized
 	}
 	ins.Tasks = NormalizeInstanceTasks(ins.Tasks)
+	ins.Notes = NormalizeInstanceNotesText(ins.Notes)
 }
 
 func ResolveInstancePath(path string) (string, error) {
@@ -1119,6 +1121,7 @@ func CloneInstances(instances []Instance) []Instance {
 		ins.StartPriority = CloneIntPtr(ins.StartPriority)
 		ins.RestartInterval = CloneIntPtr(ins.RestartInterval)
 		ins.AccessLinks = normalizeInstanceAccessLinksText(ins.AccessLinks)
+		ins.Notes = NormalizeInstanceNotesText(ins.Notes)
 		ins.Tasks = append([]Task(nil), ins.Tasks...)
 		out[i] = ins
 	}
@@ -1136,6 +1139,7 @@ func CloneConfigLocked() Config {
 func NormalizeInstanceRequest(req *Instance) {
 	ApplyInstanceDefaults(req)
 	req.AccessLinks = normalizeInstanceAccessLinksText(req.AccessLinks)
+	req.Notes = NormalizeInstanceNotesText(req.Notes)
 	req.Tasks = NormalizeInstanceTasks(req.Tasks)
 	req.StartPriority = NormalizeStartPriorityPtr(req.StartPriority)
 	req.RestartInterval = NormalizeRestartIntervalPtr(req.RestartInterval)
@@ -1162,6 +1166,7 @@ func NormalizeConfig() {
 	for i := range CurrentConfig.Instances {
 		ApplyInstanceDefaults(&CurrentConfig.Instances[i])
 		CurrentConfig.Instances[i].AccessLinks = normalizeInstanceAccessLinksText(CurrentConfig.Instances[i].AccessLinks)
+		CurrentConfig.Instances[i].Notes = NormalizeInstanceNotesText(CurrentConfig.Instances[i].Notes)
 		CurrentConfig.Instances[i].Name = NormalizeInstanceNameForStorage(CurrentConfig.Instances[i].Name)
 		CurrentConfig.Instances[i].StartPriority = NormalizeStartPriorityPtr(CurrentConfig.Instances[i].StartPriority)
 		CurrentConfig.Instances[i].RestartInterval = NormalizeRestartIntervalPtr(CurrentConfig.Instances[i].RestartInterval)
@@ -1319,6 +1324,9 @@ func ValidateInstanceConfig(ins *Instance) error {
 	if err := validateInstanceAccessLinksText(ins.AccessLinks); err != nil {
 		return err
 	}
+	if err := ValidateInstanceNotes(ins.Notes); err != nil {
+		return err
+	}
 	if err := validateInstanceTasks(ins.Tasks); err != nil {
 		return err
 	}
@@ -1352,6 +1360,17 @@ func validateInstanceAccessLinksText(text string) error {
 	}
 	if utf8.RuneCountInString(trimmed) > maxAccessLinksTextLen {
 		return errors.New(msg.AccessLinksTooLong)
+	}
+	return nil
+}
+
+func NormalizeInstanceNotesText(text string) string {
+	return strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+}
+
+func ValidateInstanceNotes(text string) error {
+	if utf8.RuneCountInString(NormalizeInstanceNotesText(text)) > maxNotesLen {
+		return errors.New(msg.NotesTooLong)
 	}
 	return nil
 }

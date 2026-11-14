@@ -15,6 +15,7 @@
   start_priority: 10
   auto_restart: true
   restart_interval: 1000
+  notes: ""
   tasks:
     - name: Task-1
       enabled: true

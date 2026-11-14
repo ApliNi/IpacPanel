@@ -34,6 +34,7 @@ type instanceConfigRequest struct {
 	Path            string     `json:"path"`
 	Command         string     `json:"command"`
 	AccessLinks     string     `json:"access_links,omitempty"`
+	Notes           string     `json:"notes,omitempty"`
 	Terminal        int        `json:"terminal,omitempty"`
 	InputEncoding   string     `json:"input_encoding,omitempty"`
 	OutputEncoding  string     `json:"output_encoding,omitempty"`
@@ -53,6 +54,7 @@ func instanceConfigFromRequest(req instanceConfigRequest) cfg.Instance {
 		Path:            req.Path,
 		Command:         req.Command,
 		AccessLinks:     req.AccessLinks,
+		Notes:           req.Notes,
 		Terminal:        req.Terminal,
 		InputEncoding:   req.InputEncoding,
 		OutputEncoding:  req.OutputEncoding,

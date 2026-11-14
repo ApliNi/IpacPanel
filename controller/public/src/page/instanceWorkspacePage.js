@@ -82,6 +82,10 @@ mainModalOverlay.insertAdjacentHTML('beforeend', /*html*/`
 							<span class="placeholder"></span>
 							<input id="instanceModalGroupNew" class="hidden" name="group" type="text" maxlength="32" autocomplete="off" placeholder=" Group name">
 						</div>
+						<div class="field-group">
+							<span>NOTES</span>
+							<textarea id="instanceModalNotes" name="notes" class="instance-notes-input" rows="4" maxlength="4096" spellcheck="false" placeholder=" Notes"></textarea>
+						</div>
 					</div>
 					<div id="instanceModalPageAdvanced" class="instance-modal-page">
 						<div class="field-group field-group-dynamic-label">
@@ -256,6 +260,7 @@ const dom = {
 	instanceModalInputEncoding: document.getElementById('instanceModalInputEncoding'),
 	instanceModalOutputEncoding: document.getElementById('instanceModalOutputEncoding'),
 	instanceModalAccessLinks: document.getElementById('instanceModalAccessLinks'),
+	instanceModalNotes: document.getElementById('instanceModalNotes'),
 	instanceModalTabs: document.querySelectorAll('#instanceModalForm .instance-modal-tabs .filter-btn'),
 	instanceModalTabDelete: document.getElementById('instanceModalTabDelete'),
 	instanceModalPageBasic: document.getElementById('instanceModalPageBasic'),
@@ -469,6 +474,7 @@ const clearInstanceModalForLoad = () => {
 	if (dom.instanceModalInputEncoding) dom.instanceModalInputEncoding.replaceChildren();
 	if (dom.instanceModalOutputEncoding) dom.instanceModalOutputEncoding.replaceChildren();
 	if (dom.instanceModalAccessLinks) dom.instanceModalAccessLinks.value = '';
+	if (dom.instanceModalNotes) dom.instanceModalNotes.value = '';
 	renderInstanceTasksInModal([]);
 	if (dom.instanceDeleteName) dom.instanceDeleteName.value = '';
 	if (dom.instanceDeleteFiles) dom.instanceDeleteFiles.checked = false;
@@ -526,6 +532,7 @@ const fillInstanceModal = (ins = {}) => {
 		restartIntervalInput: dom.instanceModalRestartInterval,
 		taskList: dom.instanceTasksList,
 		accessLinksInput: dom.instanceModalAccessLinks,
+		notesInput: dom.instanceModalNotes,
 	});
 	switchInstanceModalPage('basic');
 };
@@ -853,6 +860,7 @@ const handleInstanceModalSubmit = async (event) => {
 	const command = InputValidation.truncateText(getInstanceEditorValue('command'), InputValidation.limits.instanceCommand).trim();
 	const stopCommand = dom.instanceModalStopCommand ? InputValidation.truncateText(dom.instanceModalStopCommand.value, InputValidation.limits.instanceStopCommand).trim() : '';
 	const cleanupCommand = dom.instanceModalCleanupCommand ? InputValidation.truncateText(dom.instanceModalCleanupCommand.value, InputValidation.limits.instanceCleanupCommand).trim() : '';
+	const notes = dom.instanceModalNotes ? InputValidation.truncateText(dom.instanceModalNotes.value, InputValidation.limits.instanceNotes).trim() : '';
 
 	const restartIntervalResult = controller.parseOptionalIntegerInRange(dom.instanceModalRestartInterval, '重启延迟', 0, 86400000);
 	if (restartIntervalResult.error) {
@@ -873,6 +881,7 @@ const handleInstanceModalSubmit = async (event) => {
 		path,
 		command,
 		access_links: '',
+		notes,
 		terminal: normalizeTerminalMode(dom.instanceModalTerminal.value),
 		input_encoding: normalizeEncodingValue(dom.instanceModalInputEncoding.value),
 		output_encoding: normalizeEncodingValue(dom.instanceModalOutputEncoding.value),
@@ -1093,6 +1102,12 @@ const bindTerminalEvents = () => {
 		dom.instanceModalAccessLinks.maxLength = InputValidation.limits.instanceAccessLinksText;
 		dom.instanceModalAccessLinks.onblur = () => {
 			dom.instanceModalAccessLinks.value = InputValidation.truncateText(dom.instanceModalAccessLinks.value || '', InputValidation.limits.instanceAccessLinksText);
+		};
+	}
+	if (dom.instanceModalNotes) {
+		dom.instanceModalNotes.maxLength = InputValidation.limits.instanceNotes;
+		dom.instanceModalNotes.onblur = () => {
+			dom.instanceModalNotes.value = InputValidation.truncateText(dom.instanceModalNotes.value || '', InputValidation.limits.instanceNotes);
 		};
 	}
 	// Delete page uses the original modal submit button.
